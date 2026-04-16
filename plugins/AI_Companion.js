@@ -1468,17 +1468,21 @@
                 for (const enemy of battleState.enemies) {
                     const kb = FearHungerKB.getEnemyHints(enemy.name);
                     if (kb) {
-                        const prefix = kb.dangerLevel >= 4 ? 'DANGEROUS: ' : '';
-                        knowledgeHints += `\n${prefix}${enemy.name}:\n`;
+                        const prefix = kb.dangerLevel >= 4 ? 'DANGEROUS: ' : (kb.dangerLevel === 0 ? 'HARMLESS: ' : '');
+                        knowledgeHints += `\n${prefix}${kb.name || enemy.name}:\n`;
+                        if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
                         knowledgeHints += `  - Priority: ${kb.priority.join(' → ')}\n`;
                         if (kb.coinFlipTurn) {
-                            knowledgeHints += `  - Guard on turn ${kb.coinFlipTurn} (coin flip)\n`;
+                            knowledgeHints += `  - ⚠ COIN FLIP on turn ${kb.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
                         }
                         kb.hints.slice(0, 2).forEach(h => {
                             knowledgeHints += `  - ${h}\n`;
                         });
                         if (kb.mistakes.length > 0) {
                             knowledgeHints += `  - AVOID: ${kb.mistakes[0]}\n`;
+                        }
+                        if (kb.special) {
+                            knowledgeHints += `  - Special: ${kb.special}\n`;
                         }
                     }
                 }
@@ -1718,8 +1722,7 @@ Respond ONLY with this JSON:
             const _trySyncRequest = (endpoint, headers, model, maxTokens, isLocal) => {
                 try {
                     const xhr = new XMLHttpRequest();
-                    xhr.open('POST', endpoint, false); // synchronous
-                    xhr.timeout = 15000; // 15 second timeout
+                    xhr.open('POST', endpoint, false); // synchronous — timeout not allowed
                     for (const key in headers) xhr.setRequestHeader(key, headers[key]);
                     const messages = isLocal
                         ? [
@@ -3132,22 +3135,22 @@ CRITICAL GAME RULES (NEVER violate these):
                             if (data.coinFlipTurn) block += `COIN FLIP on turn ${data.coinFlipTurn} — GUARD on that turn!\n`;
                             if (data.mistakes && data.mistakes.length) block += `AVOID: ${data.mistakes.join('; ')}\n`;
                         }
-                    } else if (context.in_battle && context.battle_state) {
-                        // No entity matched — try looking up enemies by name from battle state
+                    } else if (context.in_battle && context.battle_state && typeof FearHungerKB !== 'undefined') {
+                        // No entity matched — look up ALL enemies from battle state using proper getEnemy() with Spanish translation
                         for (const enemy of context.battle_state.enemies) {
-                            const key = enemy.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
-                            const data = (FearHungerKB.enemies && FearHungerKB.enemies[key]) || (FearHungerKB.bosses && FearHungerKB.bosses[key]);
+                            const lookup = FearHungerKB.getEnemy ? FearHungerKB.getEnemy(enemy.name) : null;
+                            const data = lookup || null;
                             if (data) {
-                                block += `\n=== ${(data.displayName || enemy.name).toUpperCase()} ===\n`;
+                                block += `\n=== ${(data.displayNameEs || data.displayName || enemy.name).toUpperCase()} ===\n`;
+                                if (data.danger !== undefined) block += `Danger: ${data.danger}/5\n`;
                                 if (data.tactics) block += `Tactics: ${data.tactics}\n`;
-                                if (data.strategy) block += `Strategy:\n${data.strategy.map(s => '  - ' + s).join('\n')}\n`;
-                                if (data.limbDetails) {
-                                    block += 'Limbs:\n';
-                                    for (const [limb, info] of Object.entries(data.limbDetails)) {
-                                        block += `  ${limb}: HP ${info.hp}${info.attack ? ' | Attack: ' + info.attack : ''}${info.destruction ? ' | If destroyed: ' + info.destruction : ''}\n`;
-                                    }
-                                }
-                                if (data.coinFlipTurn) block += `COIN FLIP on turn ${data.coinFlipTurn} — GUARD!\n`;
+                                if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
+                                if (data.hints && data.hints.length) block += `Tips: ${data.hints.join('; ')}\n`;
+                                if (data.coinFlipTurn) block += `⚠ COIN FLIP on turn ${data.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
+                                if (data.mistakes && data.mistakes.length) block += `AVOID: ${data.mistakes.join('; ')}\n`;
+                                if (data.special) block += `Special: ${data.special}\n`;
+                            } else {
+                                block += `\n[No data on "${enemy.name}" — be cautious]\n`;
                             }
                         }
                     }

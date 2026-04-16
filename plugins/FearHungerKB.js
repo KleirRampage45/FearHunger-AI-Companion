@@ -3020,12 +3020,14 @@ FearHungerKB.getEnemyHints = function (name) {
     if (!enemy) return null;
 
     return {
-        name: enemy.displayName,
+        name: enemy.displayNameEs || enemy.displayName,
         priority: enemy.limbPriority || [],
         coinFlipTurn: enemy.coinFlipTurn || null,
         hints: enemy.hints || [],
         mistakes: enemy.mistakes || [],
-        dangerLevel: enemy.danger || 1
+        dangerLevel: enemy.danger !== undefined ? enemy.danger : 1,
+        tactics: enemy.tactics || null,
+        special: enemy.special || null
     };
 };
 
