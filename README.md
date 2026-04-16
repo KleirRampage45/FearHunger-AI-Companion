@@ -26,7 +26,7 @@ An AI-powered companion mod for **Fear & Hunger** (RPG Maker MV) that adds a ful
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USER/FearHunger-AI-Companion.git
+git clone https://github.com/KleirRampage45/FearHunger-AI-Companion.git
 cd FearHunger-AI-Companion
 
 # Run the installer
