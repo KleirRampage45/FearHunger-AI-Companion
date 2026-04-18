@@ -395,6 +395,164 @@
     };
 
     //=========================================================================
+    // Thesis Logger — Persistent telemetry for research data collection
+    //=========================================================================
+    const ThesisLogger = {
+        _fs: null,
+        _path: null,
+        _sessionFile: null,
+        _initialized: false,
+        _queue: [],         // Buffer for writes during init
+        _writeCount: 0,
+        _errorCount: 0,
+
+        /**
+         * Initialize the logger. Safe to call multiple times — only runs once.
+         * Uses NW.js Node integration for filesystem access.
+         */
+        init() {
+            if (this._initialized) return;
+            try {
+                this._fs = require('fs');
+                this._path = require('path');
+
+                // Determine log directory relative to game root
+                const gameDir = this._path.dirname(process.execPath);
+                const logDir = this._path.join(gameDir, 'ai_companion_logs');
+
+                // Create log directory if it doesn't exist
+                if (!this._fs.existsSync(logDir)) {
+                    this._fs.mkdirSync(logDir, { recursive: true });
+                }
+
+                // Session file: one per game launch
+                const sessionId = new Date().toISOString().replace(/[:.]/g, '-');
+                this._sessionFile = this._path.join(logDir, `session_${sessionId}.jsonl`);
+
+                // Write header line
+                const header = {
+                    _type: 'session_start',
+                    timestamp: Date.now(),
+                    iso: new Date().toISOString(),
+                    companion_name: Config.companionName,
+                    api_provider: Config.apiProvider,
+                    language: Config.language,
+                    personality: Config.personality
+                };
+                this._fs.writeFileSync(this._sessionFile, JSON.stringify(header) + '\n');
+
+                this._initialized = true;
+                Debug.log('[ThesisLogger] Initialized. Logging to:', this._sessionFile);
+
+                // Flush any queued entries
+                for (const entry of this._queue) {
+                    this._write(entry);
+                }
+                this._queue = [];
+            } catch (e) {
+                // NW.js not available or fs not accessible — degrade gracefully
+                Debug.warn('[ThesisLogger] Cannot initialize (no NW.js?):', e.message);
+                this._initialized = false;
+            }
+        },
+
+        /**
+         * Log an interaction. Non-blocking (async fs.appendFile).
+         * @param {string} type - 'chat', 'combat_decision', 'ambient', 'item_inspect'
+         * @param {Object} data - Interaction-specific data
+         */
+        log(type, data) {
+            // Lazy init on first log call
+            if (!this._initialized && !this._fs) this.init();
+
+            const entry = {
+                _type: type,
+                timestamp: Date.now(),
+                session_time_ms: Date.now() - (window._aiCompanionStartTime || Date.now()),
+
+                // Game context
+                map_id: typeof $gameMap !== 'undefined' && $gameMap ? $gameMap.mapId() : null,
+                map_name: typeof $gameMap !== 'undefined' && $gameMap && $gameMap.displayName ? $gameMap.displayName() : null,
+                in_battle: typeof $gameParty !== 'undefined' && $gameParty ? $gameParty.inBattle() : false,
+
+                // Companion state
+                companion_name: Config.companionName,
+                companion_hp: null,
+                companion_mp: null,
+                companion_max_hp: null,
+                companion_max_mp: null,
+
+                // Player state
+                sanity_level: null,
+                trust_level: null,
+
+                // Interaction data (varies by type)
+                ...data
+            };
+
+            // Safely populate companion stats
+            try {
+                const actor = $gameActors && $gameActors.actor(Config.companionActorId);
+                if (actor) {
+                    entry.companion_hp = actor.hp;
+                    entry.companion_mp = actor.mp;
+                    entry.companion_max_hp = actor.mhp;
+                    entry.companion_max_mp = actor.mmp;
+                }
+            } catch (e) { /* actor not ready */ }
+
+            // Safely populate sanity and trust
+            try {
+                entry.trust_level = RelationshipTracker ? RelationshipTracker.getSummary() : null;
+            } catch (e) { /* not ready */ }
+
+            if (!this._initialized) {
+                this._queue.push(entry);
+                return;
+            }
+            this._write(entry);
+        },
+
+        /**
+         * Internal: write a single entry to the log file (non-blocking).
+         */
+        _write(entry) {
+            if (!this._fs || !this._sessionFile) return;
+            try {
+                const line = JSON.stringify(entry) + '\n';
+                this._fs.appendFile(this._sessionFile, line, (err) => {
+                    if (err) {
+                        this._errorCount++;
+                        if (this._errorCount <= 3) {
+                            Debug.warn('[ThesisLogger] Write error:', err.message);
+                        }
+                    } else {
+                        this._writeCount++;
+                    }
+                });
+            } catch (e) {
+                this._errorCount++;
+            }
+        },
+
+        /**
+         * Get logger stats (for debug display).
+         */
+        getStats() {
+            return {
+                initialized: this._initialized,
+                sessionFile: this._sessionFile,
+                entriesLogged: this._writeCount,
+                errors: this._errorCount,
+                queueLength: this._queue.length
+            };
+        }
+    };
+
+    // Track session start time for relative timestamps
+    window._aiCompanionStartTime = Date.now();
+
+    //=========================================================================
     // Character Presets & Configuration
     //=========================================================================
     const CharacterPresets = {
@@ -1718,6 +1876,26 @@ Respond ONLY with this JSON:
             const prompt = this._buildPrompt(battleState);
             if (Config.debugMode) Debug.log('[Combat] Prompt built, length:', prompt.length);
 
+            // Telemetry helper for combat logging
+            const _logCombatDecision = (decision, modelUsed, source) => {
+                const latency = Math.round(performance.now() - startTime);
+                ThesisLogger.log('combat_decision', {
+                    battle_turn: battleState.turn_number,
+                    enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
+                    companion_battle_hp: battleState.companion ? battleState.companion.hp : null,
+                    prompt_length: prompt.length,
+                    prompt_text: prompt,
+                    decision_action: decision ? decision.action : null,
+                    decision_target: decision ? decision.target : null,
+                    decision_limb: decision ? decision.limb : null,
+                    decision_reasoning: decision ? decision.reasoning : null,
+                    decision_dialog: decision ? decision.dialog : null,
+                    response_source: source,
+                    model_used: modelUsed,
+                    latency_ms: latency
+                });
+            };
+
             // Helper: try a single sync request
             const _trySyncRequest = (endpoint, headers, model, maxTokens, isLocal) => {
                 try {
@@ -1765,7 +1943,7 @@ Respond ONLY with this JSON:
                 const localResult = _trySyncRequest(
                     Config.localEndpoint, Config.getHeaders(), Config.localModel, 512, true
                 );
-                if (localResult) return localResult;
+                if (localResult) { _logCombatDecision(localResult, Config.localModel, 'local'); return localResult; }
 
                 // Local failed — fall back to Groq
                 if (Config.apiKey) {
@@ -1783,6 +1961,7 @@ Respond ONLY with this JSON:
                         );
                         if (groqResult) {
                             Debug.log('[Combat] Groq fallback succeeded:', model);
+                            _logCombatDecision(groqResult, model, 'groq_fallback');
                             return groqResult;
                         }
                         ModelRouter.markFailed(model);
@@ -1795,14 +1974,16 @@ Respond ONLY with this JSON:
                     const result = _trySyncRequest(
                         Config.getEndpoint(), Config.getHeaders(), model, 300, false
                     );
-                    if (result) return result;
+                    if (result) { _logCombatDecision(result, model, 'groq'); return result; }
                     ModelRouter.markFailed(model);
                 }
             }
 
             const elapsed = Math.round(performance.now() - startTime);
             Debug.error(`All models failed (${elapsed}ms), using fallback`);
-            return this._getFallbackDecision();
+            const fallbackDecision = this._getFallbackDecision();
+            _logCombatDecision(fallbackDecision, null, 'fallback_all_failed');
+            return fallbackDecision;
         }
 
         static _generateQuickDialog(decision) {
@@ -2659,6 +2840,7 @@ Respond ONLY with this JSON:
     window.AI_Companion = {
         Config,
         Debug,
+        ThesisLogger,
         AIState,
         BattleStateExtractor,
         ActionExecutor,
@@ -2984,21 +3166,52 @@ Respond ONLY with this JSON:
                 Debug.log('[Chat] prompt length:', prompt.length, 'chars');
             }
 
+            const chatStartTime = performance.now();
             try {
                 const response = await this._sendChatRequest(prompt);
+                const chatLatency = Math.round(performance.now() - chatStartTime);
                 if (!response || response.trim().length === 0) {
                     // KB fallback — no LLM dependency
                     const fallback = KBFallback.respond(intent);
                     this.addToHistory('companion', fallback);
+                    ThesisLogger.log('chat', {
+                        player_message: playerMessage,
+                        intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                        prompt_length: prompt.length,
+                        response_text: fallback,
+                        response_source: 'kb_fallback',
+                        latency_ms: chatLatency,
+                        model_used: null
+                    });
                     return fallback;
                 }
                 this.addToHistory('companion', response);
+                ThesisLogger.log('chat', {
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    prompt_text: prompt,
+                    response_text: response,
+                    response_source: 'llm',
+                    latency_ms: chatLatency,
+                    model_used: this._lastModelUsed || null
+                });
                 return response;
             } catch (error) {
+                const chatLatency = Math.round(performance.now() - chatStartTime);
                 Debug.error('[Chat] error:', error);
                 // KB fallback on API failure
                 const fallback = KBFallback.respond(intent);
                 this.addToHistory('companion', fallback);
+                ThesisLogger.log('chat', {
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    response_text: fallback,
+                    response_source: 'kb_fallback_error',
+                    latency_ms: chatLatency,
+                    error: error.message
+                });
                 return fallback;
             }
         },
@@ -3349,6 +3562,7 @@ CRITICAL GAME RULES (NEVER violate these):
                 );
                 if (text.length > 0) {
                     Debug.log('[Chat] Groq responded:', model, text.length, 'chars');
+                    this._lastModelUsed = model;
                     return text;
                 }
                 ModelRouter.markFailed(model);
@@ -3811,6 +4025,13 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             this._lastTime = Date.now();
             this._lastTopic = topic;
             DialogueGovernor.recordDialogue();
+
+            // Telemetry: log all ambient dialogue
+            ThesisLogger.log('ambient', {
+                topic: topic,
+                text: text,
+                text_length: text.length
+            });
 
             // Use configured appearance
             const appearance = CharacterPresets.getCurrentAppearance();
@@ -4695,6 +4916,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const enemyNames = $gameTroop.members().map(m => m.name());
         ShortTermMemory.setLastBattle(enemyNames, true);
         AmbientDialogue.onBattleEnd(true);
+        ThesisLogger.log('game_event', { event: 'battle_victory', enemies: enemyNames });
         AIState.lastBattleStateCache = null;
         AIState.recentDialogs = [];
         AIState.lastCombatHash = null;
@@ -4710,6 +4932,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const enemyNames = $gameTroop.members().map(m => m.name());
         ShortTermMemory.setLastBattle(enemyNames, false);
         AmbientDialogue.onBattleEnd(false);
+        ThesisLogger.log('game_event', { event: 'battle_escape', enemies: enemyNames });
         AIState.lastBattleStateCache = null;
         AIState.recentDialogs = [];
         AIState.lastCombatHash = null;
@@ -4729,6 +4952,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         if (wasTransferring) {
             const mapName = $gameMap.displayName() || 'new area';
             Debug.log('Room entry detected:', mapName);
+            ThesisLogger.log('game_event', { event: 'map_transfer', map_name: mapName, map_id: $gameMap.mapId() });
             AmbientDialogue.onRoomEntry(mapName);
         }
     };
@@ -4826,13 +5050,35 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
         askAboutItemSync(item) {
             if (Config.debugMode) Debug.log('[Inspect] askAboutItem:', item ? item.name : null);
             const prompt = this.buildItemPrompt(item);
-            return prompt ? this._syncRequest(prompt) : "Nothing to tell.";
+            if (!prompt) return "Nothing to tell.";
+            const inspectStart = performance.now();
+            const result = this._syncRequest(prompt);
+            ThesisLogger.log('item_inspect', {
+                item_name: item ? item.name : null,
+                item_id: item ? item.id : null,
+                prompt_length: prompt.length,
+                prompt_text: prompt,
+                response_text: result,
+                latency_ms: Math.round(performance.now() - inspectStart)
+            });
+            return result;
         },
 
         askAboutSkillSync(skill) {
             if (Config.debugMode) Debug.log('[Inspect] askAboutSkill:', skill ? skill.name : null);
             const prompt = this.buildSkillPrompt(skill);
-            return prompt ? this._syncRequest(prompt) : "Nothing to tell.";
+            if (!prompt) return "Nothing to tell.";
+            const inspectStart = performance.now();
+            const result = this._syncRequest(prompt);
+            ThesisLogger.log('skill_inspect', {
+                skill_name: skill ? skill.name : null,
+                skill_id: skill ? skill.id : null,
+                prompt_length: prompt.length,
+                prompt_text: prompt,
+                response_text: result,
+                latency_ms: Math.round(performance.now() - inspectStart)
+            });
+            return result;
         }
     };
 
