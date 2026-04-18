@@ -395,6 +395,164 @@
     };
 
     //=========================================================================
+    // Thesis Logger — Persistent telemetry for research data collection
+    //=========================================================================
+    const ThesisLogger = {
+        _fs: null,
+        _path: null,
+        _sessionFile: null,
+        _initialized: false,
+        _queue: [],         // Buffer for writes during init
+        _writeCount: 0,
+        _errorCount: 0,
+
+        /**
+         * Initialize the logger. Safe to call multiple times — only runs once.
+         * Uses NW.js Node integration for filesystem access.
+         */
+        init() {
+            if (this._initialized) return;
+            try {
+                this._fs = require('fs');
+                this._path = require('path');
+
+                // Determine log directory relative to game root
+                const gameDir = this._path.dirname(process.execPath);
+                const logDir = this._path.join(gameDir, 'ai_companion_logs');
+
+                // Create log directory if it doesn't exist
+                if (!this._fs.existsSync(logDir)) {
+                    this._fs.mkdirSync(logDir, { recursive: true });
+                }
+
+                // Session file: one per game launch
+                const sessionId = new Date().toISOString().replace(/[:.]/g, '-');
+                this._sessionFile = this._path.join(logDir, `session_${sessionId}.jsonl`);
+
+                // Write header line
+                const header = {
+                    _type: 'session_start',
+                    timestamp: Date.now(),
+                    iso: new Date().toISOString(),
+                    companion_name: Config.companionName,
+                    api_provider: Config.apiProvider,
+                    language: Config.language,
+                    personality: Config.personality
+                };
+                this._fs.writeFileSync(this._sessionFile, JSON.stringify(header) + '\n');
+
+                this._initialized = true;
+                Debug.log('[ThesisLogger] Initialized. Logging to:', this._sessionFile);
+
+                // Flush any queued entries
+                for (const entry of this._queue) {
+                    this._write(entry);
+                }
+                this._queue = [];
+            } catch (e) {
+                // NW.js not available or fs not accessible — degrade gracefully
+                Debug.warn('[ThesisLogger] Cannot initialize (no NW.js?):', e.message);
+                this._initialized = false;
+            }
+        },
+
+        /**
+         * Log an interaction. Non-blocking (async fs.appendFile).
+         * @param {string} type - 'chat', 'combat_decision', 'ambient', 'item_inspect'
+         * @param {Object} data - Interaction-specific data
+         */
+        log(type, data) {
+            // Lazy init on first log call
+            if (!this._initialized && !this._fs) this.init();
+
+            const entry = {
+                _type: type,
+                timestamp: Date.now(),
+                session_time_ms: Date.now() - (window._aiCompanionStartTime || Date.now()),
+
+                // Game context
+                map_id: typeof $gameMap !== 'undefined' && $gameMap ? $gameMap.mapId() : null,
+                map_name: typeof $gameMap !== 'undefined' && $gameMap && $gameMap.displayName ? $gameMap.displayName() : null,
+                in_battle: typeof $gameParty !== 'undefined' && $gameParty ? $gameParty.inBattle() : false,
+
+                // Companion state
+                companion_name: Config.companionName,
+                companion_hp: null,
+                companion_mp: null,
+                companion_max_hp: null,
+                companion_max_mp: null,
+
+                // Player state
+                sanity_level: null,
+                trust_level: null,
+
+                // Interaction data (varies by type)
+                ...data
+            };
+
+            // Safely populate companion stats
+            try {
+                const actor = $gameActors && $gameActors.actor(Config.companionActorId);
+                if (actor) {
+                    entry.companion_hp = actor.hp;
+                    entry.companion_mp = actor.mp;
+                    entry.companion_max_hp = actor.mhp;
+                    entry.companion_max_mp = actor.mmp;
+                }
+            } catch (e) { /* actor not ready */ }
+
+            // Safely populate sanity and trust
+            try {
+                entry.trust_level = RelationshipTracker ? RelationshipTracker.getSummary() : null;
+            } catch (e) { /* not ready */ }
+
+            if (!this._initialized) {
+                this._queue.push(entry);
+                return;
+            }
+            this._write(entry);
+        },
+
+        /**
+         * Internal: write a single entry to the log file (non-blocking).
+         */
+        _write(entry) {
+            if (!this._fs || !this._sessionFile) return;
+            try {
+                const line = JSON.stringify(entry) + '\n';
+                this._fs.appendFile(this._sessionFile, line, (err) => {
+                    if (err) {
+                        this._errorCount++;
+                        if (this._errorCount <= 3) {
+                            Debug.warn('[ThesisLogger] Write error:', err.message);
+                        }
+                    } else {
+                        this._writeCount++;
+                    }
+                });
+            } catch (e) {
+                this._errorCount++;
+            }
+        },
+
+        /**
+         * Get logger stats (for debug display).
+         */
+        getStats() {
+            return {
+                initialized: this._initialized,
+                sessionFile: this._sessionFile,
+                entriesLogged: this._writeCount,
+                errors: this._errorCount,
+                queueLength: this._queue.length
+            };
+        }
+    };
+
+    // Track session start time for relative timestamps
+    window._aiCompanionStartTime = Date.now();
+
+    //=========================================================================
     // Character Presets & Configuration
     //=========================================================================
     const CharacterPresets = {
@@ -489,7 +647,9 @@
         lastCombatHash: null,    // State snapshot hash for dedup
         lastCombatDecision: null, // Cached decision when hash matches
         combatActionHistory: [],  // Track AI actions this battle for variety
-        playerActionHistory: []   // Track PLAYER actions this battle for coordination
+        playerActionHistory: [],  // Track PLAYER actions this battle for coordination
+        // Branch 3: Multi-turn strategy planning
+        currentStrategy: null,   // { plan: string, turnsRemaining: number, startTurn: number }
     };
 
     //=========================================================================
@@ -834,6 +994,193 @@
         formatEquipmentForPrompt(equipObj) {
             if (!equipObj || Object.keys(equipObj).length === 0) return 'None';
             return Object.entries(equipObj).map(([slot, name]) => `${slot}: ${name}`).join(', ');
+        }
+    };
+
+    //=========================================================================
+    // Environment Scanner — Dynamic spatial awareness from $gameMap events
+    //=========================================================================
+    const EnvironmentScanner = {
+        SCAN_RADIUS: 6,  // tiles around the player
+        _cache: null,
+        _cacheMapId: -1,
+        _cachePlayerPos: '',
+        _cacheTick: 0,
+        CACHE_TTL: 60,   // frames between rescans (~1 second at 60fps)
+
+        /**
+         * Classification rules: sprite name or event name → object type.
+         * Built from analysis of Fear & Hunger map data.
+         */
+        _classifyEvent(event) {
+            if (!event || !event.event) return null;
+            const ev = event.event();
+            const name = (ev.name || '').toLowerCase();
+            const note = (ev.note || '').toLowerCase();
+
+            // Get active page's sprite
+            const page = event.page();
+            const sprite = page ? (page.image.characterName || '').toLowerCase() : '';
+
+            // Skip invisible/empty events
+            if (!sprite && !name) return null;
+
+            // --- TRAPS ---
+            if (sprite.includes('beartrap') || name.includes('beartrap'))
+                return { type: 'trap', subtype: 'bear_trap', danger: 'high', label: 'Trampa de oso' };
+            if (name.includes('fear_floor') || name.includes('spike'))
+                return { type: 'trap', subtype: 'floor_trap', danger: 'medium', label: 'Suelo peligroso' };
+            if (name.includes('arrow_check') || name.includes('arrow'))
+                return { type: 'trap', subtype: 'arrow_trap', danger: 'medium', label: 'Trampa de flechas' };
+
+            // --- SAVE POINTS ---
+            if (name.includes('circle') || sprite.includes('portal'))
+                return { type: 'save_point', subtype: 'ritual_circle', danger: 'none', label: 'Círculo ritual (guardar)' };
+
+            // --- CONTAINERS / LOOT ---
+            if (sprite.includes('chest') || sprite.includes('$boxes'))
+                return { type: 'container', subtype: 'chest', danger: 'none', label: 'Cofre' };
+            if (name.includes('coin'))
+                return { type: 'loot', subtype: 'coin', danger: 'none', label: 'Moneda' };
+
+            // --- DOORS ---
+            if (sprite.includes('door') || name.includes('door'))
+                return { type: 'door', subtype: 'door', danger: 'none', label: 'Puerta' };
+
+            // --- ENEMIES (roaming) ---
+            const enemySprites = ['guard', 'ghoul', 'skeleton', 'mauler', 'moonless',
+                'dark_priest', 'demon_child', 'demonbaby', 'mercenary', 'knight',
+                'captain', 'outlander', 'girl'];
+            for (const es of enemySprites) {
+                if (sprite.includes(es) && !sprite.includes('sawing') && !sprite.includes('dead')
+                    && !name.includes('dead') && !name.includes('DEAD')) {
+                    return { type: 'enemy', subtype: es, danger: 'high', label: es.charAt(0).toUpperCase() + es.slice(1) };
+                }
+            }
+
+            // --- CORPSES ---
+            if (name.includes('dead') || sprite.includes('dead'))
+                return { type: 'corpse', subtype: 'body', danger: 'none', label: 'Cadáver' };
+
+            // --- CHAINED / PRISONERS ---
+            if (sprite.includes('chained') || name.includes('chained'))
+                return { type: 'npc', subtype: 'chained', danger: 'none', label: 'Prisionero encadenado' };
+
+            // --- FLESH / ORGANIC ---
+            if (sprite.includes('flesh') || sprite.includes('growth'))
+                return { type: 'hazard', subtype: 'organic', danger: 'low', label: 'Crecimiento orgánico' };
+
+            // --- DEMON SEEDS ---
+            if (name.includes('demonseed') || sprite.includes('seed'))
+                return { type: 'hazard', subtype: 'demon_seed', danger: 'medium', label: 'Semilla demoníaca' };
+
+            return null; // Unknown or irrelevant event (lights, blood stains, etc.)
+        },
+
+        /**
+         * Get cardinal direction from player to target.
+         */
+        _getDirection(dx, dy) {
+            if (Math.abs(dx) > Math.abs(dy)) {
+                return dx > 0 ? 'este' : 'oeste';
+            } else if (Math.abs(dy) > Math.abs(dx)) {
+                return dy > 0 ? 'sur' : 'norte';
+            } else {
+                // Diagonal
+                return (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
+            }
+        },
+
+        /**
+         * Scan the current map for notable objects near the player.
+         * Returns array of { type, subtype, label, danger, distance, direction, x, y }
+         */
+        scan() {
+            if (!$gameMap || !$gamePlayer) return [];
+
+            // Cache check: reuse result if player hasn't moved and TTL not expired
+            const posKey = `${$gamePlayer.x},${$gamePlayer.y}`;
+            this._cacheTick++;
+            if (this._cacheMapId === $gameMap.mapId() &&
+                this._cachePlayerPos === posKey &&
+                this._cacheTick < this.CACHE_TTL &&
+                this._cache) {
+                return this._cache;
+            }
+
+            const px = $gamePlayer.x;
+            const py = $gamePlayer.y;
+            const radius = this.SCAN_RADIUS;
+            const results = [];
+
+            const events = $gameMap.events();
+            for (const event of events) {
+                if (!event) continue;
+
+                // Distance check (Manhattan for speed)
+                const dx = event.x - px;
+                const dy = event.y - py;
+                const dist = Math.abs(dx) + Math.abs(dy);
+                if (dist > radius || dist === 0) continue;
+
+                const classification = this._classifyEvent(event);
+                if (!classification) continue;
+
+                results.push({
+                    ...classification,
+                    distance: dist,
+                    direction: this._getDirection(dx, dy),
+                    x: event.x,
+                    y: event.y
+                });
+            }
+
+            // Sort by danger (high first), then by distance
+            const dangerOrder = { high: 0, medium: 1, low: 2, none: 3 };
+            results.sort((a, b) => {
+                const da = dangerOrder[a.danger] || 3;
+                const db = dangerOrder[b.danger] || 3;
+                if (da !== db) return da - db;
+                return a.distance - b.distance;
+            });
+
+            // Cache and return (limit to 8 most relevant)
+            this._cache = results.slice(0, 8);
+            this._cacheMapId = $gameMap.mapId();
+            this._cachePlayerPos = posKey;
+            this._cacheTick = 0;
+            return this._cache;
+        },
+
+        /**
+         * Get a human-readable summary for prompt injection.
+         * Returns empty string if nothing notable nearby.
+         */
+        getSummary() {
+            const nearby = this.scan();
+            if (nearby.length === 0) return '';
+
+            const lines = [];
+            const dangerItems = nearby.filter(n => n.danger === 'high');
+            const otherItems = nearby.filter(n => n.danger !== 'high');
+
+            for (const item of dangerItems) {
+                lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
+            }
+            for (const item of otherItems.slice(0, 4)) {
+                lines.push(`${item.label} a ${item.distance} pasos al ${item.direction}`);
+            }
+
+            return lines.join('; ');
+        },
+
+        /**
+         * Check if any high-danger items are within immediate range (1-2 tiles).
+         * Used by AmbientDialogue for proactive warnings.
+         */
+        getImmediateThreats() {
+            const nearby = this.scan();
+            return nearby.filter(n => n.danger === 'high' && n.distance <= 2);
         }
     };
 
@@ -1562,10 +1909,17 @@ ${enemyTactics ? `LEARNED TACTICS:\n${enemyTactics}` : ''}
 ${memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : ''}${coinFlipWarning}${healingAlert}`;
 
             if (retryContext) {
+                // Branch 3: Include explicit available actions for better retry
+                const availableActions = ['Atacar', 'Defenderse'];
+                companion.skills.forEach(s => availableActions.push(s.name));
+                companion.items.forEach(i => availableActions.push(i.name));
+                const aliveEnemies = battleState.enemies.filter(e => e.alive).map(e => e.name);
                 prompt += `\n\nPREVIOUS ATTEMPT FAILED:
 Your previous decision was invalid: ${JSON.stringify(retryContext.previous_decision)}
 Error: ${retryContext.error}
-Please correct your response.`;
+AVAILABLE ACTIONS (choose ONLY from this list): [${availableActions.join(', ')}]
+VALID TARGETS: [${aliveEnemies.join(', ')}]
+Please correct your response. Use EXACT names from the lists above.`;
             }
 
             prompt += `
@@ -1601,8 +1955,14 @@ Respond ONLY with this JSON:
   "target": "[enemy_name]",
   "limb": "head | right arm | left arm | torso | legs | null",
   "reasoning": "brief tactical reasoning",
-  "dialog": "immersive survivor dialog (max 50 chars)"
+  "dialog": "immersive survivor dialog (max 50 chars)",
+  "strategy": "optional: multi-turn plan if you have one (e.g. 'Destroy right arm then head')"
 }`;
+
+            // Branch 3: Inject active multi-turn strategy
+            if (AIState.currentStrategy && AIState.currentStrategy.turnsRemaining > 0) {
+                prompt += `\n\nCONTINUING STRATEGY (turn ${battleState.turn_number - AIState.currentStrategy.startTurn + 1} of plan): ${AIState.currentStrategy.plan}\nFollow this plan unless the situation has changed dramatically.`;
+            }
 
             return prompt;
         }
@@ -1718,6 +2078,26 @@ Respond ONLY with this JSON:
             const prompt = this._buildPrompt(battleState);
             if (Config.debugMode) Debug.log('[Combat] Prompt built, length:', prompt.length);
 
+            // Telemetry helper for combat logging
+            const _logCombatDecision = (decision, modelUsed, source) => {
+                const latency = Math.round(performance.now() - startTime);
+                ThesisLogger.log('combat_decision', {
+                    battle_turn: battleState.turn_number,
+                    enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
+                    companion_battle_hp: battleState.companion ? battleState.companion.hp : null,
+                    prompt_length: prompt.length,
+                    prompt_text: prompt,
+                    decision_action: decision ? decision.action : null,
+                    decision_target: decision ? decision.target : null,
+                    decision_limb: decision ? decision.limb : null,
+                    decision_reasoning: decision ? decision.reasoning : null,
+                    decision_dialog: decision ? decision.dialog : null,
+                    response_source: source,
+                    model_used: modelUsed,
+                    latency_ms: latency
+                });
+            };
+
             // Helper: try a single sync request
             const _trySyncRequest = (endpoint, headers, model, maxTokens, isLocal) => {
                 try {
@@ -1745,6 +2125,21 @@ Respond ONLY with this JSON:
                     const response = JSON.parse(xhr.responseText);
                     const decision = this._parseResponse(response);
                     if (decision && this._validateDecision(decision, battleState)) {
+                        // Branch 3: Extract and store multi-turn strategy
+                        if (decision.strategy && decision.strategy.length > 0) {
+                            AIState.currentStrategy = {
+                                plan: decision.strategy,
+                                turnsRemaining: 3,  // Strategies persist for 3 turns
+                                startTurn: battleState.turn_number
+                            };
+                            Debug.log('[Combat] Strategy set:', decision.strategy);
+                        } else if (AIState.currentStrategy) {
+                            AIState.currentStrategy.turnsRemaining--;
+                            if (AIState.currentStrategy.turnsRemaining <= 0) {
+                                Debug.log('[Combat] Strategy expired');
+                                AIState.currentStrategy = null;
+                            }
+                        }
                         if (Config.debugMode) {
                             Debug.log('[Combat] Decision:', decision.action, '->', decision.target, decision.limb ? '[' + decision.limb + ']' : '', 'reasoning:', decision.reasoning);
                             if (decision.dialog) Debug.log('[Combat] Dialog:', decision.dialog);
@@ -1765,7 +2160,7 @@ Respond ONLY with this JSON:
                 const localResult = _trySyncRequest(
                     Config.localEndpoint, Config.getHeaders(), Config.localModel, 512, true
                 );
-                if (localResult) return localResult;
+                if (localResult) { _logCombatDecision(localResult, Config.localModel, 'local'); return localResult; }
 
                 // Local failed — fall back to Groq
                 if (Config.apiKey) {
@@ -1783,6 +2178,7 @@ Respond ONLY with this JSON:
                         );
                         if (groqResult) {
                             Debug.log('[Combat] Groq fallback succeeded:', model);
+                            _logCombatDecision(groqResult, model, 'groq_fallback');
                             return groqResult;
                         }
                         ModelRouter.markFailed(model);
@@ -1795,14 +2191,16 @@ Respond ONLY with this JSON:
                     const result = _trySyncRequest(
                         Config.getEndpoint(), Config.getHeaders(), model, 300, false
                     );
-                    if (result) return result;
+                    if (result) { _logCombatDecision(result, model, 'groq'); return result; }
                     ModelRouter.markFailed(model);
                 }
             }
 
             const elapsed = Math.round(performance.now() - startTime);
             Debug.error(`All models failed (${elapsed}ms), using fallback`);
-            return this._getFallbackDecision();
+            const fallbackDecision = this._getFallbackDecision();
+            _logCombatDecision(fallbackDecision, null, 'fallback_all_failed');
+            return fallbackDecision;
         }
 
         static _generateQuickDialog(decision) {
@@ -2659,6 +3057,7 @@ Respond ONLY with this JSON:
     window.AI_Companion = {
         Config,
         Debug,
+        ThesisLogger,
         AIState,
         BattleStateExtractor,
         ActionExecutor,
@@ -2944,6 +3343,8 @@ Respond ONLY with this JSON:
                     hp: m.hp, max_hp: m.mhp,
                     states: m.states().map(s => s.name).filter(n => n)
                 })),
+                // NEW: spatial awareness — nearby objects from EnvironmentScanner
+                nearby_objects: EnvironmentScanner.getSummary(),
             };
             if (Config.debugMode) {
                 Debug.log('[Chat] getContext:', JSON.stringify(ctx, null, 2));
@@ -2984,21 +3385,52 @@ Respond ONLY with this JSON:
                 Debug.log('[Chat] prompt length:', prompt.length, 'chars');
             }
 
+            const chatStartTime = performance.now();
             try {
                 const response = await this._sendChatRequest(prompt);
+                const chatLatency = Math.round(performance.now() - chatStartTime);
                 if (!response || response.trim().length === 0) {
                     // KB fallback — no LLM dependency
                     const fallback = KBFallback.respond(intent);
                     this.addToHistory('companion', fallback);
+                    ThesisLogger.log('chat', {
+                        player_message: playerMessage,
+                        intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                        prompt_length: prompt.length,
+                        response_text: fallback,
+                        response_source: 'kb_fallback',
+                        latency_ms: chatLatency,
+                        model_used: null
+                    });
                     return fallback;
                 }
                 this.addToHistory('companion', response);
+                ThesisLogger.log('chat', {
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    prompt_text: prompt,
+                    response_text: response,
+                    response_source: 'llm',
+                    latency_ms: chatLatency,
+                    model_used: this._lastModelUsed || null
+                });
                 return response;
             } catch (error) {
+                const chatLatency = Math.round(performance.now() - chatStartTime);
                 Debug.error('[Chat] error:', error);
                 // KB fallback on API failure
                 const fallback = KBFallback.respond(intent);
                 this.addToHistory('companion', fallback);
+                ThesisLogger.log('chat', {
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    response_text: fallback,
+                    response_source: 'kb_fallback_error',
+                    latency_ms: chatLatency,
+                    error: error.message
+                });
                 return fallback;
             }
         },
@@ -3048,8 +3480,13 @@ CRITICAL GAME RULES (NEVER violate these):
                 prompt += `\nSTATUS EFFECTS INFO:\n${context.status_effects_summary}\n`;
             }
 
+            // Inject spatial awareness — what the companion can "see" nearby
+            if (context.nearby_objects && context.nearby_objects.length > 0) {
+                prompt += `\nNEARBY (you can see): ${context.nearby_objects}\n`;
+            }
+
             prompt += `\nThe player says: "${playerMessage}"\n`;
-            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.`;
+            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nIf you see traps or enemies nearby, you may proactively warn the player about them.`;
 
             return prompt;
         },
@@ -3349,6 +3786,7 @@ CRITICAL GAME RULES (NEVER violate these):
                 );
                 if (text.length > 0) {
                     Debug.log('[Chat] Groq responded:', model, text.length, 'chars');
+                    this._lastModelUsed = model;
                     return text;
                 }
                 ModelRouter.markFailed(model);
@@ -3572,6 +4010,67 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
 
             // AI comments about hunger
             this._generateHungerComment(hungerLevel);
+        },
+
+        // Track warned positions to avoid repeating
+        _warnedPositions: new Set(),
+        _lastThreatCheck: 0,
+        THREAT_CHECK_INTERVAL: 2000, // 2 seconds between checks
+
+        /**
+         * Check for immediate threats (traps, enemies) within 2 tiles.
+         * Generates a proactive warning if the player approaches danger.
+         */
+        checkNearbyThreats() {
+            if (Date.now() - this._lastThreatCheck < this.THREAT_CHECK_INTERVAL) return;
+            this._lastThreatCheck = Date.now();
+
+            if (!this.canSpeak()) return;
+            if ($gameParty.inBattle()) return;
+            if ($gameMessage.isBusy()) return;
+
+            const threats = EnvironmentScanner.getImmediateThreats();
+            if (threats.length === 0) return;
+
+            // Pick the closest unwarned threat
+            for (const threat of threats) {
+                const posKey = `${$gameMap.mapId()}_${threat.x}_${threat.y}`;
+                if (this._warnedPositions.has(posKey)) continue;
+
+                // Mark as warned
+                this._warnedPositions.add(posKey);
+
+                // Generate appropriate warning
+                const es = Config.language === 'es';
+                let warning;
+                switch (threat.subtype) {
+                    case 'bear_trap':
+                        warning = es
+                            ? ['¡Cuidado! Trampa de oso adelante.', '¡Para! Hay una trampa en el suelo.', '¡Ojo! Trampa de oso al ${DIR}.']
+                            : ['Watch out! Bear trap ahead.', 'Stop! Trap on the ground.', 'Careful! Bear trap to the ${DIR}.'];
+                        break;
+                    case 'arrow_trap':
+                        warning = es
+                            ? ['¡Cuidado con las flechas!', '¡Trampa de flechas al ${DIR}!']
+                            : ['Watch for arrows!', 'Arrow trap to the ${DIR}!'];
+                        break;
+                    default:
+                        if (threat.type === 'enemy') {
+                            warning = es
+                                ? ['Hay algo al ${DIR}... ten cuidado.', 'Enemigo cerca, al ${DIR}.']
+                                : ['Something to the ${DIR}... be careful.', 'Enemy nearby, to the ${DIR}.'];
+                        } else {
+                            warning = es
+                                ? ['Ten cuidado, hay peligro al ${DIR}.']
+                                : ['Be careful, danger to the ${DIR}.'];
+                        }
+                }
+
+                const pick = warning[Math.floor(Math.random() * warning.length)]
+                    .replace('${DIR}', threat.direction);
+                this._speak(pick, 'threat_warning');
+                return; // One warning at a time
+            }
         },
 
         async _generateHungerComment(hungerLevel) {
@@ -3811,6 +4310,13 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             this._lastTime = Date.now();
             this._lastTopic = topic;
             DialogueGovernor.recordDialogue();
+
+            // Telemetry: log all ambient dialogue
+            ThesisLogger.log('ambient', {
+                topic: topic,
+                text: text,
+                text_length: text.length
+            });
 
             // Use configured appearance
             const appearance = CharacterPresets.getCurrentAppearance();
@@ -4410,6 +4916,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         // Periodic hunger awareness check
         AmbientDialogue.checkHunger();
 
+        // Proactive trap/threat warning from EnvironmentScanner
+        AmbientDialogue.checkNearbyThreats();
+
         // C key to chat (key code 67) - T is reserved for torch
         if (Input.isTriggered('c') || (TouchInput.isTriggered() && false)) {
             if (!$gameMessage.isBusy() && !$gameTemp._chatLocked) {
@@ -4695,12 +5204,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const enemyNames = $gameTroop.members().map(m => m.name());
         ShortTermMemory.setLastBattle(enemyNames, true);
         AmbientDialogue.onBattleEnd(true);
+        ThesisLogger.log('game_event', { event: 'battle_victory', enemies: enemyNames });
         AIState.lastBattleStateCache = null;
         AIState.recentDialogs = [];
         AIState.lastCombatHash = null;
         AIState.lastCombatDecision = null;
         AIState.combatActionHistory = [];
         AIState.playerActionHistory = [];
+        AIState.currentStrategy = null;
         RelationshipTracker.onBattleWon();
         _BattleManager_processVictory.call(this);
     };
@@ -4710,12 +5221,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const enemyNames = $gameTroop.members().map(m => m.name());
         ShortTermMemory.setLastBattle(enemyNames, false);
         AmbientDialogue.onBattleEnd(false);
+        ThesisLogger.log('game_event', { event: 'battle_escape', enemies: enemyNames });
         AIState.lastBattleStateCache = null;
         AIState.recentDialogs = [];
         AIState.lastCombatHash = null;
         AIState.lastCombatDecision = null;
         AIState.combatActionHistory = [];
         AIState.playerActionHistory = [];
+        AIState.currentStrategy = null;
         RelationshipTracker.onBattleFled();
         return _BattleManager_processEscape.call(this);
     };
@@ -4729,6 +5242,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         if (wasTransferring) {
             const mapName = $gameMap.displayName() || 'new area';
             Debug.log('Room entry detected:', mapName);
+            ThesisLogger.log('game_event', { event: 'map_transfer', map_name: mapName, map_id: $gameMap.mapId() });
             AmbientDialogue.onRoomEntry(mapName);
         }
     };
@@ -4741,6 +5255,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     window.AI_Companion.SanityManager = SanityManager;
     window.AI_Companion.DialogueGovernor = DialogueGovernor;
     window.AI_Companion.CharacterPresets = CharacterPresets;
+    window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)
@@ -4826,13 +5341,35 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
         askAboutItemSync(item) {
             if (Config.debugMode) Debug.log('[Inspect] askAboutItem:', item ? item.name : null);
             const prompt = this.buildItemPrompt(item);
-            return prompt ? this._syncRequest(prompt) : "Nothing to tell.";
+            if (!prompt) return "Nothing to tell.";
+            const inspectStart = performance.now();
+            const result = this._syncRequest(prompt);
+            ThesisLogger.log('item_inspect', {
+                item_name: item ? item.name : null,
+                item_id: item ? item.id : null,
+                prompt_length: prompt.length,
+                prompt_text: prompt,
+                response_text: result,
+                latency_ms: Math.round(performance.now() - inspectStart)
+            });
+            return result;
         },
 
         askAboutSkillSync(skill) {
             if (Config.debugMode) Debug.log('[Inspect] askAboutSkill:', skill ? skill.name : null);
             const prompt = this.buildSkillPrompt(skill);
-            return prompt ? this._syncRequest(prompt) : "Nothing to tell.";
+            if (!prompt) return "Nothing to tell.";
+            const inspectStart = performance.now();
+            const result = this._syncRequest(prompt);
+            ThesisLogger.log('skill_inspect', {
+                skill_name: skill ? skill.name : null,
+                skill_id: skill ? skill.id : null,
+                prompt_length: prompt.length,
+                prompt_text: prompt,
+                response_text: result,
+                latency_ms: Math.round(performance.now() - inspectStart)
+            });
+            return result;
         }
     };
 
