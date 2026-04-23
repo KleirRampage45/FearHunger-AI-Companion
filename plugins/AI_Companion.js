@@ -3519,6 +3519,226 @@ Respond ONLY with this JSON:
     };
 
     //=========================================================================
+    // NPC Intelligence — Track and identify NPCs the player interacts with (Branch 7)
+    //=========================================================================
+    const NPCIntelligence = {
+        // Face sprite → character identity mapping (from Actors.json analysis)
+        _faceMap: {
+            'Actor1:0': { name: 'Cahara', nameEs: 'Cahara', role: 'Playable character / Thief' },
+            'Actor1:2': { name: "D'arce", nameEs: "D'arce", role: 'Holy knight of the Fellowship' },
+            'Actor1:3': { name: 'Girl', nameEs: 'Niña', role: 'Mysterious girl, child character' },
+            'Actor1:6': { name: 'Enki', nameEs: 'Enki', role: 'Dark priest / Scholar' },
+            'Actor1:7': { name: 'Ragnvaldr', nameEs: 'Ragnvaldr', role: 'Barbarian mercenary' },
+            'Actor2:0': { name: "Le'garde", nameEs: "Le'garde", role: 'Knight captain, central figure' },
+            'Actor2:1': { name: 'Moonless', nameEs: 'Moonless', role: 'Dangerous creature / recruitable' },
+            'Actor2:3': { name: 'Demon Child', nameEs: 'Niño Demonio', role: 'Demon offspring' },
+            'Actor2:4': { name: 'Marriage', nameEs: 'Matrimonio', role: 'Fused creature' },
+            'Actor2:7': { name: 'Skeleton', nameEs: 'Esqueleto', role: 'Undead, recruitable party member' },
+            'Actor3:0': { name: "Nas'hrah", nameEs: "Nas'hrah", role: 'Talking skull, advisor' },
+            'Marcoh_faces:0': { name: 'Marcoh', nameEs: 'Marcoh', role: 'AI Companion' },
+        },
+
+        // Recent NPC dialogue buffer (last 5 interactions)
+        _recentDialogue: [],
+        MAX_DIALOGUE_BUFFER: 5,
+
+        // NPC encounter tracking
+        _encounters: new Map(), // npcName → { count, lastSeen, lastMap }
+        _lastSpeaker: null,
+        _lastSpeakerTime: 0,
+
+        /**
+         * Identify who is speaking based on face sprite and event context.
+         * @param {string} faceName - Face image filename from command101
+         * @param {number} faceIndex - Face index within the image
+         * @param {number} eventId - Event ID that triggered the dialogue
+         * @returns {{ name: string, nameEs: string, role: string, source: string } | null}
+         */
+        identifySpeaker(faceName, faceIndex, eventId) {
+            // 1. Try face sprite mapping first (most reliable)
+            if (faceName && faceName.length > 0) {
+                const faceKey = `${faceName}:${faceIndex}`;
+                if (this._faceMap[faceKey]) {
+                    return { ...this._faceMap[faceKey], source: 'face_sprite' };
+                }
+                // Partial match on face name alone
+                for (const [key, val] of Object.entries(this._faceMap)) {
+                    if (key.startsWith(faceName + ':')) {
+                        return { ...val, source: 'face_partial' };
+                    }
+                }
+            }
+
+            // 2. Try event name (some events have descriptive names)
+            if (eventId > 0 && $gameMap) {
+                try {
+                    const event = $gameMap.event(eventId);
+                    if (event && event.event) {
+                        const evName = event.event().name || '';
+                        const identified = this._identifyByEventName(evName);
+                        if (identified) return { ...identified, source: 'event_name' };
+                    }
+                } catch (e) { /* event not accessible */ }
+            }
+
+            // 3. If face is empty and no event match, it's narration/system text
+            if (!faceName || faceName.length === 0) {
+                return { name: 'Narrator', nameEs: 'Narrador', role: 'Game narration', source: 'narration' };
+            }
+
+            return null; // Unknown speaker
+        },
+
+        /**
+         * Try to identify NPC from event name patterns
+         */
+        _identifyByEventName(evName) {
+            if (!evName) return null;
+            const name = evName.toLowerCase();
+
+            // Common F&H event name patterns
+            const patterns = {
+                'guard': { name: 'Guard', nameEs: 'Guardia', role: 'Dungeon guard' },
+                'merchant': { name: 'Merchant', nameEs: 'Mercader', role: 'Trader NPC' },
+                'pocketcat': { name: 'Pocketcat', nameEs: 'Pocketcat', role: 'Mysterious cat merchant' },
+                'enki': { name: 'Enki', nameEs: 'Enki', role: 'Dark priest' },
+                'darce': { name: "D'arce", nameEs: "D'arce", role: 'Holy knight' },
+                'ragnvaldr': { name: 'Ragnvaldr', nameEs: 'Ragnvaldr', role: 'Barbarian' },
+                'cahara': { name: 'Cahara', nameEs: 'Cahara', role: 'Thief' },
+                'legarde': { name: "Le'garde", nameEs: "Le'garde", role: 'Knight captain' },
+                'nashrah': { name: "Nas'hrah", nameEs: "Nas'hrah", role: 'Talking skull' },
+                'girl': { name: 'Girl', nameEs: 'Niña', role: 'Mysterious girl' },
+                'priest': { name: 'Dark Priest', nameEs: 'Sacerdote Oscuro', role: 'Cultist' },
+                'trortur': { name: 'Trortur', nameEs: 'Trortur', role: 'Dungeon torturer' },
+                'buckman': { name: 'Buckman', nameEs: 'Buckman', role: 'NPC' },
+            };
+
+            for (const [key, val] of Object.entries(patterns)) {
+                if (name.includes(key)) return val;
+            }
+
+            return null;
+        },
+
+        /**
+         * Called when a Show Text command fires.
+         * Records the NPC dialogue and updates encounter tracking.
+         * @param {string} speakerName - Identified speaker name
+         * @param {string} text - Dialogue text content
+         * @param {string} mapName - Current map name
+         */
+        recordDialogue(speakerName, text, mapName) {
+            if (!speakerName || speakerName === 'Narrator') return;
+
+            const now = Date.now();
+
+            // Deduplicate (same speaker within 200ms is likely multi-line continuation)
+            if (this._lastSpeaker === speakerName && now - this._lastSpeakerTime < 200) return;
+            this._lastSpeaker = speakerName;
+            this._lastSpeakerTime = now;
+
+            // Add to dialogue buffer
+            this._recentDialogue.push({
+                speaker: speakerName,
+                text: text.substring(0, 200), // Truncate long text
+                map: mapName,
+                time: now
+            });
+            if (this._recentDialogue.length > this.MAX_DIALOGUE_BUFFER) {
+                this._recentDialogue.shift();
+            }
+
+            // Update encounter tracking
+            const encounter = this._encounters.get(speakerName) || { count: 0, lastSeen: 0, lastMap: '' };
+            encounter.count++;
+            encounter.lastSeen = now;
+            encounter.lastMap = mapName;
+            this._encounters.set(speakerName, encounter);
+
+            // Add to ShortTermMemory so the AI knows the player talked to someone
+            ShortTermMemory.addEvent(`${speakerName} spoke to the party.`);
+
+            Debug.log(`[NPCIntelligence] ${speakerName} spoke: "${text.substring(0, 60)}..."`);
+        },
+
+        /**
+         * Get recent NPC dialogue for prompt context.
+         * Returns empty string if no recent NPC interactions.
+         */
+        getRecentDialogueSummary() {
+            const now = Date.now();
+            // Only include dialogue from last 3 minutes
+            const recent = this._recentDialogue.filter(d => now - d.time < 180000);
+            if (recent.length === 0) return '';
+
+            const es = Config.language === 'es';
+            const header = es ? 'DIÁLOGOS RECIENTES DE NPCs:' : 'RECENT NPC DIALOGUE:';
+            const lines = recent.map(d => `${d.speaker}: "${d.text.substring(0, 80)}"`);
+            return `${header}\n${lines.join('\n')}`;
+        },
+
+        /**
+         * Get KB information about a known NPC (if available).
+         * @param {string} name - NPC name
+         * @returns {object|null} KB data about the NPC
+         */
+        getKBInfo(name) {
+            if (typeof FearHungerKB === 'undefined') return null;
+
+            // Check characters KB
+            if (FearHungerKB.characters) {
+                for (const key in FearHungerKB.characters) {
+                    const c = FearHungerKB.characters[key];
+                    const displayName = (c.displayName || key).toLowerCase();
+                    const displayNameEs = (c.displayNameEs || '').toLowerCase();
+                    if (name.toLowerCase() === displayName || name.toLowerCase() === displayNameEs) {
+                        return c;
+                    }
+                }
+            }
+
+            // Check enemies/bosses KB (some NPCs become enemies)
+            const allEnemies = { ...(FearHungerKB.enemies || {}), ...(FearHungerKB.bosses || {}) };
+            for (const key in allEnemies) {
+                const e = allEnemies[key];
+                const displayName = (e.displayName || key).toLowerCase();
+                const displayNameEs = (e.displayNameEs || '').toLowerCase();
+                if (name.toLowerCase() === displayName || name.toLowerCase() === displayNameEs) {
+                    return e;
+                }
+            }
+
+            return null;
+        },
+
+        /**
+         * Get encounter stats for a specific NPC.
+         */
+        getEncounterInfo(name) {
+            return this._encounters.get(name) || null;
+        },
+
+        /**
+         * Get all encountered NPCs.
+         */
+        getAllEncounters() {
+            const result = {};
+            for (const [name, data] of this._encounters) {
+                result[name] = data;
+            }
+            return result;
+        },
+
+        /**
+         * Clear dialogue buffer (e.g., on map transfer)
+         */
+        clearRecentDialogue() {
+            this._recentDialogue = [];
+            this._lastSpeaker = null;
+        }
+    };
+
+    //=========================================================================
     // Expose for debugging
     //=========================================================================
     window.AI_Companion = {
@@ -3814,6 +4034,8 @@ Respond ONLY with this JSON:
                 nearby_objects: EnvironmentScanner.getSummary(),
                 // Branch 6: World State Engine — aggregated situational summary
                 world_state: WorldStateEngine.getWorldSummary(),
+                // Branch 7: NPC Intelligence — recent NPC dialogue
+                npc_dialogue: NPCIntelligence.getRecentDialogueSummary(),
             };
             if (Config.debugMode) {
                 Debug.log('[Chat] getContext:', JSON.stringify(ctx, null, 2));
@@ -3958,6 +4180,11 @@ CRITICAL GAME RULES (NEVER violate these):
             // Branch 6: World State summary — overall situation awareness
             if (context.world_state && context.world_state.length > 0) {
                 prompt += `\nSITUATION: ${context.world_state}\n`;
+            }
+
+            // Branch 7: NPC Intelligence — recent NPC dialogue context
+            if (context.npc_dialogue && context.npc_dialogue.length > 0) {
+                prompt += `\n${context.npc_dialogue}\nYou may comment on what NPCs said, react to their words, or warn the player about untrustworthy characters.\n`;
             }
 
             prompt += `\nThe player says: "${playerMessage}"\n`;
@@ -5720,7 +5947,41 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             ThesisLogger.log('game_event', { event: 'map_transfer', map_name: mapName, map_id: $gameMap.mapId() });
             AmbientDialogue.onRoomEntry(mapName);
             WorldStateEngine.onMapTransfer($gameMap.mapId());
+            NPCIntelligence.clearRecentDialogue(); // Clear on new map
         }
+    };
+
+    // Branch 7: Hook into Show Text (command101) to track NPC dialogue
+    const _Game_Interpreter_command101 = Game_Interpreter.prototype.command101;
+    Game_Interpreter.prototype.command101 = function () {
+        // Intercept BEFORE the original fires — capture face and text data
+        try {
+            const faceName = this._params[0] || '';
+            const faceIndex = this._params[1] || 0;
+            const eventId = this._eventId || 0;
+
+            // Collect all text lines (command 401 = text continuation)
+            let fullText = '';
+            let tempIdx = this._index + 1;
+            while (tempIdx < this._list.length && this._list[tempIdx].code === 401) {
+                fullText += (this._list[tempIdx].parameters[0] || '') + ' ';
+                tempIdx++;
+            }
+            fullText = fullText.trim();
+
+            if (fullText.length > 0) {
+                const speaker = NPCIntelligence.identifySpeaker(faceName, faceIndex, eventId);
+                if (speaker && speaker.name !== 'Narrator') {
+                    const mapName = $gameMap ? ($gameMap.displayName() || 'unknown') : 'unknown';
+                    NPCIntelligence.recordDialogue(speaker.nameEs || speaker.name, fullText, mapName);
+                }
+            }
+        } catch (e) {
+            // Never break game dialogue on our hook failure
+            Debug.warn('[NPCIntelligence] command101 hook error:', e.message);
+        }
+
+        return _Game_Interpreter_command101.call(this);
     };
 
     //=========================================================================
@@ -5733,6 +5994,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     window.AI_Companion.CharacterPresets = CharacterPresets;
     window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
     window.AI_Companion.WorldStateEngine = WorldStateEngine;
+    window.AI_Companion.NPCIntelligence = NPCIntelligence;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)
