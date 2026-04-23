@@ -996,6 +996,193 @@
     };
 
     //=========================================================================
+    // Environment Scanner — Dynamic spatial awareness from $gameMap events
+    //=========================================================================
+    const EnvironmentScanner = {
+        SCAN_RADIUS: 6,  // tiles around the player
+        _cache: null,
+        _cacheMapId: -1,
+        _cachePlayerPos: '',
+        _cacheTick: 0,
+        CACHE_TTL: 60,   // frames between rescans (~1 second at 60fps)
+
+        /**
+         * Classification rules: sprite name or event name → object type.
+         * Built from analysis of Fear & Hunger map data.
+         */
+        _classifyEvent(event) {
+            if (!event || !event.event) return null;
+            const ev = event.event();
+            const name = (ev.name || '').toLowerCase();
+            const note = (ev.note || '').toLowerCase();
+
+            // Get active page's sprite
+            const page = event.page();
+            const sprite = page ? (page.image.characterName || '').toLowerCase() : '';
+
+            // Skip invisible/empty events
+            if (!sprite && !name) return null;
+
+            // --- TRAPS ---
+            if (sprite.includes('beartrap') || name.includes('beartrap'))
+                return { type: 'trap', subtype: 'bear_trap', danger: 'high', label: 'Trampa de oso' };
+            if (name.includes('fear_floor') || name.includes('spike'))
+                return { type: 'trap', subtype: 'floor_trap', danger: 'medium', label: 'Suelo peligroso' };
+            if (name.includes('arrow_check') || name.includes('arrow'))
+                return { type: 'trap', subtype: 'arrow_trap', danger: 'medium', label: 'Trampa de flechas' };
+
+            // --- SAVE POINTS ---
+            if (name.includes('circle') || sprite.includes('portal'))
+                return { type: 'save_point', subtype: 'ritual_circle', danger: 'none', label: 'Círculo ritual (guardar)' };
+
+            // --- CONTAINERS / LOOT ---
+            if (sprite.includes('chest') || sprite.includes('$boxes'))
+                return { type: 'container', subtype: 'chest', danger: 'none', label: 'Cofre' };
+            if (name.includes('coin'))
+                return { type: 'loot', subtype: 'coin', danger: 'none', label: 'Moneda' };
+
+            // --- DOORS ---
+            if (sprite.includes('door') || name.includes('door'))
+                return { type: 'door', subtype: 'door', danger: 'none', label: 'Puerta' };
+
+            // --- ENEMIES (roaming) ---
+            const enemySprites = ['guard', 'ghoul', 'skeleton', 'mauler', 'moonless',
+                'dark_priest', 'demon_child', 'demonbaby', 'mercenary', 'knight',
+                'captain', 'outlander', 'girl'];
+            for (const es of enemySprites) {
+                if (sprite.includes(es) && !sprite.includes('sawing') && !sprite.includes('dead')
+                    && !name.includes('dead') && !name.includes('DEAD')) {
+                    return { type: 'enemy', subtype: es, danger: 'high', label: es.charAt(0).toUpperCase() + es.slice(1) };
+                }
+            }
+
+            // --- CORPSES ---
+            if (name.includes('dead') || sprite.includes('dead'))
+                return { type: 'corpse', subtype: 'body', danger: 'none', label: 'Cadáver' };
+
+            // --- CHAINED / PRISONERS ---
+            if (sprite.includes('chained') || name.includes('chained'))
+                return { type: 'npc', subtype: 'chained', danger: 'none', label: 'Prisionero encadenado' };
+
+            // --- FLESH / ORGANIC ---
+            if (sprite.includes('flesh') || sprite.includes('growth'))
+                return { type: 'hazard', subtype: 'organic', danger: 'low', label: 'Crecimiento orgánico' };
+
+            // --- DEMON SEEDS ---
+            if (name.includes('demonseed') || sprite.includes('seed'))
+                return { type: 'hazard', subtype: 'demon_seed', danger: 'medium', label: 'Semilla demoníaca' };
+
+            return null; // Unknown or irrelevant event (lights, blood stains, etc.)
+        },
+
+        /**
+         * Get cardinal direction from player to target.
+         */
+        _getDirection(dx, dy) {
+            if (Math.abs(dx) > Math.abs(dy)) {
+                return dx > 0 ? 'este' : 'oeste';
+            } else if (Math.abs(dy) > Math.abs(dx)) {
+                return dy > 0 ? 'sur' : 'norte';
+            } else {
+                // Diagonal
+                return (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
+            }
+        },
+
+        /**
+         * Scan the current map for notable objects near the player.
+         * Returns array of { type, subtype, label, danger, distance, direction, x, y }
+         */
+        scan() {
+            if (!$gameMap || !$gamePlayer) return [];
+
+            // Cache check: reuse result if player hasn't moved and TTL not expired
+            const posKey = `${$gamePlayer.x},${$gamePlayer.y}`;
+            this._cacheTick++;
+            if (this._cacheMapId === $gameMap.mapId() &&
+                this._cachePlayerPos === posKey &&
+                this._cacheTick < this.CACHE_TTL &&
+                this._cache) {
+                return this._cache;
+            }
+
+            const px = $gamePlayer.x;
+            const py = $gamePlayer.y;
+            const radius = this.SCAN_RADIUS;
+            const results = [];
+
+            const events = $gameMap.events();
+            for (const event of events) {
+                if (!event) continue;
+
+                // Distance check (Manhattan for speed)
+                const dx = event.x - px;
+                const dy = event.y - py;
+                const dist = Math.abs(dx) + Math.abs(dy);
+                if (dist > radius || dist === 0) continue;
+
+                const classification = this._classifyEvent(event);
+                if (!classification) continue;
+
+                results.push({
+                    ...classification,
+                    distance: dist,
+                    direction: this._getDirection(dx, dy),
+                    x: event.x,
+                    y: event.y
+                });
+            }
+
+            // Sort by danger (high first), then by distance
+            const dangerOrder = { high: 0, medium: 1, low: 2, none: 3 };
+            results.sort((a, b) => {
+                const da = dangerOrder[a.danger] || 3;
+                const db = dangerOrder[b.danger] || 3;
+                if (da !== db) return da - db;
+                return a.distance - b.distance;
+            });
+
+            // Cache and return (limit to 8 most relevant)
+            this._cache = results.slice(0, 8);
+            this._cacheMapId = $gameMap.mapId();
+            this._cachePlayerPos = posKey;
+            this._cacheTick = 0;
+            return this._cache;
+        },
+
+        /**
+         * Get a human-readable summary for prompt injection.
+         * Returns empty string if nothing notable nearby.
+         */
+        getSummary() {
+            const nearby = this.scan();
+            if (nearby.length === 0) return '';
+
+            const lines = [];
+            const dangerItems = nearby.filter(n => n.danger === 'high');
+            const otherItems = nearby.filter(n => n.danger !== 'high');
+
+            for (const item of dangerItems) {
+                lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
+            }
+            for (const item of otherItems.slice(0, 4)) {
+                lines.push(`${item.label} a ${item.distance} pasos al ${item.direction}`);
+            }
+
+            return lines.join('; ');
+        },
+
+        /**
+         * Check if any high-danger items are within immediate range (1-2 tiles).
+         * Used by AmbientDialogue for proactive warnings.
+         */
+        getImmediateThreats() {
+            const nearby = this.scan();
+            return nearby.filter(n => n.danger === 'high' && n.distance <= 2);
+        }
+    };
+
+    //=========================================================================
     // Map Context - Friendly names and tips so AI knows "where we are"
     //=========================================================================
     const MapContextHelper = {
@@ -3126,6 +3313,8 @@ Respond ONLY with this JSON:
                     hp: m.hp, max_hp: m.mhp,
                     states: m.states().map(s => s.name).filter(n => n)
                 })),
+                // NEW: spatial awareness — nearby objects from EnvironmentScanner
+                nearby_objects: EnvironmentScanner.getSummary(),
             };
             if (Config.debugMode) {
                 Debug.log('[Chat] getContext:', JSON.stringify(ctx, null, 2));
@@ -3261,8 +3450,13 @@ CRITICAL GAME RULES (NEVER violate these):
                 prompt += `\nSTATUS EFFECTS INFO:\n${context.status_effects_summary}\n`;
             }
 
+            // Inject spatial awareness — what the companion can "see" nearby
+            if (context.nearby_objects && context.nearby_objects.length > 0) {
+                prompt += `\nNEARBY (you can see): ${context.nearby_objects}\n`;
+            }
+
             prompt += `\nThe player says: "${playerMessage}"\n`;
-            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.`;
+            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nIf you see traps or enemies nearby, you may proactively warn the player about them.`;
 
             return prompt;
         },
@@ -3786,6 +3980,67 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
 
             // AI comments about hunger
             this._generateHungerComment(hungerLevel);
+        },
+
+        // Track warned positions to avoid repeating
+        _warnedPositions: new Set(),
+        _lastThreatCheck: 0,
+        THREAT_CHECK_INTERVAL: 2000, // 2 seconds between checks
+
+        /**
+         * Check for immediate threats (traps, enemies) within 2 tiles.
+         * Generates a proactive warning if the player approaches danger.
+         */
+        checkNearbyThreats() {
+            if (Date.now() - this._lastThreatCheck < this.THREAT_CHECK_INTERVAL) return;
+            this._lastThreatCheck = Date.now();
+
+            if (!this.canSpeak()) return;
+            if ($gameParty.inBattle()) return;
+            if ($gameMessage.isBusy()) return;
+
+            const threats = EnvironmentScanner.getImmediateThreats();
+            if (threats.length === 0) return;
+
+            // Pick the closest unwarned threat
+            for (const threat of threats) {
+                const posKey = `${$gameMap.mapId()}_${threat.x}_${threat.y}`;
+                if (this._warnedPositions.has(posKey)) continue;
+
+                // Mark as warned
+                this._warnedPositions.add(posKey);
+
+                // Generate appropriate warning
+                const es = Config.language === 'es';
+                let warning;
+                switch (threat.subtype) {
+                    case 'bear_trap':
+                        warning = es
+                            ? ['¡Cuidado! Trampa de oso adelante.', '¡Para! Hay una trampa en el suelo.', '¡Ojo! Trampa de oso al ${DIR}.']
+                            : ['Watch out! Bear trap ahead.', 'Stop! Trap on the ground.', 'Careful! Bear trap to the ${DIR}.'];
+                        break;
+                    case 'arrow_trap':
+                        warning = es
+                            ? ['¡Cuidado con las flechas!', '¡Trampa de flechas al ${DIR}!']
+                            : ['Watch for arrows!', 'Arrow trap to the ${DIR}!'];
+                        break;
+                    default:
+                        if (threat.type === 'enemy') {
+                            warning = es
+                                ? ['Hay algo al ${DIR}... ten cuidado.', 'Enemigo cerca, al ${DIR}.']
+                                : ['Something to the ${DIR}... be careful.', 'Enemy nearby, to the ${DIR}.'];
+                        } else {
+                            warning = es
+                                ? ['Ten cuidado, hay peligro al ${DIR}.']
+                                : ['Be careful, danger to the ${DIR}.'];
+                        }
+                }
+
+                const pick = warning[Math.floor(Math.random() * warning.length)]
+                    .replace('${DIR}', threat.direction);
+                this._speak(pick, 'threat_warning');
+                return; // One warning at a time
+            }
         },
 
         async _generateHungerComment(hungerLevel) {
@@ -4631,6 +4886,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         // Periodic hunger awareness check
         AmbientDialogue.checkHunger();
 
+        // Proactive trap/threat warning from EnvironmentScanner
+        AmbientDialogue.checkNearbyThreats();
+
         // C key to chat (key code 67) - T is reserved for torch
         if (Input.isTriggered('c') || (TouchInput.isTriggered() && false)) {
             if (!$gameMessage.isBusy() && !$gameTemp._chatLocked) {
@@ -4965,6 +5223,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     window.AI_Companion.SanityManager = SanityManager;
     window.AI_Companion.DialogueGovernor = DialogueGovernor;
     window.AI_Companion.CharacterPresets = CharacterPresets;
+    window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)
