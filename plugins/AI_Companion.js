@@ -647,7 +647,9 @@
         lastCombatHash: null,    // State snapshot hash for dedup
         lastCombatDecision: null, // Cached decision when hash matches
         combatActionHistory: [],  // Track AI actions this battle for variety
-        playerActionHistory: []   // Track PLAYER actions this battle for coordination
+        playerActionHistory: [],  // Track PLAYER actions this battle for coordination
+        // Branch 3: Multi-turn strategy planning
+        currentStrategy: null,   // { plan: string, turnsRemaining: number, startTurn: number }
     };
 
     //=========================================================================
@@ -1907,10 +1909,17 @@ ${enemyTactics ? `LEARNED TACTICS:\n${enemyTactics}` : ''}
 ${memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : ''}${coinFlipWarning}${healingAlert}`;
 
             if (retryContext) {
+                // Branch 3: Include explicit available actions for better retry
+                const availableActions = ['Atacar', 'Defenderse'];
+                companion.skills.forEach(s => availableActions.push(s.name));
+                companion.items.forEach(i => availableActions.push(i.name));
+                const aliveEnemies = battleState.enemies.filter(e => e.alive).map(e => e.name);
                 prompt += `\n\nPREVIOUS ATTEMPT FAILED:
 Your previous decision was invalid: ${JSON.stringify(retryContext.previous_decision)}
 Error: ${retryContext.error}
-Please correct your response.`;
+AVAILABLE ACTIONS (choose ONLY from this list): [${availableActions.join(', ')}]
+VALID TARGETS: [${aliveEnemies.join(', ')}]
+Please correct your response. Use EXACT names from the lists above.`;
             }
 
             prompt += `
@@ -1946,8 +1955,14 @@ Respond ONLY with this JSON:
   "target": "[enemy_name]",
   "limb": "head | right arm | left arm | torso | legs | null",
   "reasoning": "brief tactical reasoning",
-  "dialog": "immersive survivor dialog (max 50 chars)"
+  "dialog": "immersive survivor dialog (max 50 chars)",
+  "strategy": "optional: multi-turn plan if you have one (e.g. 'Destroy right arm then head')"
 }`;
+
+            // Branch 3: Inject active multi-turn strategy
+            if (AIState.currentStrategy && AIState.currentStrategy.turnsRemaining > 0) {
+                prompt += `\n\nCONTINUING STRATEGY (turn ${battleState.turn_number - AIState.currentStrategy.startTurn + 1} of plan): ${AIState.currentStrategy.plan}\nFollow this plan unless the situation has changed dramatically.`;
+            }
 
             return prompt;
         }
@@ -2110,6 +2125,21 @@ Respond ONLY with this JSON:
                     const response = JSON.parse(xhr.responseText);
                     const decision = this._parseResponse(response);
                     if (decision && this._validateDecision(decision, battleState)) {
+                        // Branch 3: Extract and store multi-turn strategy
+                        if (decision.strategy && decision.strategy.length > 0) {
+                            AIState.currentStrategy = {
+                                plan: decision.strategy,
+                                turnsRemaining: 3,  // Strategies persist for 3 turns
+                                startTurn: battleState.turn_number
+                            };
+                            Debug.log('[Combat] Strategy set:', decision.strategy);
+                        } else if (AIState.currentStrategy) {
+                            AIState.currentStrategy.turnsRemaining--;
+                            if (AIState.currentStrategy.turnsRemaining <= 0) {
+                                Debug.log('[Combat] Strategy expired');
+                                AIState.currentStrategy = null;
+                            }
+                        }
                         if (Config.debugMode) {
                             Debug.log('[Combat] Decision:', decision.action, '->', decision.target, decision.limb ? '[' + decision.limb + ']' : '', 'reasoning:', decision.reasoning);
                             if (decision.dialog) Debug.log('[Combat] Dialog:', decision.dialog);
@@ -5181,6 +5211,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         AIState.lastCombatDecision = null;
         AIState.combatActionHistory = [];
         AIState.playerActionHistory = [];
+        AIState.currentStrategy = null;
         RelationshipTracker.onBattleWon();
         _BattleManager_processVictory.call(this);
     };
@@ -5197,6 +5228,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         AIState.lastCombatDecision = null;
         AIState.combatActionHistory = [];
         AIState.playerActionHistory = [];
+        AIState.currentStrategy = null;
         RelationshipTracker.onBattleFled();
         return _BattleManager_processEscape.call(this);
     };
