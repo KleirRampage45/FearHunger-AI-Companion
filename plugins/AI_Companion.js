@@ -3205,6 +3205,320 @@ Respond ONLY with this JSON:
     };
 
     //=========================================================================
+    // World State Engine — Aggregated situational awareness (Branch 6)
+    //=========================================================================
+    const WorldStateEngine = {
+        _lastSnapshot: null,
+        _lastSnapshotTime: 0,
+        SNAPSHOT_TTL: 5000, // 5 seconds between full recalculations
+
+        /**
+         * Compute the full world state snapshot.
+         * Cached for SNAPSHOT_TTL to avoid per-frame overhead.
+         */
+        getSnapshot() {
+            const now = Date.now();
+            if (this._lastSnapshot && now - this._lastSnapshotTime < this.SNAPSHOT_TTL) {
+                return this._lastSnapshot;
+            }
+
+            const snapshot = {
+                timestamp: now,
+                party: this._getPartyState(),
+                resources: this._getResourceState(),
+                environment: this._getEnvironmentState(),
+                threats: this._getThreatAssessment(),
+                morale: this._getMoraleState(),
+                situation: 'stable' // overridden below
+            };
+
+            // Compute overall situation rating
+            snapshot.situation = this._computeSituation(snapshot);
+
+            this._lastSnapshot = snapshot;
+            this._lastSnapshotTime = now;
+            return snapshot;
+        },
+
+        /**
+         * Party health and composition state
+         */
+        _getPartyState() {
+            const members = $gameParty ? $gameParty.members() : [];
+            if (members.length === 0) return { size: 0, avg_hp_pct: 100, wounded: 0, dead: 0 };
+
+            let totalHpPct = 0;
+            let wounded = 0;
+            let dead = 0;
+
+            for (const m of members) {
+                const pct = m.mhp > 0 ? (m.hp / m.mhp) * 100 : 100;
+                totalHpPct += pct;
+                if (m.isDead && m.isDead()) dead++;
+                else if (pct < 50) wounded++;
+            }
+
+            return {
+                size: members.length,
+                avg_hp_pct: Math.round(totalHpPct / members.length),
+                wounded,
+                dead,
+                names: members.map(m => m.name())
+            };
+        },
+
+        /**
+         * Inventory resource assessment
+         */
+        _getResourceState() {
+            if (!$gameParty) return { healing: 0, food: 0, keys: 0, total_items: 0 };
+
+            const items = $gameParty.items();
+            let healing = 0;
+            let food = 0;
+            let keys = 0;
+
+            for (const item of items) {
+                const name = (item.name || '').toLowerCase();
+                const count = $gameParty.numItems(item);
+
+                // Healing items
+                if (/hierba|herb|cura|heal|vial azul|blue vial|vendaje|bandage|pocion|potion/i.test(name)) {
+                    healing += count;
+                }
+                // Food items
+                if (/comida|carne|pan|queso|champiñ|tomate|manzana|zanahoria|meat|bread|cheese|mushroom|apple/i.test(name)) {
+                    food += count;
+                }
+                // Key items
+                if (/llave|key|gema|gem|orbe|orb/i.test(name)) {
+                    keys += count;
+                }
+            }
+
+            return {
+                healing,
+                food,
+                keys,
+                total_items: items.length,
+                has_save_materials: items.some(i => /ritual|incienso|incense/i.test(i.name))
+            };
+        },
+
+        /**
+         * Environment and location context
+         */
+        _getEnvironmentState() {
+            const mapContext = MapContextHelper.getMapContext();
+            const inBattle = $gameParty && $gameParty.inBattle && $gameParty.inBattle();
+
+            // Time in current map (approximate)
+            const mapEntryTime = this._mapEntryTime || Date.now();
+            const timeOnMap = Math.round((Date.now() - mapEntryTime) / 1000);
+
+            return {
+                map_name: mapContext.displayName || 'Unknown',
+                map_tips: mapContext.tips || [],
+                in_battle: !!inBattle,
+                time_on_map_seconds: timeOnMap,
+                has_been_here_before: this._visitedMaps ? this._visitedMaps.has(String($gameMap ? $gameMap.mapId() : 0)) : false
+            };
+        },
+
+        /**
+         * Threat level assessment from recent events and surroundings
+         */
+        _getThreatAssessment() {
+            const recentEvents = ShortTermMemory.getRecentEvents();
+            const lastBattle = ShortTermMemory.getLastBattle();
+
+            let threatScore = 0;
+            let recentDeaths = 0;
+            let recentBattles = 0;
+
+            for (const event of recentEvents) {
+                if (/death|muerte|died|murió|LOST a|perdió/i.test(event.desc)) {
+                    threatScore += 3;
+                    recentDeaths++;
+                }
+                if (/battle|pelea|combat/i.test(event.desc)) {
+                    threatScore += 1;
+                    recentBattles++;
+                }
+                if (/CRITICAL|crítico/i.test(event.desc)) {
+                    threatScore += 2;
+                }
+            }
+
+            // Recent battle outcome matters
+            if (lastBattle) {
+                const timeSince = Date.now() - lastBattle.time;
+                if (timeSince < 120000) { // 2 minutes
+                    threatScore += lastBattle.victory ? 0 : 2;
+                }
+            }
+
+            let level;
+            if (threatScore >= 6) level = 'extreme';
+            else if (threatScore >= 4) level = 'high';
+            else if (threatScore >= 2) level = 'moderate';
+            else level = 'low';
+
+            return {
+                level,
+                score: threatScore,
+                recent_deaths: recentDeaths,
+                recent_battles: recentBattles
+            };
+        },
+
+        /**
+         * Morale/psychological state — aggregates sanity, trust, hunger
+         */
+        _getMoraleState() {
+            const sanity = SanityManager.getSanityLevel();
+            const trust = RelationshipTracker.getSummary();
+
+            // Hunger level from AmbientDialogue helper
+            let hunger = 0;
+            try {
+                const companion = $gameActors.actor(Config.companionActorId);
+                if (companion) {
+                    const hungerStates = companion.states().filter(s => /hambre/i.test(s.name));
+                    for (const s of hungerStates) {
+                        const match = s.name.match(/(\d+)/);
+                        if (match) hunger = parseInt(match[1]);
+                    }
+                    if (hungerStates.length > 0 && hunger === 0) hunger = 1;
+                }
+            } catch (e) { /* companion not available */ }
+
+            return {
+                sanity_level: sanity.level,
+                sanity_pct: sanity.percent,
+                trust_summary: trust,
+                hunger_level: hunger,
+                overall: this._computeMoraleOverall(sanity.percent, hunger)
+            };
+        },
+
+        _computeMoraleOverall(sanityPct, hunger) {
+            if (sanityPct < 15 || hunger >= 4) return 'desperate';
+            if (sanityPct < 35 || hunger >= 3) return 'low';
+            if (sanityPct < 60) return 'shaky';
+            return 'steady';
+        },
+
+        /**
+         * Compute overall situation from all factors
+         */
+        _computeSituation(snapshot) {
+            const { party, resources, threats, morale } = snapshot;
+
+            // Scoring: higher = worse
+            let score = 0;
+
+            // Party health
+            if (party.avg_hp_pct < 25) score += 4;
+            else if (party.avg_hp_pct < 50) score += 2;
+            if (party.dead > 0) score += 3;
+
+            // Resources
+            if (resources.healing === 0) score += 2;
+            if (resources.food === 0) score += 1;
+
+            // Threats
+            score += threats.score;
+
+            // Morale
+            if (morale.overall === 'desperate') score += 3;
+            else if (morale.overall === 'low') score += 1;
+
+            if (score >= 10) return 'critical';
+            if (score >= 7) return 'dire';
+            if (score >= 4) return 'tense';
+            if (score >= 2) return 'cautious';
+            return 'stable';
+        },
+
+        /**
+         * Get a compact text summary for prompt injection.
+         * This replaces raw STM events dump with structured context.
+         */
+        getWorldSummary() {
+            const s = this.getSnapshot();
+            const es = Config.language === 'es';
+            const lines = [];
+
+            // Situation headline
+            const situations = es
+                ? { critical: '⚠ SITUACIÓN CRÍTICA', dire: '⚠ Situación grave', tense: 'Situación tensa', cautious: 'Precaución', stable: 'Situación estable' }
+                : { critical: '⚠ CRITICAL SITUATION', dire: '⚠ Dire situation', tense: 'Tense situation', cautious: 'Caution needed', stable: 'Situation stable' };
+            lines.push(situations[s.situation] || situations.stable);
+
+            // Party summary
+            if (s.party.dead > 0) {
+                lines.push(es ? `Grupo: ${s.party.size} miembros, ${s.party.dead} caído(s), HP medio: ${s.party.avg_hp_pct}%` : `Party: ${s.party.size} members, ${s.party.dead} dead, avg HP: ${s.party.avg_hp_pct}%`);
+            } else if (s.party.wounded > 0) {
+                lines.push(es ? `Grupo: ${s.party.wounded} herido(s), HP medio: ${s.party.avg_hp_pct}%` : `Party: ${s.party.wounded} wounded, avg HP: ${s.party.avg_hp_pct}%`);
+            }
+
+            // Resources
+            const resWarnings = [];
+            if (s.resources.healing === 0) resWarnings.push(es ? 'Sin curación' : 'No healing items');
+            if (s.resources.food === 0) resWarnings.push(es ? 'Sin comida' : 'No food');
+            if (resWarnings.length > 0) lines.push(resWarnings.join(', '));
+
+            // Morale
+            if (s.morale.overall === 'desperate' || s.morale.overall === 'low') {
+                lines.push(es ? `Moral: ${s.morale.overall === 'desperate' ? 'desesperada' : 'baja'}` : `Morale: ${s.morale.overall}`);
+            }
+
+            // Threat
+            if (s.threats.level === 'extreme' || s.threats.level === 'high') {
+                lines.push(es ? `Amenaza: ${s.threats.level === 'extreme' ? 'extrema' : 'alta'}` : `Threat: ${s.threats.level}`);
+            }
+
+            return lines.length > 1 ? lines.join(' | ') : '';
+        },
+
+        /**
+         * Track map visits (called on map transfer)
+         */
+        _visitedMaps: new Set(),
+        _mapEntryTime: 0,
+        onMapTransfer(mapId) {
+            this._visitedMaps.add(String(mapId));
+            this._mapEntryTime = Date.now();
+            this._lastSnapshot = null; // Force recalculation
+        },
+
+        /**
+         * Full snapshot for telemetry/thesis logging
+         */
+        getWorldSnapshotForLog() {
+            const s = this.getSnapshot();
+            return {
+                situation: s.situation,
+                party_size: s.party.size,
+                party_avg_hp: s.party.avg_hp_pct,
+                party_dead: s.party.dead,
+                healing_items: s.resources.healing,
+                food_items: s.resources.food,
+                total_items: s.resources.total_items,
+                threat_level: s.threats.level,
+                threat_score: s.threats.score,
+                morale: s.morale.overall,
+                sanity_pct: s.morale.sanity_pct,
+                hunger: s.morale.hunger_level,
+                map: s.environment.map_name,
+                in_battle: s.environment.in_battle,
+                maps_visited: this._visitedMaps.size
+            };
+        }
+    };
+
+    //=========================================================================
     // Expose for debugging
     //=========================================================================
     window.AI_Companion = {
@@ -3498,6 +3812,8 @@ Respond ONLY with this JSON:
                 })),
                 // NEW: spatial awareness — nearby objects from EnvironmentScanner
                 nearby_objects: EnvironmentScanner.getSummary(),
+                // Branch 6: World State Engine — aggregated situational summary
+                world_state: WorldStateEngine.getWorldSummary(),
             };
             if (Config.debugMode) {
                 Debug.log('[Chat] getContext:', JSON.stringify(ctx, null, 2));
@@ -3638,8 +3954,14 @@ CRITICAL GAME RULES (NEVER violate these):
                 prompt += `\nNEARBY (you can see): ${context.nearby_objects}\n`;
             }
 
+
+            // Branch 6: World State summary — overall situation awareness
+            if (context.world_state && context.world_state.length > 0) {
+                prompt += `\nSITUATION: ${context.world_state}\n`;
+            }
+
             prompt += `\nThe player says: "${playerMessage}"\n`;
-            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nIf you see traps or enemies nearby, you may proactively warn the player about them.`;
+            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nIf you see traps or enemies nearby, you may proactively warn the player about them.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
 
             return prompt;
         },
@@ -5397,6 +5719,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             Debug.log('Room entry detected:', mapName);
             ThesisLogger.log('game_event', { event: 'map_transfer', map_name: mapName, map_id: $gameMap.mapId() });
             AmbientDialogue.onRoomEntry(mapName);
+            WorldStateEngine.onMapTransfer($gameMap.mapId());
         }
     };
 
@@ -5409,6 +5732,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     window.AI_Companion.DialogueGovernor = DialogueGovernor;
     window.AI_Companion.CharacterPresets = CharacterPresets;
     window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
+    window.AI_Companion.WorldStateEngine = WorldStateEngine;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)
