@@ -710,6 +710,11 @@
             location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path)/i
         },
 
+        // Branch 5: Intent classification cache (input hash → result)
+        _cache: new Map(),
+        _cacheMaxSize: 50,
+        _llmFallbackEnabled: true,
+
         /**
          * Multi-label intent classification
          * @param {string} message - player message
@@ -717,13 +722,28 @@
          */
         classify(message) {
             const msg = message.toLowerCase().trim();
-            const types = [];
 
-            for (const [type, pattern] of Object.entries(this._patterns)) {
-                if (pattern.test(msg)) types.push(type);
+            // Check cache first
+            const cacheKey = msg.substring(0, 80);
+            if (this._cache.has(cacheKey)) {
+                const cached = this._cache.get(cacheKey);
+                if (Date.now() - cached.time < 300000) { // 5 min TTL
+                    return cached.result;
+                }
+                this._cache.delete(cacheKey);
             }
 
-            // Default to generic query if nothing matched — NOT emotional (most expensive/vague)
+            const types = [];
+            let matchCount = 0;
+
+            for (const [type, pattern] of Object.entries(this._patterns)) {
+                if (pattern.test(msg)) {
+                    types.push(type);
+                    matchCount++;
+                }
+            }
+
+            // Default to generic query if nothing matched
             if (types.length === 0) types.push('generic_query');
 
             // Primary = first match (order matters in _patterns)
@@ -732,15 +752,27 @@
             // Extract entities
             const entities = this._extractEntities(msg);
 
+            // Branch 5: Improved confidence scoring
+            let confidence;
+            if (types[0] === 'generic_query') {
+                confidence = 0.3; // No regex match — LLM fallback candidate
+            } else if (matchCount === 1 && entities.length > 0) {
+                confidence = 0.95; // Single intent + confirmed entity
+            } else if (matchCount === 1) {
+                confidence = 0.8; // Single intent, no entity
+            } else if (matchCount >= 2 && entities.length > 0) {
+                confidence = 0.85; // Multi-match with entity
+            } else {
+                confidence = 0.6; // Multi-match, no entities
+            }
+
             // IN-BATTLE OVERRIDE: when in combat, force tactical — EXCEPT for emotional queries
             if (typeof $gameParty !== 'undefined' &&
                 ((SceneManager._scene && SceneManager._scene instanceof Scene_Battle) ||
                     (SceneManager._stack && SceneManager._stack.some(function (s) { return s === Scene_Battle; })))) {
-                // Whitelist: emotional queries stay emotional even in battle
                 const emotionalPatterns = /como estas|cómo estás|estas bien|estás bien|te duele|como te sientes|cómo te sientes|te encuentras|how are you|are you ok/i;
                 const isEmotional = emotionalPatterns.test(msg);
                 if (!isEmotional) {
-                    // In battle: remove non-combat intents, ensure tactical is primary
                     const battleIrrelevant = ['item_info', 'lore', 'location', 'emotional', 'social', 'generic_query'];
                     for (let i = types.length - 1; i >= 0; i--) {
                         if (battleIrrelevant.includes(types[i])) types.splice(i, 1);
@@ -750,15 +782,136 @@
                         types.splice(types.indexOf('tactical'), 1);
                         types.unshift('tactical');
                     }
+                    confidence = 0.9; // Battle context always high
                 }
             }
 
-            return {
+            const result = {
                 types,
                 primary: types[0],
                 entities,
-                confidence: types.length === 1 ? 0.9 : 0.7
+                confidence
             };
+
+            // Cache the result
+            this._cache.set(cacheKey, { result, time: Date.now() });
+            if (this._cache.size > this._cacheMaxSize) {
+                const firstKey = this._cache.keys().next().value;
+                this._cache.delete(firstKey);
+            }
+
+            return result;
+        },
+
+        /**
+         * Branch 5: Async classification with LLM fallback for low-confidence results.
+         * Used by ChatSystem.sendMessage() when regex confidence is too low.
+         * @param {string} message - player message
+         * @returns {Promise<{types: string[], primary: string, entities: Array, confidence: number}>}
+         */
+        async classifyWithFallback(message) {
+            const regexResult = this.classify(message);
+
+            // If confidence is decent, skip LLM — regex is fast and free
+            if (regexResult.confidence >= 0.5 || !this._llmFallbackEnabled) {
+                return regexResult;
+            }
+
+            // Low confidence: ask LLM to classify
+            Debug.log('[IntentDetector] Low confidence (' + regexResult.confidence + '), trying LLM fallback...');
+
+            try {
+                const llmIntent = await this._classifyViaLLM(message);
+                if (llmIntent) {
+                    // Merge LLM result: override primary type, keep entities from regex
+                    const validTypes = Object.keys(this._patterns).concat(['generic_query']);
+                    if (validTypes.includes(llmIntent)) {
+                        regexResult.types = [llmIntent, ...regexResult.types.filter(t => t !== llmIntent && t !== 'generic_query')];
+                        regexResult.primary = llmIntent;
+                        regexResult.confidence = 0.75; // LLM-boosted confidence
+                        Debug.log('[IntentDetector] LLM classified as:', llmIntent);
+
+                        // Update cache with improved result
+                        const cacheKey = message.toLowerCase().trim().substring(0, 80);
+                        this._cache.set(cacheKey, { result: regexResult, time: Date.now() });
+                    }
+                }
+            } catch (e) {
+                Debug.warn('[IntentDetector] LLM fallback failed:', e.message);
+            }
+
+            return regexResult;
+        },
+
+        /**
+         * Branch 5: Lightweight LLM intent classification.
+         * Sends a minimal prompt to classify the player's message.
+         * @param {string} message - player message
+         * @returns {Promise<string|null>} - intent type or null
+         */
+        async _classifyViaLLM(message) {
+            const headers = Config.getHeaders();
+            const endpoint = Config.getEndpoint();
+
+            if (!Config.apiKey && Config.apiProvider === 'local') return null;
+
+            const classifyPrompt = `Classify this game chat message into ONE category.
+
+Categories:
+- item_info: asking about items, weapons, armor, potions, herbs
+- tactical: asking about combat, enemies, strategy, how to fight
+- recent_battle: talking about a fight that just happened
+- lore: asking about game world, gods, characters, story
+- social: asking about party members, opinions, relationships
+- emotional: expressing feelings, fear, gratitude, trust
+- status_help: asking about status effects, poison, bleeding, curses
+- location: asking where they are, how to navigate, exits
+- generic_query: none of the above
+
+Message: "${message}"
+
+Reply with ONLY the category name, nothing else.`;
+
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 3000); // 3s max
+
+            try {
+                const models = ModelRouter.getModelsForContext('chat');
+                const model = models[0]; // Use fastest available model
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: headers,
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [{ role: 'user', content: classifyPrompt }],
+                        temperature: 0.1,
+                        max_tokens: 20
+                    })
+                });
+                clearTimeout(timer);
+
+                if (!response.ok) return null;
+                const data = await response.json();
+
+                let text = '';
+                if (data.choices && data.choices[0]) {
+                    const c = data.choices[0];
+                    text = (c.message && c.message.content && c.message.content.trim()) ||
+                           (c.text && c.text.trim()) || '';
+                }
+
+                // Clean up response — just extract the category name
+                const cleaned = text.toLowerCase().replace(/[^a-z_]/g, '').trim();
+                const validTypes = Object.keys(this._patterns).concat(['generic_query']);
+                return validTypes.includes(cleaned) ? cleaned : null;
+
+            } catch (e) {
+                clearTimeout(timer);
+                if (e.name === 'AbortError') Debug.log('[IntentDetector] LLM classify timed out');
+                return null;
+            }
         },
 
         /**
@@ -3357,7 +3510,7 @@ Respond ONLY with this JSON:
             RelationshipTracker.onConversation();
 
             const context = this.getContext();
-            const intent = IntentDetector.classify(playerMessage);
+            const intent = await IntentDetector.classifyWithFallback(playerMessage);
 
             if (Config.debugMode) {
                 Debug.log('[Chat] Intent:', JSON.stringify({ types: intent.types, primary: intent.primary, entities: intent.entities.map(e => e.name + ':' + e.status), confidence: intent.confidence }));
