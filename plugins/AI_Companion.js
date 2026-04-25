@@ -1305,8 +1305,30 @@ Reply with ONLY the category name, nothing else.`;
         },
 
         _labelFromEnemySprite(sprite) {
+            const normalizedSprite = this._normalize(sprite);
             for (const key in this._enemySpriteLabels) {
-                if (sprite.includes(key)) return this._enemySpriteLabels[key];
+                if (normalizedSprite.includes(key)) {
+                    const fallbackLabel = this._enemySpriteLabels[key];
+                    if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                        const enemy = FearHungerKB.getEnemy(key);
+                        if (enemy && enemy.displayNameEs) return enemy.displayNameEs;
+                    }
+                    return fallbackLabel;
+                }
+            }
+
+            const lookupCandidates = [
+                normalizedSprite,
+                normalizedSprite.replace(/[_-]?\d+[a-z]?$/i, ''),
+                normalizedSprite.replace(/\d+/g, ''),
+                normalizedSprite.replace(/[_-]+/g, ' ')
+            ].filter(Boolean);
+
+            if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                for (const candidate of lookupCandidates) {
+                    const enemy = FearHungerKB.getEnemy(candidate);
+                    if (enemy) return enemy.displayNameEs || enemy.displayName || 'Enemigo';
+                }
             }
             return 'Enemigo';
         },
@@ -1401,7 +1423,13 @@ Reply with ONLY the category name, nothing else.`;
 
             if (metadata.speakerName) return metadata.speakerName;
             if (type === 'enemy') {
-                if (metadata.battleTroopName) return metadata.battleTroopName;
+                if (metadata.battleTroopName) {
+                    if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                        const troopEnemy = FearHungerKB.getEnemy(metadata.battleTroopName);
+                        if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || metadata.battleTroopName;
+                    }
+                    return metadata.battleTroopName;
+                }
                 const spriteLabel = this._labelFromEnemySprite(sprite);
                 if (spriteLabel !== 'Enemigo') return spriteLabel;
                 if (this._looksPlayerFacingEventName(rawName)) return rawName;
@@ -4474,6 +4502,25 @@ Respond ONLY with this JSON:
             return context.nearby_observation.nearbyEvents.filter(entry => entry && entry.type === 'container');
         },
 
+        _getNearbyEnemyKnowledge(context) {
+            if (!context || !context.nearby_observation || !context.nearby_observation.nearbyEvents || typeof FearHungerKB === 'undefined' || !FearHungerKB.getEnemy) {
+                return [];
+            }
+
+            const resolved = [];
+            const seenKeys = {};
+            context.nearby_observation.nearbyEvents
+                .filter(entry => entry && entry.type === 'enemy')
+                .forEach(entry => {
+                    const enemy = FearHungerKB.getEnemy(entry.label);
+                    if (!enemy || seenKeys[enemy.key]) return;
+                    seenKeys[enemy.key] = true;
+                    resolved.push({ snapshot: entry, enemy: enemy });
+                });
+
+            return resolved;
+        },
+
         _isContainerContentsQuery(message, context) {
             const msg = String(message || '').toLowerCase().trim();
             if (!msg) return false;
@@ -4848,7 +4895,8 @@ CRITICAL GAME RULES (NEVER violate these):
                 const spatialIntents = new Set(['tactical', 'location', 'generic_query']);
                 if (spatialIntents.has(intent.primary)) {
                     prompt += `\nLIVE NEARBY DETECTION (objects/events actually near you right now): ${context.nearby_objects}\n`;
-                } else if (/⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
+                } else if (!new Set(['emotional', 'recent_battle', 'social']).has(intent.primary) &&
+                    /⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
                     prompt += `\n(LIVE NEARBY THREAT: ${context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /[12] pasos/.test(s)).join(';').trim()})\n`;
                 }
             }
@@ -4979,15 +5027,35 @@ CRITICAL GAME RULES (NEVER violate these):
                                 block += `\n[No data on "${enemy.name}" — be cautious]\n`;
                             }
                         }
+                    } else if (typeof FearHungerKB !== 'undefined') {
+                        const nearbyKnowledge = this._getNearbyEnemyKnowledge(context);
+                        for (const entry of nearbyKnowledge) {
+                            const data = entry.enemy;
+                            block += `\n=== ${(data.displayNameEs || data.displayName || entry.snapshot.label).toUpperCase()} ===\n`;
+                            if (data.danger !== undefined) block += `Danger: ${data.danger}/5\n`;
+                            if (data.tactics) block += `Tactics: ${data.tactics}\n`;
+                            if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
+                            if (data.hints && data.hints.length) block += `Tips: ${data.hints.join('; ')}\n`;
+                            if (data.coinFlipTurn) block += `⚠ COIN FLIP on turn ${data.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
+                            if (data.mistakes && data.mistakes.length) block += `AVOID: ${data.mistakes.join('; ')}\n`;
+                            if (data.special) block += `Special: ${data.special}\n`;
+                        }
                     }
                     return block;
                 }
                 case 'recent_battle': {
                     let block = '';
+                    if (context.last_battle && context.last_battle.enemies && context.last_battle.enemies.length > 0) {
+                        block += '\n=== LAST BATTLE DATA ===\n';
+                        block += `Enemies: ${context.last_battle.enemies.join(', ')}\n`;
+                        block += `Result: ${context.last_battle.victory ? 'Victory' : 'Defeat'}\n`;
+                    }
                     // Inject last battle cache if available
                     if (AIState.lastBattleStateCache) {
                         const lb = AIState.lastBattleStateCache;
-                        block += '\n=== LAST BATTLE DATA ===\n';
+                        if (!/=== LAST BATTLE DATA ===/.test(block)) {
+                            block += '\n=== LAST BATTLE DATA ===\n';
+                        }
                         if (lb.enemies) block += `Enemies: ${lb.enemies.filter(e => e.name).map(e => e.name).join(', ')}\n`;
                         if (lb.turn_number) block += `Lasted ${lb.turn_number} turns\n`;
                     }
@@ -5021,7 +5089,7 @@ CRITICAL GAME RULES (NEVER violate these):
                     let block = `\nRelationship level: ${RelationshipTracker.getLevel()} (Trust ${RelationshipTracker.trust}, Affinity ${RelationshipTracker.affinity})\n`;
                     const personality = CharacterPresets.getCurrentPersonality();
                     if (personality && personality.backstory) {
-                        block += `\nIMPORTANT: Answer from your CHARACTER'S emotional perspective. You are ${personality.backstory.substring(0, 250)}\n`;
+                        block += `\nIMPORTANT: Answer from your CHARACTER'S emotional perspective. Your backstory: ${personality.backstory.substring(0, 250)}\n`;
                         block += `Do NOT give tactical advice or mention nearby threats. Focus on how YOU feel, your fears, your past, your connection to the player.\n`;
                     }
                     return block;
@@ -6643,7 +6711,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     const _BattleManager_processVictory = BattleManager.processVictory;
     BattleManager.processVictory = function () {
         const rawNames = $gameTroop.members().map(m => m.name());
-        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '')))];
+        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '').replace(/\s+[A-Z]$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, true);
         AmbientDialogue.onBattleEnd(true);
         ThesisLogger.log('game_event', { event: 'battle_victory', enemies: enemyNames });
@@ -6661,7 +6729,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     const _BattleManager_processEscape = BattleManager.processEscape;
     BattleManager.processEscape = function () {
         const rawNames = $gameTroop.members().map(m => m.name());
-        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '')))];
+        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '').replace(/\s+[A-Z]$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, false);
         AmbientDialogue.onBattleEnd(false);
         ThesisLogger.log('game_event', { event: 'battle_escape', enemies: enemyNames });
