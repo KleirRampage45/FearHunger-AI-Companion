@@ -4469,6 +4469,50 @@ Respond ONLY with this JSON:
             return /(?:que ves|qué ves|ves algo|que hay alrededor|qué hay alrededor|que tienes delante|qué tienes delante|what do you see|what's around|what is around|what can you see|look around)/i.test(message || '');
         },
 
+        _getNearbyContainers(context) {
+            if (!context || !context.nearby_observation || !context.nearby_observation.nearbyEvents) return [];
+            return context.nearby_observation.nearbyEvents.filter(entry => entry && entry.type === 'container');
+        },
+
+        _isContainerContentsQuery(message, context) {
+            const msg = String(message || '').toLowerCase().trim();
+            if (!msg) return false;
+
+            const explicitContainerRef = /(?:cofre|cofres|baul|baúl|caja|cajas|chest|chests|crate|crates|barrel|barrels)/i.test(msg);
+            const implicitContainerRef = /(?:que|qué)\s+podr(?:ia|ía)\s+haber\s+(?:en|dentro|adentro)|(?:que|qué)\s+habra?\s+(?:en|dentro|adentro)|what could be (?:inside|in them|in those)|what might be (?:inside|in them|in those)|inside them|inside those|en ellos|en esos|dentro de ellos|adentro de ellos/i.test(msg);
+            const nearbyContainers = this._getNearbyContainers(context);
+            if (nearbyContainers.length === 0) return false;
+
+            if (explicitContainerRef && /(?:que|qué|what|inside|dentro|adentro|haber|habra|habrá|podria|podría)/i.test(msg)) {
+                return true;
+            }
+
+            if (!implicitContainerRef) return false;
+
+            const recentContainerMention = (context && context.recent_exchanges ? context.recent_exchanges : [])
+                .slice(-4)
+                .some(entry => entry && entry.role === 'companion' &&
+                    /(?:cofre|cofres|baul|baúl|caja|cajas|chest|chests|crate|crates|barrel|barrels)/i.test(String(entry.message || '')));
+
+            return recentContainerMention;
+        },
+
+        _normalizeIntentForContainerQuery(playerMessage, context, intent) {
+            if (!intent || !this._isContainerContentsQuery(playerMessage, context)) return intent;
+
+            const filteredTypes = intent.types.filter(type => type !== 'item_info' && type !== 'generic_query');
+            intent.types = ['generic_query'].concat(filteredTypes);
+            intent.primary = 'generic_query';
+            intent.confidence = Math.max(intent.confidence || 0, 0.9);
+            intent.containerQuery = true;
+            intent.containerTargets = this._getNearbyContainers(context).slice(0, 4).map(entry => ({
+                label: entry.label,
+                distance: entry.distance,
+                direction: entry.direction
+            }));
+            return intent;
+        },
+
         open() {
             if ($gameMessage.isBusy()) return; // Allow in battle now
 
@@ -4665,6 +4709,7 @@ Respond ONLY with this JSON:
 
             const context = this.getContext();
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
+            this._normalizeIntentForContainerQuery(playerMessage, context, intent);
 
             if (Config.debugMode) {
                 Debug.log('[Chat] Intent:', JSON.stringify({ types: intent.types, primary: intent.primary, entities: intent.entities.map(e => e.name + ':' + e.status), confidence: intent.confidence }));
@@ -5010,6 +5055,12 @@ CRITICAL GAME RULES (NEVER violate these):
                     if (context.in_battle && context.battle_state) {
                         block += `IN BATTLE — Enemies: ${context.battle_state.enemies.map(e => e.name).join(', ')}\n`;
                     }
+                    if (intent.containerQuery && intent.containerTargets && intent.containerTargets.length > 0) {
+                        block += `NEARBY CONTAINERS:\n`;
+                        for (const container of intent.containerTargets) {
+                            block += `- ${container.label} a ${container.distance} pasos al ${container.direction}\n`;
+                        }
+                    }
                     return block;
                 }
             }
@@ -5042,6 +5093,10 @@ CRITICAL GAME RULES (NEVER violate these):
          */
         _buildInstructions(intent) {
             const anchors = `\nHARD ANCHORS (NEVER violate):\n- Never betray the player\n- Never sacrifice allies without consent\n- Never break immersion\n- Always maintain core loyalty\n- NEVER mention "database", "base de datos", "KB", "data", or any technical/meta terms. You are a CHARACTER IN THE GAME, not an AI.\n- If you don't have information, say it naturally in character (e.g. "No lo reconozco..." or "No sé qué es...") — NEVER reference data sources.\n`;
+
+            if (intent && intent.containerQuery) {
+                return anchors + 'MODE: CONTAINER JUDGMENT — The player is asking what might be inside nearby containers. You do NOT have exact loot data unless it is explicitly shown above. Do NOT invent specific item names, rare artifacts, enemies, rituals, or stat gains. Speak only in broad terms like supplies, scraps, something useful, or say we need to open the container to know for sure.\n';
+            }
 
             switch (intent.primary) {
                 case 'item_info':
