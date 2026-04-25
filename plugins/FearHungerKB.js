@@ -1272,6 +1272,8 @@ FearHungerKB.items = {
     },
     "monocle": {
         type: "accessory",
+        displayNameEs: "Monóculo",
+        aliases: ["monoculo", "monóculo", "monocle"],
         description: "Accessory that improves vision.",
         source: ["Lord of flies drops", "Rare chests"],
         tips: "Good utility accessory"
@@ -2585,6 +2587,7 @@ FearHungerKB.statusEffects = {
     },
     "bleeding": {
         name: "Bleeding",
+        altNames: ["Sangrando", "Sangrado", "Bleed"],
         iconDescription: "blood, drop, bleeding icon",
         effect: "-3% Body per turn.",
         cure: "Cloth fragment. Salmonsnake soul or Ring of the still-blood prevent. Caused by Stabbing, Chains of torment, arrow trap, rusty nails, losing limbs, Penance armor.",
@@ -2592,6 +2595,7 @@ FearHungerKB.statusEffects = {
     },
     "poisoned": {
         name: "Poisoned",
+        altNames: ["Envenenado", "Envenenada", "Veneno", "Poison"],
         iconDescription: "green, poison, vial, poisoned icon",
         effect: "-10% Body per turn.",
         cure: "White vial, Mix of red and green. Thorned ring prevents. Caused by Cave spider, Lizardman, Cavedweller (Spear), Black witch, God of Fear and Hunger, Mumbler head kill, poison trap, Worm juice, Rotten food.",
@@ -2599,6 +2603,7 @@ FearHungerKB.statusEffects = {
     },
     "toxic": {
         name: "Toxic",
+        altNames: ["Tóxico", "Tóxica", "Intoxicado", "Intoxicada"],
         iconDescription: "purple, toxic, severe poison icon",
         effect: "-20% Body per turn.",
         cure: "White vial, Mix of red and green. Caused by Body Snatcher toxic dart.",
@@ -2606,6 +2611,7 @@ FearHungerKB.statusEffects = {
     },
     "infected_arm": {
         name: "Infected arm",
+        altNames: ["Infección de brazo", "Brazo infectado", "Infected Arm"],
         iconDescription: "infection, arm, worm in arm, infected icon",
         effect: "Death if not treated in time (about 7 location changes).",
         cure: "Green herb, Mix of red and green. Salmonsnake soul or Ring of the still-blood prevent. Amputate with Bonesaw. Caused by Stabbing, Biting, Scratching, bookshelf rat.",
@@ -2613,6 +2619,7 @@ FearHungerKB.statusEffects = {
     },
     "infected_leg": {
         name: "Infected leg",
+        altNames: ["Infección de pierna", "Pierna infectada", "Infected Leg"],
         iconDescription: "infection, leg, infected leg icon",
         effect: "Death if not treated.",
         cure: "Green herb, Mix of red and green. Amputate. Caused by Stabbing/Biting/Scratching, rusty nails.",
@@ -2620,6 +2627,7 @@ FearHungerKB.statusEffects = {
     },
     "blindness": {
         name: "Blindness",
+        altNames: ["Ceguera", "Ciego", "Ciega", "Blind"],
         iconDescription: "dark, black, blind, eye closed icon",
         effect: "-75% Hit Rate; screen turns black outside combat if on protagonist.",
         cure: "Equip Iron mask to prevent. Caused by Flock of crows.",
@@ -2634,6 +2642,7 @@ FearHungerKB.statusEffects = {
     },
     "burning": {
         name: "Burning",
+        altNames: ["Quemándose", "Quemado", "Quemada", "Ardiendo", "En llamas"],
         iconDescription: "fire, flame, burning icon",
         effect: "-10% Body per turn.",
         cure: "Salmonsnake soul, Water vial, end battle. Caused by Priest lantern, Iron Shakespeare Cinder, Francóis Pyromancy trick.",
@@ -2648,6 +2657,7 @@ FearHungerKB.statusEffects = {
     },
     "parasites": {
         name: "Parasites",
+        altNames: ["Parásitos", "Parasito", "Gusanos"],
         iconDescription: "worm, worms, parasite icon, small worm icon",
         effect: "Doubles the depletion of Hunger.",
         cure: "Worm juice cures parasites. Caused by Maneba's Injection, Raw meat, Rotten meat, Rotten Meatpie.",
@@ -2655,6 +2665,7 @@ FearHungerKB.statusEffects = {
     },
     "brain_flower": {
         name: "Brain Flower",
+        altNames: ["Flor cerebral", "Flor del cerebro", "Brain flower"],
         iconDescription: "flower, brain, flower on head icon",
         effect: "-50% Hit Rate, attacks random allies.",
         cure: "Worm juice. Caused by pollen from infected enemies.",
@@ -2669,6 +2680,7 @@ FearHungerKB.statusEffects = {
     },
     "curse": {
         name: "Curse",
+        altNames: ["Maldición", "Maldito", "Maldita", "Cursed"],
         iconDescription: "curse, countdown, skull icon",
         effect: "Countdown from 5, -1 per turn; 0 = instant death.",
         cure: "Purifying talisman. Caused by Gro-goroth, Valteil.",
@@ -2683,6 +2695,7 @@ FearHungerKB.statusEffects = {
     },
     "ruin": {
         name: "Ruin (I-III)",
+        altNames: ["Ruina", "Envejecimiento", "Ruin"],
         iconDescription: "ruin, age, aging icon",
         effect: "Rapidly ages character. Stage III = heart attack death.",
         cure: "Marriage of Flesh, Lady of Moon favor. Caused by Miner Spectre Ruin attack.",
@@ -2713,6 +2726,7 @@ FearHungerKB.getStatusEffect = function (nameOrDescription) {
     for (const key in this.statusEffects) {
         const s = this.statusEffects[key];
         if (s.name.toLowerCase() === q || key.replace(/_/g, ' ') === q) return s;
+        if (s.altNames && s.altNames.some(alt => alt.toLowerCase() === q)) return s;
         if (s.iconDescription && s.iconDescription.split(/,\s*/).some(desc => desc.toLowerCase().includes(q) || q.includes(desc.toLowerCase())))
             return s;
     }
@@ -2829,8 +2843,25 @@ FearHungerKB.getEnemy = function (name) {
  */
 FearHungerKB.getItem = function (name) {
     if (!name) return null;
-    const normalized = name.toLowerCase().replace(/[^a-záéíóúñü0-9]/g, '_').replace(/_+/g, '_');
-    const nameLower = name.toLowerCase();
+    const ITEM_SYNONYMS = {
+        'frasco': 'vial', 'pocion': 'vial', 'poción': 'vial',
+        'botella': 'vial', 'pasto': 'hierba', 'planta': 'hierba',
+        'trapo': 'fragmento de tela', 'tela': 'fragmento de tela',
+        'vendaje': 'fragmento de tela', 'venda': 'fragmento de tela',
+        'cura': 'fragmento de tela', 'antídoto': 'vial blanco',
+        'antidoto': 'vial blanco', 'monoculo': 'monocle',
+        'monóculo': 'monocle'
+    };
+    let expandedName = name;
+    const words = name.toLowerCase().split(/\s+/);
+    for (const word of words) {
+        if (ITEM_SYNONYMS[word]) {
+            expandedName = name.toLowerCase().replace(word, ITEM_SYNONYMS[word]);
+            break;
+        }
+    }
+    const normalized = expandedName.toLowerCase().replace(/[^a-záéíóúñü0-9]/g, '_').replace(/_+/g, '_');
+    const nameLower = expandedName.toLowerCase();
 
     // Exact match: key, displayName, displayNameEs, or key-as-words
     for (const key in this.items) {

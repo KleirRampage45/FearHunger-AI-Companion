@@ -707,13 +707,22 @@
             social: /(?:que opinas|que te parece|del grupo|integrante|nuevo|de ella|de el|quien es este|quienes son|acompañan|que piensas)/i,
             emotional: /(?:como estas|how.*you|como te sientes|how.*feel|tengo miedo|i'm scared|estoy asustado|nervios|nervous|vamos a morir|we.*die|gracias|thank|lo siento|sorry|te quiero|confio|trust)/i,
             status_help: /(?:icon|icono|status|estado|efecto|effect|cura|cure|poison|veneno|bleed|sangr|infect|parasi|burn|quemad|fear|miedo|hunger|hambre|blind|cieg|curse|maldic|fractur|paraliz|ruin|brain flower|flor|confused|confundid|toxic|toxico)/i,
-            location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path)/i
+            location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path|que ves|qué ves|ves algo|what do you see|what.*around|que hay alrededor|qué hay alrededor)/i
         },
 
         // Branch 5: Intent classification cache (input hash → result)
         _cache: new Map(),
         _cacheMaxSize: 50,
         _llmFallbackEnabled: true,
+
+        _getCacheKey(message) {
+            return (message || '')
+                .toLowerCase()
+                .replace(/\s+/g, ' ')
+                .replace(/[!?.,;:"'()[\]{}]+/g, '')
+                .trim()
+                .substring(0, 80);
+        },
 
         /**
          * Multi-label intent classification
@@ -724,7 +733,7 @@
             const msg = message.toLowerCase().trim();
 
             // Check cache first
-            const cacheKey = msg.substring(0, 80);
+            const cacheKey = this._getCacheKey(message);
             if (this._cache.has(cacheKey)) {
                 const cached = this._cache.get(cacheKey);
                 if (Date.now() - cached.time < 300000) { // 5 min TTL
@@ -832,7 +841,7 @@
                         Debug.log('[IntentDetector] LLM classified as:', llmIntent);
 
                         // Update cache with improved result
-                        const cacheKey = message.toLowerCase().trim().substring(0, 80);
+                        const cacheKey = this._getCacheKey(message);
                         this._cache.set(cacheKey, { result: regexResult, time: Date.now() });
                     }
                 }
@@ -1645,6 +1654,26 @@ Reply with ONLY the category name, nothing else.`;
     // ActionExecutor - Executes AI decisions
     //=========================================================================
     class ActionExecutor {
+        static ACTION_ALIASES = {
+            'attack': 'attack',
+            'atacar': 'attack',
+            'basic attack': 'attack',
+            'defend': 'guard',
+            'guard': 'guard',
+            'defender': 'guard',
+            'defenderse': 'guard',
+            'guardia': 'guard',
+            'heal': 'heal',
+            'curar': 'heal',
+            'use': 'use',
+            'usar': 'use',
+            'flee': 'flee',
+            'run': 'flee',
+            'escape': 'flee',
+            'huir': 'flee',
+            'correr': 'flee'
+        };
+
         static execute(actor, decision) {
 
             if (!decision || !decision.action) {
@@ -1654,11 +1683,11 @@ Reply with ONLY the category name, nothing else.`;
 
             // Map decision to RPG Maker action
             const action = new Game_Action(actor);
+            const normalizedAction = this._normalizeActionName(decision.action);
 
-            if (decision.action.toLowerCase() === 'attack') {
+            if (normalizedAction === 'attack') {
                 action.setAttack();
-            } else if (decision.action.toLowerCase() === 'defend' ||
-                decision.action.toLowerCase() === 'guard') {
+            } else if (normalizedAction === 'guard') {
                 action.setGuard();
             } else {
                 // Try to find skill by name
@@ -1737,6 +1766,12 @@ Reply with ONLY the category name, nothing else.`;
             return true;
         }
 
+        static _normalizeActionName(name) {
+            if (!name) return '';
+            const key = name.toLowerCase().trim();
+            return this.ACTION_ALIASES[key] || key;
+        }
+
         static _findSkillByName(actor, name) {
             return actor.skills().find(s =>
                 s.name.toLowerCase() === name.toLowerCase()
@@ -1755,11 +1790,19 @@ Reply with ONLY the category name, nothing else.`;
             'left leg': 'pierna izquierda', 'right leg': 'pierna derecha',
             'head': 'cabeza', 'torso': 'torso', 'stinger': 'aguijón',
             'tail': 'cola', 'wings': 'alas', 'claws': 'garras',
+            'legs': 'piernas',
             'brazo izquierdo': 'left arm', 'brazo derecho': 'right arm',
             'pierna izquierda': 'left leg', 'pierna derecha': 'right leg',
             'cabeza': 'head', 'aguijón': 'stinger', 'aguijon': 'stinger',
-            'cola': 'tail', 'alas': 'wings', 'garras': 'claws'
+            'cola': 'tail', 'alas': 'wings', 'garras': 'claws',
+            'piernas': 'legs'
         };
+
+        static _normalizeLimbName(limb) {
+            if (!limb) return '';
+            const key = limb.toLowerCase().trim();
+            return key === 'piernas' ? 'legs' : key;
+        }
 
         static _resolveTarget(decision) {
             if (!decision.target) return 0;
@@ -1769,7 +1812,7 @@ Reply with ONLY the category name, nothing else.`;
                 const enemies = BattleStateExtractor._extractEnemiesWithLimbs();
                 for (const enemy of enemies) {
                     if (enemy.name.toLowerCase() === decision.target.toLowerCase()) {
-                        const limbKey = decision.limb.toLowerCase();
+                        const limbKey = this._normalizeLimbName(decision.limb);
                         const limbKeyUnderscore = limbKey.replace(/ /g, '_');
                         // Build search keys: original + translated equivalent
                         const translated = this.LIMB_TRANSLATIONS[limbKey] || '';
@@ -1793,6 +1836,8 @@ Reply with ONLY the category name, nothing else.`;
                         }
 
                         if (limb && limb.alive) {
+                            decision.target = enemy.name;
+                            decision.limb = limb.type;
                             Debug.log(`Resolved limb target: ${decision.target} [${decision.limb}] -> troop index ${limb.troop_index}`);
                             return limb.troop_index;
                         } else {
@@ -1800,12 +1845,18 @@ Reply with ONLY the category name, nothing else.`;
                             // Fallback: find ANY alive limb to avoid wasting turn
                             for (const [key, value] of Object.entries(enemy.limbs)) {
                                 if (value.alive && key !== 'torso') {
+                                    decision.target = enemy.name;
+                                    decision.limb = key;
                                     Debug.log(`Fallback limb: ${key} -> troop index ${value.troop_index}`);
                                     return value.troop_index;
                                 }
                             }
                             // Last resort: torso
-                            if (enemy.limbs.torso && enemy.limbs.torso.alive) return enemy.limbs.torso.troop_index;
+                            if (enemy.limbs.torso && enemy.limbs.torso.alive) {
+                                decision.target = enemy.name;
+                                decision.limb = 'torso';
+                                return enemy.limbs.torso.troop_index;
+                            }
                         }
                     }
                 }
@@ -2112,12 +2163,55 @@ Respond ONLY with this JSON:
   "strategy": "optional: multi-turn plan if you have one (e.g. 'Destroy right arm then head')"
 }`;
 
-            // Branch 3: Inject active multi-turn strategy
+            // Branch 3: Inject active multi-turn strategy only while it still matches the live battle state
             if (AIState.currentStrategy && AIState.currentStrategy.turnsRemaining > 0) {
+                if (!this._isStrategyStillRelevant(battleState, AIState.currentStrategy.plan)) {
+                    Debug.log('[Combat] Dropping stale strategy:', AIState.currentStrategy.plan);
+                    AIState.currentStrategy = null;
+                } else {
                 prompt += `\n\nCONTINUING STRATEGY (turn ${battleState.turn_number - AIState.currentStrategy.startTurn + 1} of plan): ${AIState.currentStrategy.plan}\nFollow this plan unless the situation has changed dramatically.`;
+                }
             }
 
             return prompt;
+        }
+
+        static _isStrategyStillRelevant(battleState, plan) {
+            if (!plan || !battleState || !battleState.enemies) return false;
+            const text = plan.toLowerCase();
+            const aliveLimbs = new Set();
+
+            battleState.enemies.filter(e => e.alive).forEach(enemy => {
+                Object.entries(enemy.limbs || {}).forEach(([key, limb]) => {
+                    if (!limb || !limb.alive) return;
+                    const lower = key.toLowerCase();
+                    aliveLimbs.add(lower);
+                    const translated = ActionExecutor.LIMB_TRANSLATIONS[lower];
+                    if (translated) aliveLimbs.add(translated);
+                });
+            });
+
+            const trackedLimbGroups = [
+                ['left arm', 'brazo izquierdo'],
+                ['right arm', 'brazo derecho'],
+                ['left leg', 'pierna izquierda'],
+                ['right leg', 'pierna derecha'],
+                ['head', 'cabeza'],
+                ['torso'],
+                ['stinger', 'aguijón', 'aguijon'],
+                ['tail', 'cola'],
+                ['wings', 'alas'],
+                ['claws', 'garras']
+            ];
+
+            for (const aliases of trackedLimbGroups) {
+                const mentionsAlias = aliases.some(alias => text.includes(alias));
+                if (!mentionsAlias) continue;
+                const limbStillAlive = aliases.some(alias => aliveLimbs.has(alias));
+                if (!limbStillAlive) return false;
+            }
+
+            return true;
         }
 
         static async _sendRequest(prompt, context = 'combat') {
@@ -2299,7 +2393,13 @@ Respond ONLY with this JSON:
                         }
                         return decision;
                     }
-                    Debug.warn(`[Combat] ${model} returned invalid decision:`, decision);
+                    // Decision parsed but failed validation — return special marker
+                    // so caller knows NOT to markFailed (model worked, validation didn't)
+                    if (decision) {
+                        Debug.warn(`[Combat] ${model} returned decision that failed validation:`, decision.action, '→', decision.target);
+                        return { _validationFailed: true, decision: decision };
+                    }
+                    Debug.warn(`[Combat] ${model} returned unparseable response`);
                     return null;
                 } catch (error) {
                     Debug.warn(`[Combat] ${model} error:`, error.message, error.name);
@@ -2329,12 +2429,13 @@ Respond ONLY with this JSON:
                         const groqResult = _trySyncRequest(
                             Config.apiEndpoint, groqHeaders, model, 300, false
                         );
-                        if (groqResult) {
+                        if (groqResult && !groqResult._validationFailed) {
                             Debug.log('[Combat] Groq fallback succeeded:', model);
                             _logCombatDecision(groqResult, model, 'groq_fallback');
                             return groqResult;
                         }
-                        ModelRouter.markFailed(model);
+                        // Only penalize model for actual API/network failures, not validation issues
+                        if (!groqResult || !groqResult._validationFailed) ModelRouter.markFailed(model);
                     }
                 }
             } else {
@@ -2344,8 +2445,9 @@ Respond ONLY with this JSON:
                     const result = _trySyncRequest(
                         Config.getEndpoint(), Config.getHeaders(), model, 300, false
                     );
-                    if (result) { _logCombatDecision(result, model, 'groq'); return result; }
-                    ModelRouter.markFailed(model);
+                    if (result && !result._validationFailed) { _logCombatDecision(result, model, 'groq'); return result; }
+                    // Only penalize model for actual API/network failures, not validation issues
+                    if (!result || !result._validationFailed) ModelRouter.markFailed(model);
                 }
             }
 
@@ -2418,9 +2520,14 @@ Respond ONLY with this JSON:
             const companion = battleState.companion;
             const actionLower = decision.action.toLowerCase();
 
-            // Attack and Defend are always valid
-            if (actionLower === 'attack' || actionLower === 'defend' ||
-                actionLower === 'guard') {
+            // Attack and Defend are always valid (English + Spanish)
+            const VALID_BASE_ACTIONS = new Set([
+                'attack', 'defend', 'guard',
+                'atacar', 'defenderse', 'defender', 'guardia',
+                'curar', 'usar', 'huir', 'correr',
+                'use', 'heal', 'flee', 'run', 'escape'
+            ]);
+            if (VALID_BASE_ACTIONS.has(actionLower)) {
                 return true;
             }
 
@@ -3074,10 +3181,9 @@ Respond ONLY with this JSON:
     DataManager.setupNewGame = function () {
         _DataManager_setupNewGame.call(this);
 
-        // Clear chat history and memory on new game
-        if (typeof ChatSystem !== 'undefined' && ChatSystem._conversationHistory) {
-            ChatSystem._conversationHistory = [];
-            ChatSystem._displayMessages = [];
+        // Clear chat transcript and short-term dialogue memory on new game
+        if (typeof ChatSystem !== 'undefined') {
+            ChatSystem.resetPersistentState();
         }
         if (typeof ShortTermMemory !== 'undefined') {
             ShortTermMemory._events = [];
@@ -3434,6 +3540,24 @@ Respond ONLY with this JSON:
             if (morale.overall === 'desperate') score += 3;
             else if (morale.overall === 'low') score += 1;
 
+            // Status effects — bleeding, infection, poison etc. affect situation
+            try {
+                for (const member of $gameParty.members()) {
+                    if (!member || !member.states) continue;
+                    for (const state of member.states()) {
+                        const name = (state.name || '').toLowerCase();
+                        if (/sangr|bleed/i.test(name)) score += 1;
+                        if (/infecc|infect/i.test(name)) score += 3;
+                        if (/poison|venen|t[oó]xic/i.test(name)) score += 2;
+                        if (/blind|ciego|ceguera/i.test(name)) score += 1;
+                        if (/curse|maldic/i.test(name)) score += 4;
+                        if (/par[aá]sit/i.test(name)) score += 1;
+                        if (/brain.?flower|flor.?cerebr/i.test(name)) score += 2;
+                        if (/ruin/i.test(name)) score += 3;
+                    }
+                }
+            } catch (e) { /* safety: party might not be ready */ }
+
             if (score >= 10) return 'critical';
             if (score >= 7) return 'dire';
             if (score >= 4) return 'tense';
@@ -3751,7 +3875,13 @@ Respond ONLY with this JSON:
         GeminiAPIHandler,
         MemoryManager,
         ModelRouter,
-        CharacterPresets
+        CharacterPresets,
+        ShortTermMemory,
+        IntentDetector,
+        RelationshipTracker,
+        KBFallback,
+        MapContextHelper,
+        EquipmentHelper
     };
 
     //=========================================================================
@@ -3759,13 +3889,55 @@ Respond ONLY with this JSON:
     //=========================================================================
     const ChatSystem = {
         _active: false,
-        _conversationHistory: [],
-        _displayMessages: [],  // Persistent chat log (rendered lines)
-        MAX_HISTORY: 5,
-        MAX_DISPLAY_LINES: 100,
+        _fallbackState: null,
+        MAX_HISTORY: 12,
+        MAX_TRANSCRIPT_ENTRIES: 240,
 
         isActive() {
             return this._active;
+        },
+
+        _createEmptyState() {
+            return {
+                recentHistory: [],
+                transcript: [],
+                lastContextKey: null,
+                lastContextLabel: '',
+                nextEntryId: 1
+            };
+        },
+
+        _getState() {
+            if (typeof $gameSystem === 'undefined' || !$gameSystem) {
+                if (!this._fallbackState) this._fallbackState = this._createEmptyState();
+                return this._fallbackState;
+            }
+            if (!$gameSystem._aiChatState) {
+                $gameSystem._aiChatState = this._createEmptyState();
+            }
+            return $gameSystem._aiChatState;
+        },
+
+        resetPersistentState() {
+            if (typeof $gameSystem !== 'undefined' && $gameSystem) {
+                $gameSystem._aiChatState = this._createEmptyState();
+            } else {
+                this._fallbackState = this._createEmptyState();
+            }
+        },
+
+        _nextEntryId() {
+            const state = this._getState();
+            const nextId = state.nextEntryId || 1;
+            state.nextEntryId = nextId + 1;
+            return nextId;
+        },
+
+        _trimTranscript() {
+            const state = this._getState();
+            while (state.transcript.length > this.MAX_TRANSCRIPT_ENTRIES) {
+                state.transcript.shift();
+            }
         },
 
         // Muted color palette for Fear & Hunger aesthetic
@@ -3811,25 +3983,12 @@ Respond ONLY with this JSON:
             return result;
         },
 
-        // Add to display log (persistent). Each entry: { role, text, timestamp, isFirstLine }
-        addDisplayMessage(roleOrLine, text, timestamp, isFirstLine) {
-            if (typeof roleOrLine === 'object' && roleOrLine !== null && roleOrLine.text !== undefined) {
-                this._displayMessages.push(roleOrLine);
-            } else {
-                this._displayMessages.push({
-                    role: roleOrLine,
-                    text: text || '',
-                    timestamp: timestamp || '',
-                    isFirstLine: !!isFirstLine
-                });
-            }
-            if (this._displayMessages.length > this.MAX_DISPLAY_LINES) {
-                this._displayMessages.shift();
-            }
+        getTranscriptEntries() {
+            return this._getState().transcript;
         },
 
         getDisplayMessages() {
-            return this._displayMessages;
+            return this.getTranscriptEntries();
         },
 
         formatMessageTime(date) {
@@ -3848,6 +4007,149 @@ Respond ONLY with this JSON:
         getCompanionFace() {
             const app = CharacterPresets.getCurrentAppearance();
             return { faceName: app.face, faceIndex: app.faceIndex };
+        },
+
+        _getCurrentContextMeta() {
+            const mapContext = MapContextHelper.getMapContext();
+            const sceneIsBattle = (SceneManager._scene && SceneManager._scene instanceof Scene_Battle) ||
+                (SceneManager._stack && SceneManager._stack.some(function (s) { return s === Scene_Battle; }));
+            const isInBattle = sceneIsBattle || ($gameParty.inBattle && $gameParty.inBattle());
+            const es = Config.language === 'es';
+
+            if (isInBattle) {
+                let state = null;
+                try {
+                    state = BattleStateExtractor.extract();
+                } catch (e) {
+                    Debug.warn('[Chat] Failed to extract battle context for separator:', e.message);
+                }
+                if (!state && AIState.lastBattleStateCache) {
+                    state = AIState.lastBattleStateCache;
+                }
+
+                const turn = state && state.turn_number ? state.turn_number : null;
+                const enemies = state && state.enemies
+                    ? state.enemies.filter(e => e.alive).map(e => e.name)
+                    : [];
+                const enemyLabel = enemies.length > 0
+                    ? enemies.join(', ')
+                    : (es ? 'enemigos desconocidos' : 'unknown enemies');
+
+                return {
+                    tag: 'battle',
+                    key: 'battle:' + (turn || 0) + ':' + enemyLabel.toLowerCase(),
+                    label: es
+                        ? `COMBATE${turn ? ' - Turno ' + turn : ''} · ${enemyLabel}`
+                        : `BATTLE${turn ? ' - Turn ' + turn : ''} · ${enemyLabel}`,
+                    battleTurn: turn
+                };
+            }
+
+            const mapName = mapContext.displayName || mapContext.rawDisplayName || (es ? 'Zona desconocida' : 'Unknown area');
+            return {
+                tag: 'field',
+                key: 'field:' + String(mapName).toLowerCase(),
+                label: es ? `EXPLORACION · ${mapName}` : `EXPLORATION · ${mapName}`,
+                battleTurn: null
+            };
+        },
+
+        getCurrentContextMeta() {
+            return this._getCurrentContextMeta();
+        },
+
+        _ensureContextSeparator(contextMeta) {
+            const state = this._getState();
+            const meta = contextMeta || this._getCurrentContextMeta();
+            if (state.lastContextKey !== meta.key || state.lastContextLabel !== meta.label || state.transcript.length === 0) {
+                state.transcript.push({
+                    id: this._nextEntryId(),
+                    type: 'separator',
+                    label: meta.label,
+                    contextTag: meta.tag,
+                    timestamp: Date.now()
+                });
+                state.lastContextKey = meta.key;
+                state.lastContextLabel = meta.label;
+                this._trimTranscript();
+            }
+            return meta;
+        },
+
+        addTranscriptMessage(role, message, contextMeta) {
+            const meta = this._ensureContextSeparator(contextMeta);
+            const sender = role === 'player'
+                ? ($gameParty && $gameParty.leader() ? $gameParty.leader().name() : (Config.language === 'es' ? 'Tú' : 'You'))
+                : Config.companionName;
+            const entry = {
+                id: this._nextEntryId(),
+                type: 'message',
+                role: role,
+                sender: sender,
+                text: String(message || ''),
+                timestamp: Date.now(),
+                timestampLabel: this.formatMessageTime(),
+                contextTag: meta.tag,
+                contextLabel: meta.label
+            };
+            if (meta.battleTurn) entry.battleTurn = meta.battleTurn;
+            this._getState().transcript.push(entry);
+            this._trimTranscript();
+            return entry;
+        },
+
+        addToHistory(role, message, contextMeta) {
+            const meta = contextMeta || this._getCurrentContextMeta();
+            const state = this._getState();
+            state.recentHistory.push({
+                role: role,
+                message: String(message || ''),
+                time: Date.now(),
+                contextTag: meta.tag,
+                contextLabel: meta.label
+            });
+            while (state.recentHistory.length > this.MAX_HISTORY) {
+                state.recentHistory.shift();
+            }
+        },
+
+        _buildPromptHistory() {
+            const recent = this._getState().recentHistory.slice(-this.MAX_HISTORY);
+            const lines = [];
+            let lastLabel = null;
+
+            for (const entry of recent) {
+                if (entry.contextLabel && entry.contextLabel !== lastLabel) {
+                    lines.push({ role: 'separator', message: entry.contextLabel, contextTag: entry.contextTag });
+                    lastLabel = entry.contextLabel;
+                }
+                lines.push({
+                    role: entry.role,
+                    message: entry.message,
+                    contextTag: entry.contextTag
+                });
+            }
+
+            return lines;
+        },
+
+        _buildOlderChatMemory() {
+            const transcript = this._getState().transcript;
+            const messageEntries = transcript.filter(entry => entry.type === 'message' || entry.type === 'separator');
+            if (messageEntries.length <= 10) return [];
+            return messageEntries
+                .slice(0, Math.max(0, messageEntries.length - 8))
+                .slice(-6)
+                .map(entry => {
+                    if (entry.type === 'separator') {
+                        return { role: 'separator', message: entry.label, contextTag: entry.contextTag };
+                    }
+                    return { role: entry.role, message: entry.text, contextTag: entry.contextTag };
+                });
+        },
+
+        _isVisionQuery(message) {
+            return /(?:que ves|qué ves|ves algo|que hay alrededor|qué hay alrededor|que tienes delante|qué tienes delante|what do you see|what's around|what is around|what can you see|look around)/i.test(message || '');
         },
 
         open() {
@@ -3884,16 +4186,9 @@ Respond ONLY with this JSON:
             $gameTemp._chatLocked = false;
         },
 
-        addToHistory(role, message) {
-            this._conversationHistory.push({ role, message, time: Date.now() });
-            if (this._conversationHistory.length > this.MAX_HISTORY) {
-                this._conversationHistory.shift();
-            }
-        },
-
         getContext() {
             // Only send last 3-5 exchanges + summary
-            const recent = this._conversationHistory.slice(-5);
+            const recent = this._buildPromptHistory();
             const memory = MemoryManager.getLongTermMemory();
             const sanity = SanityManager.getSanityLevel();
             const events = ShortTermMemory.getRecentEvents();
@@ -3933,7 +4228,7 @@ Respond ONLY with this JSON:
             // Full KB dump only when player asks about a status keyword
             let statusEffectsSummary = '';
             const statusKeywords = /icon|status|efecto|cura|cure|poison|veneno|bleed|sangr|infect|parasi|burn|quemad|fear|miedo|hunger|hambre|blind|ciego|fobia|phobia|eroto|panto|escoto|estado/i;
-            const askingAboutStatus = this._conversationHistory.slice(-1).some(
+            const askingAboutStatus = this._getState().recentHistory.slice(-1).some(
                 e => e.role === 'player' && statusKeywords.test(e.message)
             );
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffectsForPrompt) {
@@ -4011,6 +4306,7 @@ Respond ONLY with this JSON:
                 player_name: leader ? leader.name() : 'Player',
                 is_player_speaking: true,
                 recent_exchanges: recent,
+                older_chat_memory: this._buildOlderChatMemory(),
                 memory_summary: memory.relationship || 'New companion',
                 current_map: mapContext.displayName,
                 current_map_tips: mapContext.tips,
@@ -4044,7 +4340,9 @@ Respond ONLY with this JSON:
         },
 
         async sendMessage(playerMessage) {
-            this.addToHistory('player', playerMessage);
+            const exchangeContext = this._ensureContextSeparator();
+            this.addToHistory('player', playerMessage, exchangeContext);
+            this.addTranscriptMessage('player', playerMessage, exchangeContext);
             RelationshipTracker.onConversation();
 
             const context = this.getContext();
@@ -4065,7 +4363,8 @@ Respond ONLY with this JSON:
                     const response = Config.language === 'es'
                         ? `¿Te refieres a ${names.join(', ')}...?`
                         : `Do you mean ${names.join(', ')}...?`;
-                    this.addToHistory('companion', response);
+                    this.addToHistory('companion', response, exchangeContext);
+                    this.addTranscriptMessage('companion', response, exchangeContext);
                     return response;
                 }
             }
@@ -4083,7 +4382,8 @@ Respond ONLY with this JSON:
                 if (!response || response.trim().length === 0) {
                     // KB fallback — no LLM dependency
                     const fallback = KBFallback.respond(intent);
-                    this.addToHistory('companion', fallback);
+                    this.addToHistory('companion', fallback, exchangeContext);
+                    this.addTranscriptMessage('companion', fallback, exchangeContext);
                     ThesisLogger.log('chat', {
                         player_message: playerMessage,
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -4095,7 +4395,8 @@ Respond ONLY with this JSON:
                     });
                     return fallback;
                 }
-                this.addToHistory('companion', response);
+                this.addToHistory('companion', response, exchangeContext);
+                this.addTranscriptMessage('companion', response, exchangeContext);
                 ThesisLogger.log('chat', {
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -4112,7 +4413,8 @@ Respond ONLY with this JSON:
                 Debug.error('[Chat] error:', error);
                 // KB fallback on API failure
                 const fallback = KBFallback.respond(intent);
-                this.addToHistory('companion', fallback);
+                this.addToHistory('companion', fallback, exchangeContext);
+                this.addTranscriptMessage('companion', fallback, exchangeContext);
                 ThesisLogger.log('chat', {
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -4141,6 +4443,10 @@ CRITICAL GAME RULES (NEVER violate these):
 - COIN FLIP: Many enemies have a coin flip turn that causes INSTANT DEATH (50% chance). Kill them before that turn.
 - Stats can only be raised via gear, items (Blue vials), or the Human Hydra with Ring of Wraiths.
 - The game saves ONLY at ritual circles. Death is permanent.
+- STATIC LOCATION KNOWLEDGE is background lore/tips about an area. It is NOT proof that something is currently visible right now.
+- LIVE NEARBY DETECTION is the ONLY source for claims like "I can see...", "near us right now", or "what is around us".
+- Never turn area lore, tips, or rumors into a current sighting. If LIVE NEARBY DETECTION does not mention an NPC, enemy, or object, do NOT claim you can currently see it.
+- Never invent visual details such as age, scars, clothing, beard, gender, count, or exact position unless those details are explicitly present in the provided context.
 `;
 
             // Modular context injection based on intent types
@@ -4152,7 +4458,10 @@ CRITICAL GAME RULES (NEVER violate these):
             prompt += this._buildEventContext(context, intent);
 
             // Recent conversation (always)
-            prompt += `\nRECENT CONVERSATION:\n${context.recent_exchanges.map(e => `${e.role}: ${e.message}`).join('\n')}\n`;
+            if (context.older_chat_memory && context.older_chat_memory.length > 0) {
+                prompt += `\nEARLIER CHAT MEMORY:\n${context.older_chat_memory.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n')}\n`;
+            }
+            prompt += `\nRECENT CONVERSATION:\n${context.recent_exchanges.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n')}\n`;
 
             // Answer mode instructions
             prompt += this._buildInstructions(intent);
@@ -4171,9 +4480,14 @@ CRITICAL GAME RULES (NEVER violate these):
                 prompt += `\nSTATUS EFFECTS INFO:\n${context.status_effects_summary}\n`;
             }
 
-            // Inject spatial awareness — what the companion can "see" nearby
+            // Inject spatial awareness — gated by intent to prevent "guard obsession"
             if (context.nearby_objects && context.nearby_objects.length > 0) {
-                prompt += `\nNEARBY (you can see): ${context.nearby_objects}\n`;
+                const spatialIntents = new Set(['tactical', 'location', 'generic_query']);
+                if (spatialIntents.has(intent.primary)) {
+                    prompt += `\nLIVE NEARBY DETECTION (objects/events actually near you right now): ${context.nearby_objects}\n`;
+                } else if (/⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
+                    prompt += `\n(LIVE NEARBY THREAT: ${context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /[12] pasos/.test(s)).join(';').trim()})\n`;
+                }
             }
 
 
@@ -4188,7 +4502,17 @@ CRITICAL GAME RULES (NEVER violate these):
             }
 
             prompt += `\nThe player says: "${playerMessage}"\n`;
-            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nIf you see traps or enemies nearby, you may proactively warn the player about them.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            if (this._isVisionQuery(playerMessage)) {
+                prompt += `VISION QUERY RULE: Answer ONLY from LIVE NEARBY DETECTION above. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
+            }
+            const recentCompanionMsgs = context.recent_exchanges
+                .filter(e => e.role === 'companion')
+                .slice(-2)
+                .map(e => e.message);
+            if (recentCompanionMsgs.length > 0) {
+                prompt += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
+            }
+            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
 
             return prompt;
         },
@@ -4316,9 +4640,9 @@ CRITICAL GAME RULES (NEVER violate these):
                     return block;
                 }
                 case 'lore': {
-                    let block = `\nLocation: ${context.current_map}`;
+                    let block = `\nSTATIC LOCATION KNOWLEDGE:\n- Area: ${context.current_map}`;
                     if (context.current_map_tips && context.current_map_tips.length > 0) {
-                        block += `\nAbout this place: ${context.current_map_tips.join(' ')}`;
+                        block += `\n- Area lore/tips: ${context.current_map_tips.join(' ')}`;
                     }
                     const charEntities = intent.entities.filter(e => e.type === 'character' && e.match);
                     if (charEntities.length > 0) {
@@ -4330,8 +4654,15 @@ CRITICAL GAME RULES (NEVER violate these):
                     }
                     return block;
                 }
-                case 'emotional':
-                    return `\nRelationship level: ${RelationshipTracker.getLevel()} (Trust ${RelationshipTracker.trust}, Affinity ${RelationshipTracker.affinity})\n`;
+                case 'emotional': {
+                    let block = `\nRelationship level: ${RelationshipTracker.getLevel()} (Trust ${RelationshipTracker.trust}, Affinity ${RelationshipTracker.affinity})\n`;
+                    const personality = CharacterPresets.getCurrentPersonality();
+                    if (personality && personality.backstory) {
+                        block += `\nIMPORTANT: Answer from your CHARACTER'S emotional perspective. You are ${personality.backstory.substring(0, 250)}\n`;
+                        block += `Do NOT give tactical advice or mention nearby threats. Focus on how YOU feel, your fears, your past, your connection to the player.\n`;
+                    }
+                    return block;
+                }
                 case 'status_help': {
                     let block = '';
                     if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffectsForPrompt) {
@@ -4341,15 +4672,15 @@ CRITICAL GAME RULES (NEVER violate these):
                     return block;
                 }
                 case 'location': {
-                    let block = `\nCurrent location: ${context.current_map}`;
+                    let block = `\nSTATIC LOCATION KNOWLEDGE:\n- Current location: ${context.current_map}`;
                     if (context.current_map_tips && context.current_map_tips.length > 0) {
-                        block += `\nLocation tips: ${context.current_map_tips.join(' ')}`;
+                        block += `\n- Area tips: ${context.current_map_tips.join(' ')}`;
                     }
                     const locEntities = intent.entities.filter(e => e.type === 'location' && e.match);
                     if (locEntities.length > 0) {
                         for (const entity of locEntities) {
                             const loc = entity.match;
-                            block += `\n${loc.displayName}: Enemies: ${(loc.enemies || []).join(', ')} | Tips: ${(loc.tips || []).join(', ')}\n`;
+                            block += `\n- ${loc.displayName}: Possible enemies in the area: ${(loc.enemies || []).join(', ')} | Area tips: ${(loc.tips || []).join(', ')}\n`;
                         }
                     }
                     return block;
@@ -4357,7 +4688,7 @@ CRITICAL GAME RULES (NEVER violate these):
                 default: return '';
                 case 'generic_query': {
                     // Minimal context — don't bloat the prompt
-                    let block = `\nLocation: ${context.current_map}\n`;
+                    let block = `\nSTATIC LOCATION KNOWLEDGE:\n- Location: ${context.current_map}\n`;
                     if (context.in_battle && context.battle_state) {
                         block += `IN BATTLE — Enemies: ${context.battle_state.enemies.map(e => e.name).join(', ')}\n`;
                     }
@@ -4402,13 +4733,15 @@ CRITICAL GAME RULES (NEVER violate these):
                 case 'recent_battle':
                     return anchors + 'MODE: RECALL — The player asks about a recent battle. Answer ONLY from the LAST BATTLE DATA above. Name the enemies you fought. Do NOT invent details not present in the data.\n';
                 case 'lore':
-                    return anchors + 'MODE: LORE — Be atmospheric and descriptive about the location/character. Draw ONLY from provided data. If no lore data is provided, respond atmospherically without inventing specific game facts.\n';
+                    return anchors + 'MODE: LORE — Be atmospheric and descriptive about the location/character. Draw ONLY from provided data. If no lore data is provided, respond atmospherically without inventing specific game facts. STATIC LOCATION KNOWLEDGE describes the area in general; do NOT claim you currently see an NPC, enemy, or object unless LIVE NEARBY DETECTION or RECENT NPC DIALOGUE explicitly shows it.\n';
                 case 'status_help':
                     return anchors + 'MODE: HEALER — Answer ONLY from the STATUS EFFECTS data above. A status effect (like Fasmofobia) is a PERMANENT debuff on the character until cured — it does NOT go away on its own, it does NOT depend on what enemy you are fighting, and it does NOT deal direct damage. State ONLY the cure listed in the data. Do NOT invent cures or claim the effect will "pass" or "fade".\n';
                 case 'social':
                     return anchors + 'MODE: COMPANION SOCIAL — The player is asking about party members or the group. Focus your response on the current party makeup (shown in context) or the specific member mentioned. Give your personal opinion in character based on your backstory. Do NOT talk about items or inventory.\n';
+                case 'location':
+                    return anchors + 'MODE: LOCATION — Distinguish STATIC LOCATION KNOWLEDGE from LIVE NEARBY DETECTION. Use STATIC LOCATION KNOWLEDGE for general area facts only. If the player asks what you see or what is nearby, answer ONLY from LIVE NEARBY DETECTION. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now.\n';
                 case 'generic_query':
-                    return anchors + 'MODE: COMPANION — Respond naturally in character. Be brief. Use ONLY the context provided above. Do NOT invent game mechanics, item effects, or combat advice. If you don\'t know something, say so in character.\n';
+                    return anchors + 'MODE: COMPANION — Respond naturally in character. Be brief. Use ONLY the context provided above. Do NOT invent game mechanics, item effects, combat advice, or current visual details. If you don\'t know something, say so in character.\n';
                 default:
                     return anchors + 'MODE: COMPANION — Respond naturally in character. Be brief. Do NOT invent game mechanics or give specific tactical advice unless data is provided above.\n';
             }
@@ -5197,23 +5530,17 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const height = Graphics.boxHeight - 200;
         this._chatWindow = new Window_Base(20, 30, width, height);
         this._chatWindow.backOpacity = 140;
-        this._chatMessages = ChatSystem.getDisplayMessages();
         this._scrollY = 0;
         this._lineHeight = 28;
-        this._messageGap = 16;
-        this._portraitWidth = 0;
-        this._portraitHeight = 0;
-        // Conservative: assume average line has some gap overhead
-        this._maxVisibleLines = Math.max(1, Math.floor((height - 36) / (this._lineHeight + 4)));
-        this._typewriterQueue = [];
-        this._typewriterActive = false;
-        if (this._chatMessages.length === 0) {
-            const hint = Config.language === 'es' ? 'Escribe y pulsa Enter. ESC para cerrar.' : 'Press Enter to send. ESC to close.';
-            this._chatWindow.drawTextEx(hint, 10, 10);
-        } else {
-            this._scrollY = Math.max(0, this._chatMessages.length - this._maxVisibleLines);
-            this._refreshChat();
-        }
+        this._blockGap = 14;
+        this._separatorHeight = 26;
+        this._pendingReply = null;
+        this._pendingReplyTimestamp = null;
+        this._layoutBlocks = [];
+        this._contentHeight = 0;
+        this._syncTranscript();
+        this._scrollToBottom();
+        this._refreshChat();
         this.addWindow(this._chatWindow);
     };
 
@@ -5232,86 +5559,227 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         this._helpHint.backOpacity = 100;
         this._helpHint.contents.fontSize = 14;
         this._helpHint.contents.textColor = '#888888';
-        const helpText = Config.language === 'es' ? 'ESC: cerrar chat  |  ↑↓: scroll  |  Enter: enviar' : 'ESC: close chat  |  ↑↓: scroll  |  Enter: send';
+        const helpText = Config.language === 'es' ? 'ESC: cerrar chat  |  ↑↓ / rueda: scroll  |  Enter: enviar' : 'ESC: close chat  |  ↑↓ / wheel: scroll  |  Enter: send';
         this._helpHint.contents.drawText(helpText, 8, 0, this._helpHint.contentsWidth() - 16, 24, 'center');
         this.addWindow(this._helpHint);
     };
 
     Scene_AIChat.prototype.update = function () {
         Scene_MenuBase.prototype.update.call(this);
+        const scrollStep = this._lineHeight * 2;
         // Scrolling with arrow keys
         if (Input.isRepeated('up')) {
-            this._scrollY = Math.max(0, this._scrollY - 1);
+            this._scrollY = Math.max(0, this._scrollY - scrollStep);
             this._refreshChat();
         }
         if (Input.isRepeated('down')) {
-            const maxScroll = Math.max(0, this._chatMessages.length - this._maxVisibleLines);
-            this._scrollY = Math.min(maxScroll, this._scrollY + 1);
+            const maxScroll = this._getMaxScroll();
+            this._scrollY = Math.min(maxScroll, this._scrollY + scrollStep);
+            this._refreshChat();
+        }
+        if (TouchInput.wheelY <= -20) {
+            this._scrollY = Math.max(0, this._scrollY - scrollStep);
+            this._refreshChat();
+        }
+        if (TouchInput.wheelY >= 20) {
+            const maxScroll = this._getMaxScroll();
+            this._scrollY = Math.min(maxScroll, this._scrollY + scrollStep);
             this._refreshChat();
         }
     };
 
-    Scene_AIChat.prototype._refreshChat = function () {
-        this._chatWindow.contents.clear();
-        const startIdx = this._scrollY;
-        const endIdx = Math.min(startIdx + this._maxVisibleLines, this._chatMessages.length);
-        const textX = this._portraitWidth + 12;
-        const tsWidth = 44;
-        const frameColor = '#4a4a4a';
-        const maxContentHeight = this._chatWindow.contentsHeight() - 8;
-        let accY = 4;
+    Scene_AIChat.prototype._getChatContentHeight = function () {
+        return this._chatWindow.contentsHeight() - 8;
+    };
 
-        for (let i = startIdx; i < endIdx; i++) {
-            const raw = this._chatMessages[i];
-            const entry = (typeof raw === 'string') ? { role: 'You', text: raw, timestamp: '', isFirstLine: false } : raw;
+    Scene_AIChat.prototype._getMaxScroll = function () {
+        return Math.max(0, this._contentHeight - this._getChatContentHeight());
+    };
 
-            if (entry.isFirstLine && i > startIdx) {
-                accY += this._messageGap;
-                // Stop if adding gap already exceeds window
-                if (accY + this._lineHeight > maxContentHeight) break;
-                // Draw separator line between exchanges
-                this._chatWindow.contents.fillRect(4, accY - 4, this._chatWindow.contentsWidth() - 8, 1, '#555555');
+    Scene_AIChat.prototype._scrollToBottom = function () {
+        this._scrollY = this._getMaxScroll();
+    };
+
+    Scene_AIChat.prototype._clampScroll = function () {
+        this._scrollY = Math.max(0, Math.min(this._scrollY, this._getMaxScroll()));
+    };
+
+    Scene_AIChat.prototype._syncTranscript = function () {
+        const entries = ChatSystem.getTranscriptEntries().slice();
+        if (this._pendingReply) {
+            entries.push({
+                id: 'pending-reply',
+                type: 'message',
+                role: 'companion',
+                sender: Config.companionName,
+                text: this._pendingReply,
+                timestampLabel: this._pendingReplyTimestamp || ChatSystem.formatMessageTime(),
+                contextTag: ChatSystem.getCurrentContextMeta().tag,
+                pending: true
+            });
+        }
+        this._chatEntries = entries;
+        this._layoutBlocks = this._buildLayoutBlocks(entries);
+        this._contentHeight = this._layoutBlocks.reduce((sum, block, index) => {
+            return sum + block.height + (index > 0 ? this._blockGap : 0);
+        }, 8);
+    };
+
+    Scene_AIChat.prototype._rebuildTranscriptView = function (stickToBottom) {
+        this._syncTranscript();
+        if (stickToBottom) this._scrollToBottom();
+        else this._clampScroll();
+        this._refreshChat();
+    };
+
+    Scene_AIChat.prototype._wrapMessageLines = function (text, firstLineWidth, nextLineWidth) {
+        const normalized = String(text || '').replace(/\r/g, '');
+        const paragraphs = normalized.split('\n');
+        const lines = [];
+        let isFirstLine = true;
+
+        for (let p = 0; p < paragraphs.length; p++) {
+            const paragraph = paragraphs[p];
+            if (!paragraph.trim()) {
+                if (lines.length > 0) lines.push('');
+                isFirstLine = false;
+                continue;
             }
 
-            // Stop rendering if this line would exceed the visible area
-            if (accY + this._lineHeight > maxContentHeight) break;
+            const words = paragraph.split(/\s+/);
+            let currentLine = '';
 
-            const y = accY;
-            const isPlayer = (entry.role === 'You' || entry.role === 'player');
+            for (let i = 0; i < words.length; i++) {
+                const word = words[i];
+                const testLine = currentLine ? currentLine + ' ' + word : word;
+                const maxWidth = isFirstLine ? firstLineWidth : nextLineWidth;
 
-            // Calculate name and text column widths
-            const name = isPlayer
+                if (this._chatWindow.textWidth(testLine) > maxWidth && currentLine) {
+                    lines.push(currentLine);
+                    currentLine = word;
+                    isFirstLine = false;
+                } else {
+                    currentLine = testLine;
+                }
+            }
+
+            if (currentLine) {
+                lines.push(currentLine);
+                isFirstLine = false;
+            }
+        }
+
+        return lines.length > 0 ? lines : [''];
+    };
+
+    Scene_AIChat.prototype._buildLayoutBlocks = function (entries) {
+        const blocks = [];
+        const timestampWidth = 56;
+
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+
+            if (entry.type === 'separator') {
+                blocks.push({
+                    type: 'separator',
+                    entry: entry,
+                    height: this._separatorHeight
+                });
+                continue;
+            }
+
+            const isPlayer = entry.role === 'player' || entry.role === 'You';
+            const senderName = entry.sender || (isPlayer
                 ? ($gameParty && $gameParty.leader() ? $gameParty.leader().name() : (Config.language === 'es' ? 'Tú' : 'You'))
-                : Config.companionName;
-            const nameWidth = Math.min(Math.max(this._chatWindow.contents.measureTextWidth(name + ':') + 8, 50), 200);
-            const textStartX = 4 + nameWidth + 4;
-            const availableTextWidth = this._chatWindow.contentsWidth() - textStartX - (entry.isFirstLine ? tsWidth + 8 : 4);
+                : Config.companionName);
+            const nameWidth = Math.min(Math.max(this._chatWindow.textWidth(senderName + ':') + 8, 56), 220);
+            const textStartX = 8 + nameWidth + 6;
+            const firstLineWidth = Math.max(80, this._chatWindow.contentsWidth() - textStartX - timestampWidth - 10);
+            const nextLineWidth = Math.max(80, this._chatWindow.contentsWidth() - textStartX - 10);
+            const lines = this._wrapMessageLines(entry.text, firstLineWidth, nextLineWidth);
 
-            if (entry.isFirstLine) {
-                // Draw colored name label
-                const nameColor = isPlayer ? '#6ec6ff' : '#ffb74d';
-                this._chatWindow.contents.textColor = nameColor;
-                this._chatWindow.contents.drawText(name + ':', 4, y, nameWidth, this._lineHeight);
+            blocks.push({
+                type: 'message',
+                entry: entry,
+                isPlayer: isPlayer,
+                senderName: senderName,
+                nameWidth: nameWidth,
+                textStartX: textStartX,
+                firstLineWidth: firstLineWidth,
+                nextLineWidth: nextLineWidth,
+                lines: lines,
+                height: Math.max(this._lineHeight, lines.length * this._lineHeight)
+            });
+        }
+
+        return blocks;
+    };
+
+    Scene_AIChat.prototype._refreshChat = function () {
+        this._chatWindow.contents.clear();
+        const maxContentHeight = this._getChatContentHeight();
+
+        if (!this._layoutBlocks || this._layoutBlocks.length === 0) {
+            const hint = Config.language === 'es'
+                ? 'Escribe y pulsa Enter. El historial queda guardado en esta partida.'
+                : 'Type and press Enter. Chat history is saved with this playthrough.';
+            this._chatWindow.drawTextEx(hint, 10, 10);
+            return;
+        }
+
+        let drawY = 4 - this._scrollY;
+        const separatorText = Config.language === 'es' ? { up: '▲ historial', down: '▼ más' } : { up: '▲ history', down: '▼ more' };
+
+        for (let i = 0; i < this._layoutBlocks.length; i++) {
+            const block = this._layoutBlocks[i];
+            if (i > 0) drawY += this._blockGap;
+
+            if (drawY + block.height < 0) {
+                drawY += block.height;
+                continue;
+            }
+            if (drawY > maxContentHeight) break;
+
+            if (block.type === 'separator') {
+                const label = block.entry.label || '';
+                const labelWidth = Math.min(this._chatWindow.textWidth(label) + 24, this._chatWindow.contentsWidth() - 32);
+                const lineY = drawY + Math.floor(this._separatorHeight / 2);
+                const leftWidth = Math.max(0, Math.floor((this._chatWindow.contentsWidth() - labelWidth - 24) / 2));
+                this._chatWindow.contents.fillRect(8, lineY, leftWidth, 1, '#555555');
+                this._chatWindow.contents.fillRect(16 + leftWidth + labelWidth, lineY, leftWidth, 1, '#555555');
+                this._chatWindow.contents.fontSize = 16;
+                this._chatWindow.contents.textColor = block.entry.contextTag === 'battle' ? '#d27d6a' : '#8fa7ba';
+                this._chatWindow.contents.drawText(label, 12 + leftWidth, drawY, labelWidth, this._separatorHeight, 'center');
+                this._chatWindow.contents.fontSize = 20;
                 this._chatWindow.contents.textColor = '#ffffff';
+                drawY += block.height;
+                continue;
+            }
 
-                // Draw message text with width limit (prevents overflow)
-                const cleanText = (entry.text || '').replace(/\\C\[\d+\]/g, '');
-                this._chatWindow.contents.drawText(cleanText, textStartX, y, availableTextWidth, this._lineHeight);
+            const nameColor = block.isPlayer ? '#6ec6ff' : '#ffb74d';
+            const timestampLabel = block.entry.timestampLabel || '';
+            const timestampX = this._chatWindow.contentsWidth() - 60;
 
-                if (entry.timestamp) {
-                    const tsX = this._chatWindow.contentsWidth() - tsWidth - 4;
+            this._chatWindow.contents.textColor = nameColor;
+            this._chatWindow.contents.drawText(block.senderName + ':', 8, drawY, block.nameWidth, this._lineHeight);
+            this._chatWindow.contents.textColor = '#ffffff';
+
+            for (let lineIndex = 0; lineIndex < block.lines.length; lineIndex++) {
+                const lineY = drawY + (lineIndex * this._lineHeight);
+                const lineText = block.lines[lineIndex];
+                const maxWidth = lineIndex === 0 ? block.firstLineWidth : block.nextLineWidth;
+                this._chatWindow.contents.drawText(lineText, block.textStartX, lineY, maxWidth, this._lineHeight);
+
+                if (lineIndex === 0 && timestampLabel) {
                     this._chatWindow.contents.textColor = '#888888';
                     this._chatWindow.contents.fontSize = 16;
-                    this._chatWindow.contents.drawText(entry.timestamp, tsX, y + 2, tsWidth, this._lineHeight, 'right');
+                    this._chatWindow.contents.drawText(timestampLabel, timestampX, lineY + 2, 56, this._lineHeight, 'right');
                     this._chatWindow.contents.fontSize = 20;
                     this._chatWindow.contents.textColor = '#ffffff';
                 }
-            } else {
-                // Continuation lines: aligned with first line text
-                const cleanText = (entry.text || '').replace(/\\C\[\d+\]/g, '');
-                this._chatWindow.contents.drawText(cleanText, textStartX, y, availableTextWidth + tsWidth, this._lineHeight);
             }
-            accY += this._lineHeight;
+
+            drawY += block.height;
         }
 
         // Draw scroll indicators
@@ -5319,116 +5787,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         this._chatWindow.contents.fontSize = 14;
         this._chatWindow.contents.textColor = '#aaaaaa';
         if (this._scrollY > 0) {
-            this._chatWindow.contents.drawText('▲ más arriba', cw - 100, 0, 96, 16, 'right');
+            this._chatWindow.contents.drawText(separatorText.up, cw - 100, 0, 96, 16, 'right');
         }
-        const maxScroll = Math.max(0, this._chatMessages.length - this._maxVisibleLines);
+        const maxScroll = this._getMaxScroll();
         if (this._scrollY < maxScroll) {
-            this._chatWindow.contents.drawText('▼ más abajo', cw - 100, maxContentHeight - 14, 96, 16, 'right');
+            this._chatWindow.contents.drawText(separatorText.down, cw - 100, maxContentHeight - 14, 96, 16, 'right');
         }
         this._chatWindow.contents.fontSize = 20;
         this._chatWindow.contents.textColor = '#ffffff';
-    };
-
-    Scene_AIChat.prototype._addMessage = function (sender, text) {
-        const coloredText = ChatSystem.colorCodeText(text);
-        const windowWidth = this._chatWindow.contentsWidth();
-        const tsWidth = 50;
-        const safeMargin = 16;
-        
-        let nameText = sender;
-        if (sender === 'You') {
-             nameText = $gameParty && $gameParty.leader() ? $gameParty.leader().name() : (Config.language === 'es' ? 'Tú' : 'You');
-        } else if (sender === Config.companionName) {
-             nameText = Config.companionName;
-        }
-        
-        const nameWidth = Math.min(Math.max(this._chatWindow.contents.measureTextWidth(nameText + ':') + 8, 50), 200);
-        const textStartX = 4 + nameWidth + 4;
-        const firstLineMaxWidth = windowWidth - textStartX - tsWidth - safeMargin;
-        const contLineMaxWidth = windowWidth - textStartX - safeMargin;
-
-        const words = coloredText.split(' ');
-        let line = '';
-        const linesToAdd = [];
-        const timestamp = ChatSystem.formatMessageTime();
-        let isFirstLine = true;
-
-        for (let word of words) {
-            const testLine = line + (line ? ' ' : '') + word;
-            const cleanLine = testLine.replace(/\\C\[\d+\]/g, '');
-            const maxW = isFirstLine ? firstLineMaxWidth : contLineMaxWidth;
-            
-            // Text width test
-            if (this._chatWindow.textWidth(cleanLine) > maxW && line.length > 0) {
-                linesToAdd.push(line);
-                line = word;
-                isFirstLine = false;
-            } else {
-                line = testLine;
-            }
-        }
-        if (line.trim()) linesToAdd.push(line);
-
-        for (let idx = 0; idx < linesToAdd.length; idx++) {
-            ChatSystem.addDisplayMessage(sender, linesToAdd[idx], idx === 0 ? timestamp : '', idx === 0);
-        }
-
-        this._chatMessages = ChatSystem.getDisplayMessages();
-        this._scrollY = Math.max(0, this._chatMessages.length - this._maxVisibleLines);
-        this._refreshChat();
-    };
-
-    // Typewriter effect for AI responses
-    Scene_AIChat.prototype._addMessageWithTypewriter = async function (sender, text) {
-        const coloredText = ChatSystem.colorCodeText(text);
-        const windowWidth = this._chatWindow.contentsWidth();
-        const tsWidth = 50;
-        const safeMargin = 16;
-        
-        let nameText = sender;
-        if (sender === 'You') {
-             nameText = $gameParty && $gameParty.leader() ? $gameParty.leader().name() : (Config.language === 'es' ? 'Tú' : 'You');
-        } else if (sender === Config.companionName) {
-             nameText = Config.companionName;
-        }
-
-        const nameWidth = Math.min(Math.max(this._chatWindow.contents.measureTextWidth(nameText + ':') + 8, 50), 200);
-        const textStartX = 4 + nameWidth + 4;
-        const firstLineMaxWidth = windowWidth - textStartX - tsWidth - safeMargin;
-        const contLineMaxWidth = windowWidth - textStartX - safeMargin;
-
-        const words = coloredText.split(' ');
-        let line = '';
-        const wrappedLines = [];
-        let isFirstLine = true;
-
-        for (let word of words) {
-            const testLine = line + (line ? ' ' : '') + word;
-            const cleanLine = testLine.replace(/\\C\[\d+\]/g, '');
-            const maxW = isFirstLine ? firstLineMaxWidth : contLineMaxWidth;
-
-            if (this._chatWindow.textWidth(cleanLine) > maxW && line.length > 0) {
-                wrappedLines.push(line);
-                line = word;
-                isFirstLine = false;
-            } else {
-                line = testLine;
-            }
-        }
-        if (line.trim()) wrappedLines.push(line);
-
-        const ts = ChatSystem.formatMessageTime();
-        for (let idx = 0; idx < wrappedLines.length; idx++) {
-            ChatSystem.addDisplayMessage(Config.companionName, wrappedLines[idx], idx === 0 ? ts : '', idx === 0);
-            this._chatMessages = ChatSystem.getDisplayMessages();
-            this._scrollY = Math.max(0, this._chatMessages.length - this._maxVisibleLines);
-            this._refreshChat();
-            if (!Input.isTriggered('ok')) await new Promise(r => setTimeout(r, 50));
-            if (Input.isTriggered('ok')) break;
-        }
-
-        this._chatMessages = ChatSystem.getDisplayMessages();
-        this._refreshChat();
     };
 
     Scene_AIChat.prototype.onInputOk = async function () {
@@ -5444,18 +5810,17 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
         // Deactivate input during processing
         this._inputWindow.deactivate();
+        this._pendingReply = '...';
+        this._pendingReplyTimestamp = ChatSystem.formatMessageTime();
 
-        this._addMessage('You', message);
-        this._addMessage(Config.companionName, '...');
-
-        const response = await ChatSystem.sendMessage(message);
+        const responsePromise = ChatSystem.sendMessage(message);
+        this._rebuildTranscriptView(true);
+        const response = await responsePromise;
         Debug.log('Chat: Received response:', response);
 
-        if (ChatSystem._displayMessages.length > 0) ChatSystem._displayMessages.pop();
-        this._chatMessages = ChatSystem.getDisplayMessages();
-
-        // Add response with typewriter effect
-        await this._addMessageWithTypewriter(Config.companionName, response);
+        this._pendingReply = null;
+        this._pendingReplyTimestamp = null;
+        this._rebuildTranscriptView(true);
 
         this._inputWindow.clear();
         this._inputWindow.activate();
@@ -5796,7 +6161,8 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         if (!wasInParty && this._actors.includes(actorId) && typeof ShortTermMemory !== 'undefined') {
             const actor = $gameActors.actor(actorId);
             if (actor) {
-                ShortTermMemory.addEvent(`${actor.name()} joined the party.`, 'map');
+                const actorName = actor.name() || 'Unknown';
+                ShortTermMemory.addEvent(`${actorName} joined the party.`, 'map');
                 // AI comments on new party members
                 if (actorId !== Config.companionActorId) {
                     AmbientDialogue.onPartyJoin(actor.name());
@@ -5903,7 +6269,8 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
     const _BattleManager_processVictory = BattleManager.processVictory;
     BattleManager.processVictory = function () {
-        const enemyNames = $gameTroop.members().map(m => m.name());
+        const rawNames = $gameTroop.members().map(m => m.name());
+        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, true);
         AmbientDialogue.onBattleEnd(true);
         ThesisLogger.log('game_event', { event: 'battle_victory', enemies: enemyNames });
@@ -5920,7 +6287,8 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
     const _BattleManager_processEscape = BattleManager.processEscape;
     BattleManager.processEscape = function () {
-        const enemyNames = $gameTroop.members().map(m => m.name());
+        const rawNames = $gameTroop.members().map(m => m.name());
+        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, false);
         AmbientDialogue.onBattleEnd(false);
         ThesisLogger.log('game_event', { event: 'battle_escape', enemies: enemyNames });
