@@ -1280,7 +1280,28 @@ Reply with ONLY the category name, nothing else.`;
         },
 
         _genericEventName(name) {
-            return /^(?:ev\d+|event\d+|evt\d+|e\d+)$/i.test(String(name || '').trim());
+            const raw = String(name || '').trim();
+            if (!raw) return false;
+
+            const normalized = raw.toLowerCase();
+            if (/^(?:ev\d+|event\d+|evt\d+|e\d+)$/i.test(raw)) return true;
+            if (/^[a-z0-9]+(?:[_-][a-z0-9]+)+$/i.test(raw)) return true;
+            if (/^[a-z]+[_-]?\d+$/i.test(raw)) return true;
+            if (/^(?:event|npc|enemy|monster|mob|boss|guard|skeleton|ghoul|chest|crate|barrel|coin|door|gate|stairs?|ladder|warp|exit|entrance|passage|transfer|teleport|trap|switch|lever|corpse|merchant|shop|save|ritual|circle|prisoner|woman|man|girl|child)(?:[_-]?[a-z0-9]+)*$/i.test(normalized)) {
+                return true;
+            }
+
+            return false;
+        },
+
+        _looksPlayerFacingEventName(name) {
+            const raw = String(name || '').trim();
+            if (!raw) return false;
+            if (this._genericEventName(raw)) return false;
+            if (/^ev_/i.test(raw)) return false;
+            if (/[\\/:]/.test(raw)) return false;
+            if (/^[a-z0-9_-]+$/.test(raw) && raw === raw.toLowerCase()) return false;
+            return true;
         },
 
         _labelFromEnemySprite(sprite) {
@@ -1376,34 +1397,37 @@ Reply with ONLY the category name, nothing else.`;
             const page = this._safeEventPage(event);
             const rawName = data && data.name ? String(data.name).trim() : '';
             const sprite = this._normalize(page && page.image ? page.image.characterName : '');
+            const lowerRawName = rawName.toLowerCase();
 
-            if (rawName && !this._genericEventName(rawName) && !/^ev_/i.test(rawName)) {
-                return rawName;
-            }
             if (metadata.speakerName) return metadata.speakerName;
+            if (type === 'enemy') {
+                if (metadata.battleTroopName) return metadata.battleTroopName;
+                const spriteLabel = this._labelFromEnemySprite(sprite);
+                if (spriteLabel !== 'Enemigo') return spriteLabel;
+                if (this._looksPlayerFacingEventName(rawName)) return rawName;
+                return 'Enemigo';
+            }
             if (type === 'door') return 'Puerta';
             if (type === 'save_point') return 'Círculo ritual';
-            if (type === 'container') return rawName.toLowerCase().includes('coin') ? 'Moneda' : 'Cofre';
+            if (type === 'container') return lowerRawName.includes('coin') ? 'Moneda' : 'Cofre';
             if (type === 'corpse') return 'Cadáver';
             if (type === 'trap') {
-                if (rawName.toLowerCase().includes('arrow')) return 'Trampa de flechas';
-                if (sprite.includes('beartrap') || rawName.toLowerCase().includes('beartrap')) return 'Trampa de oso';
+                if (lowerRawName.includes('arrow')) return 'Trampa de flechas';
+                if (sprite.includes('beartrap') || lowerRawName.includes('beartrap')) return 'Trampa de oso';
                 return 'Suelo peligroso';
             }
             if (type === 'hazard') {
-                if (rawName.toLowerCase().includes('demonseed') || sprite.includes('seed')) return 'Semilla demoníaca';
+                if (lowerRawName.includes('demonseed') || sprite.includes('seed')) return 'Semilla demoníaca';
                 return 'Crecimiento orgánico';
             }
             if (type === 'npc') {
-                if (sprite.includes('chained') || rawName.toLowerCase().includes('chained')) return 'Prisionero encadenado';
+                if (sprite.includes('chained') || lowerRawName.includes('chained')) return 'Prisionero encadenado';
+                if (this._looksPlayerFacingEventName(rawName)) return rawName;
                 return 'NPC';
             }
-            if (type === 'enemy') {
-                if (metadata.battleTroopName) return metadata.battleTroopName;
-                return this._labelFromEnemySprite(sprite);
-            }
             if (type === 'shop') return 'Comerciante';
-            return rawName || 'Evento';
+            if (this._looksPlayerFacingEventName(rawName)) return rawName;
+            return 'Evento';
         },
 
         /**
@@ -1467,7 +1491,6 @@ Reply with ONLY the category name, nothing else.`;
                 subtype: subtype,
                 danger: this._dangerFor(type, subtype),
                 label: label,
-                rawName: rawName,
                 tags: tags,
                 distance: distance,
                 direction: this._getDirection(dx, dy),
