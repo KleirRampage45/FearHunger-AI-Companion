@@ -1164,79 +1164,246 @@ Reply with ONLY the category name, nothing else.`;
     //=========================================================================
     const EnvironmentScanner = {
         SCAN_RADIUS: 6,  // tiles around the player
+        LOCAL_GRID_RADIUS: 4,
+        MAX_NEARBY_EVENTS: 16,
         _cache: null,
         _cacheMapId: -1,
         _cachePlayerPos: '',
         _cacheTick: 0,
         CACHE_TTL: 60,   // frames between rescans (~1 second at 60fps)
 
-        /**
-         * Classification rules: sprite name or event name → object type.
-         * Built from analysis of Fear & Hunger map data.
-         */
-        _classifyEvent(event) {
-            if (!event || !event.event) return null;
-            const ev = event.event();
-            const name = (ev.name || '').toLowerCase();
-            const note = (ev.note || '').toLowerCase();
+        _enemySpriteLabels: {
+            guard: 'Guardia',
+            ghoul: 'Ghoul',
+            skeleton: 'Esqueleto',
+            mauler: 'Crow Mauler',
+            moonless: 'Moonless',
+            dark_priest: 'Sacerdote oscuro',
+            demon_child: 'Niño demonio',
+            demonbaby: 'Bebé demonio',
+            mercenary: 'Mercenario',
+            knight: 'Caballero',
+            captain: "Le'garde",
+            outlander: 'Forastero',
+            girl: 'Niña'
+        },
 
-            // Get active page's sprite
-            const page = event.page();
-            const sprite = page ? (page.image.characterName || '').toLowerCase() : '';
+        _normalize(text) {
+            return String(text || '').toLowerCase();
+        },
 
-            // Skip invisible/empty events
-            if (!sprite && !name) return null;
+        _mapReady() {
+            return !!($gameMap && $dataMap);
+        },
 
-            // --- TRAPS ---
-            if (sprite.includes('beartrap') || name.includes('beartrap'))
-                return { type: 'trap', subtype: 'bear_trap', danger: 'high', label: 'Trampa de oso' };
-            if (name.includes('fear_floor') || name.includes('spike'))
-                return { type: 'trap', subtype: 'floor_trap', danger: 'medium', label: 'Suelo peligroso' };
-            if (name.includes('arrow_check') || name.includes('arrow'))
-                return { type: 'trap', subtype: 'arrow_trap', danger: 'medium', label: 'Trampa de flechas' };
+        _safeEventData(event) {
+            if (!event || event._erased || !$dataMap || !$dataMap.events) return null;
+            const eventId = event.eventId ? event.eventId() : event._eventId;
+            if (!eventId) return null;
+            return $dataMap.events[eventId] || null;
+        },
 
-            // --- SAVE POINTS ---
-            if (name.includes('circle') || sprite.includes('portal'))
-                return { type: 'save_point', subtype: 'ritual_circle', danger: 'none', label: 'Círculo ritual (guardar)' };
+        _safeEventPage(event) {
+            const data = this._safeEventData(event);
+            if (!data || !data.pages) return null;
+            const pageIndex = event && event._pageIndex !== undefined ? event._pageIndex : -1;
+            if (pageIndex == null || pageIndex < 0 || pageIndex >= data.pages.length) return null;
+            return data.pages[pageIndex] || null;
+        },
 
-            // --- CONTAINERS / LOOT ---
-            if (sprite.includes('chest') || sprite.includes('$boxes'))
-                return { type: 'container', subtype: 'chest', danger: 'none', label: 'Cofre' };
-            if (name.includes('coin'))
-                return { type: 'loot', subtype: 'coin', danger: 'none', label: 'Moneda' };
+        _pageCommands(event) {
+            const page = this._safeEventPage(event);
+            return page && page.list ? page.list : [];
+        },
 
-            // --- DOORS ---
-            if (sprite.includes('door') || name.includes('door'))
-                return { type: 'door', subtype: 'door', danger: 'none', label: 'Puerta' };
-
-            // --- ENEMIES (roaming) ---
-            const enemySprites = ['guard', 'ghoul', 'skeleton', 'mauler', 'moonless',
-                'dark_priest', 'demon_child', 'demonbaby', 'mercenary', 'knight',
-                'captain', 'outlander', 'girl'];
-            for (const es of enemySprites) {
-                if (sprite.includes(es) && !sprite.includes('sawing') && !sprite.includes('dead')
-                    && !name.includes('dead') && !name.includes('DEAD')) {
-                    return { type: 'enemy', subtype: es, danger: 'high', label: es.charAt(0).toUpperCase() + es.slice(1) };
-                }
+        _databaseName(kind, id) {
+            let db = null;
+            switch (kind) {
+                case 'item': db = window.$dataItems; break;
+                case 'weapon': db = window.$dataWeapons; break;
+                case 'armor': db = window.$dataArmors; break;
+                case 'troop': db = window.$dataTroops; break;
+                default: return null;
             }
+            return db && db[id] ? db[id].name : null;
+        },
 
-            // --- CORPSES ---
-            if (name.includes('dead') || sprite.includes('dead'))
-                return { type: 'corpse', subtype: 'body', danger: 'none', label: 'Cadáver' };
+        _mapNameById(mapId) {
+            if (!$dataMapInfos || !$dataMapInfos[mapId]) return null;
+            return $dataMapInfos[mapId].name || null;
+        },
 
-            // --- CHAINED / PRISONERS ---
-            if (sprite.includes('chained') || name.includes('chained'))
-                return { type: 'npc', subtype: 'chained', danger: 'none', label: 'Prisionero encadenado' };
+        _extractSpeakerName(commands) {
+            for (let i = 0; i < commands.length; i++) {
+                const command = commands[i];
+                if (!command || (command.code !== 108 && command.code !== 408)) continue;
+                const text = command.parameters && command.parameters[0] ? String(command.parameters[0]) : '';
+                const match = text.match(/(?:name|speaker|nombre|habla)\s*[:=]\s*(.+)$/i);
+                if (match) return match[1].trim();
+            }
+            return null;
+        },
 
-            // --- FLESH / ORGANIC ---
-            if (sprite.includes('flesh') || sprite.includes('growth'))
-                return { type: 'hazard', subtype: 'organic', danger: 'low', label: 'Crecimiento orgánico' };
+        _eventMetadata(event) {
+            const commands = this._pageCommands(event);
+            const loot = [];
+            let transferMapId = null;
+            let battleTroopId = null;
+            const speakerName = this._extractSpeakerName(commands);
 
-            // --- DEMON SEEDS ---
-            if (name.includes('demonseed') || sprite.includes('seed'))
-                return { type: 'hazard', subtype: 'demon_seed', danger: 'medium', label: 'Semilla demoníaca' };
+            commands.forEach(command => {
+                if (!command) return;
+                const params = command.parameters || [];
+                if (command.code === 201 && transferMapId === null) {
+                    transferMapId = Number(params[1]) || null;
+                } else if (command.code === 301 && battleTroopId === null) {
+                    battleTroopId = Number(params[1]) || null;
+                } else if (command.code === 125) {
+                    loot.push({ kind: 'gold', amount: Number(params[2]) || 0 });
+                } else if (command.code === 126) {
+                    loot.push({ kind: 'item', id: Number(params[0]) || 0, name: this._databaseName('item', Number(params[0]) || 0) });
+                } else if (command.code === 127) {
+                    loot.push({ kind: 'weapon', id: Number(params[0]) || 0, name: this._databaseName('weapon', Number(params[0]) || 0) });
+                } else if (command.code === 128) {
+                    loot.push({ kind: 'armor', id: Number(params[0]) || 0, name: this._databaseName('armor', Number(params[0]) || 0) });
+                }
+            });
 
-            return null; // Unknown or irrelevant event (lights, blood stains, etc.)
+            return {
+                speakerName: speakerName,
+                loot: loot,
+                transferMapId: transferMapId,
+                transferMapName: transferMapId !== null ? this._mapNameById(transferMapId) : null,
+                battleTroopId: battleTroopId,
+                battleTroopName: battleTroopId !== null ? this._databaseName('troop', battleTroopId) : null
+            };
+        },
+
+        _genericEventName(name) {
+            return /^(?:ev\d+|event\d+|evt\d+|e\d+)$/i.test(String(name || '').trim());
+        },
+
+        _labelFromEnemySprite(sprite) {
+            for (const key in this._enemySpriteLabels) {
+                if (sprite.includes(key)) return this._enemySpriteLabels[key];
+            }
+            return 'Enemigo';
+        },
+
+        _eventTags(event, metadata) {
+            const data = this._safeEventData(event);
+            const page = this._safeEventPage(event);
+            if (!data || !page) return [];
+
+            const name = this._normalize(data.name);
+            const note = this._normalize(data.note);
+            const sprite = this._normalize(page.image ? page.image.characterName : '');
+            const tags = [];
+
+            const hasKeyword = pattern => pattern.test(name) || pattern.test(note) || pattern.test(sprite);
+            const hasTransfer = metadata.transferMapId !== null;
+            const hasBattle = metadata.battleTroopId !== null;
+            const hasLoot = metadata.loot.length > 0;
+            const commands = this._pageCommands(event);
+            const commandCodes = {};
+            commands.forEach(command => { if (command) commandCodes[command.code] = true; });
+            const hasText = !!commandCodes[101] || !!commandCodes[401] || !!commandCodes[102];
+            const hasShop = !!commandCodes[302];
+
+            if (hasKeyword(/beartrap/) || hasKeyword(/fear_floor|spike/) || hasKeyword(/arrow_check|arrow/)) tags.push('trap');
+            if (hasKeyword(/circle|ritual/) || sprite.includes('portal')) tags.push('save_point');
+            if (hasTransfer || hasKeyword(/door|gate|stairs|stair|ladder|warp|exit|entrance|passage/)) tags.push('door');
+            if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/)) tags.push('container');
+            if (hasBattle || hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/)) tags.push('enemy');
+            if (hasShop) tags.push('shop');
+            if (hasText || metadata.speakerName || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child/)) tags.push('npc');
+            if (hasKeyword(/dead|corpse/) || sprite.includes('dead')) tags.push('corpse');
+            if (hasKeyword(/flesh|growth|demonseed|seed/) || sprite.includes('flesh') || sprite.includes('growth')) tags.push('hazard');
+
+            return tags.filter((tag, index, list) => list.indexOf(tag) === index);
+        },
+
+        _eventType(tags) {
+            if (tags.includes('enemy')) return 'enemy';
+            if (tags.includes('trap')) return 'trap';
+            if (tags.includes('door')) return 'door';
+            if (tags.includes('container')) return 'container';
+            if (tags.includes('save_point')) return 'save_point';
+            if (tags.includes('shop')) return 'shop';
+            if (tags.includes('npc')) return 'npc';
+            if (tags.includes('hazard')) return 'hazard';
+            if (tags.includes('corpse')) return 'corpse';
+            return 'event';
+        },
+
+        _dangerFor(type, subtype) {
+            if (type === 'enemy') return 'high';
+            if (type === 'trap') return subtype === 'bear_trap' ? 'high' : 'medium';
+            if (type === 'hazard') return subtype === 'demon_seed' ? 'medium' : 'low';
+            return 'none';
+        },
+
+        _subtypeFor(type, data, page, metadata) {
+            const name = this._normalize(data.name);
+            const sprite = this._normalize(page && page.image ? page.image.characterName : '');
+            if (type === 'trap') {
+                if (sprite.includes('beartrap') || name.includes('beartrap')) return 'bear_trap';
+                if (name.includes('arrow_check') || name.includes('arrow')) return 'arrow_trap';
+                return 'floor_trap';
+            }
+            if (type === 'enemy') {
+                for (const key in this._enemySpriteLabels) {
+                    if (sprite.includes(key)) return key;
+                }
+                if (metadata.battleTroopName) return metadata.battleTroopName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                return 'enemy';
+            }
+            if (type === 'container') {
+                if (name.includes('coin')) return 'coin';
+                return 'chest';
+            }
+            if (type === 'save_point') return 'ritual_circle';
+            if (type === 'hazard') {
+                if (name.includes('demonseed') || sprite.includes('seed')) return 'demon_seed';
+                return 'organic';
+            }
+            if (type === 'npc' && (sprite.includes('chained') || name.includes('chained'))) return 'chained';
+            return type;
+        },
+
+        _labelForEvent(event, type, tags, metadata) {
+            const data = this._safeEventData(event);
+            const page = this._safeEventPage(event);
+            const rawName = data && data.name ? String(data.name).trim() : '';
+            const sprite = this._normalize(page && page.image ? page.image.characterName : '');
+
+            if (rawName && !this._genericEventName(rawName) && !/^ev_/i.test(rawName)) {
+                return rawName;
+            }
+            if (metadata.speakerName) return metadata.speakerName;
+            if (type === 'door') return 'Puerta';
+            if (type === 'save_point') return 'Círculo ritual';
+            if (type === 'container') return rawName.toLowerCase().includes('coin') ? 'Moneda' : 'Cofre';
+            if (type === 'corpse') return 'Cadáver';
+            if (type === 'trap') {
+                if (rawName.toLowerCase().includes('arrow')) return 'Trampa de flechas';
+                if (sprite.includes('beartrap') || rawName.toLowerCase().includes('beartrap')) return 'Trampa de oso';
+                return 'Suelo peligroso';
+            }
+            if (type === 'hazard') {
+                if (rawName.toLowerCase().includes('demonseed') || sprite.includes('seed')) return 'Semilla demoníaca';
+                return 'Crecimiento orgánico';
+            }
+            if (type === 'npc') {
+                if (sprite.includes('chained') || rawName.toLowerCase().includes('chained')) return 'Prisionero encadenado';
+                return 'NPC';
+            }
+            if (type === 'enemy') {
+                if (metadata.battleTroopName) return metadata.battleTroopName;
+                return this._labelFromEnemySprite(sprite);
+            }
+            if (type === 'shop') return 'Comerciante';
+            return rawName || 'Evento';
         },
 
         /**
@@ -1247,15 +1414,80 @@ Reply with ONLY the category name, nothing else.`;
                 return dx > 0 ? 'este' : 'oeste';
             } else if (Math.abs(dy) > Math.abs(dx)) {
                 return dy > 0 ? 'sur' : 'norte';
-            } else {
-                // Diagonal
-                return (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
             }
+            return (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
+        },
+
+        _tileStandable(x, y) {
+            if (!this._mapReady() || !$gameMap.isValid(x, y)) return false;
+            const directions = [2, 4, 6, 8];
+            for (let i = 0; i < directions.length; i++) {
+                if ($gameMap.isPassable(x, y, directions[i])) return true;
+            }
+            return false;
+        },
+
+        _symbolForEventType(type) {
+            switch (type) {
+                case 'enemy': return 'E';
+                case 'trap': return 'T';
+                case 'door': return 'D';
+                case 'container': return 'C';
+                case 'npc': return 'N';
+                case 'save_point': return 'S';
+                case 'hazard': return 'H';
+                case 'corpse': return 'X';
+                default: return '?';
+            }
+        },
+
+        _eventSnapshot(event, px, py) {
+            const data = this._safeEventData(event);
+            const page = this._safeEventPage(event);
+            if (!data || !page) return null;
+
+            const rawName = data.name || '';
+            const sprite = this._normalize(page.image ? page.image.characterName : '');
+            if (!sprite && !rawName) return null;
+
+            const metadata = this._eventMetadata(event);
+            const tags = this._eventTags(event, metadata);
+            if (tags.length === 0) return null;
+
+            const type = this._eventType(tags);
+            const subtype = this._subtypeFor(type, data, page, metadata);
+            const dx = event.x - px;
+            const dy = event.y - py;
+            const distance = Math.abs(dx) + Math.abs(dy);
+            const label = this._labelForEvent(event, type, tags, metadata);
+
+            return {
+                id: event.eventId ? event.eventId() : event._eventId,
+                type: type,
+                subtype: subtype,
+                danger: this._dangerFor(type, subtype),
+                label: label,
+                rawName: rawName,
+                tags: tags,
+                distance: distance,
+                direction: this._getDirection(dx, dy),
+                x: event.x,
+                y: event.y,
+                dx: dx,
+                dy: dy,
+                sprite: page.image ? page.image.characterName : '',
+                loot: metadata.loot,
+                transferMapId: metadata.transferMapId,
+                transferMapName: metadata.transferMapName,
+                battleTroopId: metadata.battleTroopId,
+                battleTroopName: metadata.battleTroopName,
+                speakerName: metadata.speakerName
+            };
         },
 
         /**
          * Scan the current map for notable objects near the player.
-         * Returns array of { type, subtype, label, danger, distance, direction, x, y }
+         * Returns structured snapshots instead of only a flat label list.
          */
         scan() {
             if (!$gameMap || !$gamePlayer) return [];
@@ -1279,39 +1511,97 @@ Reply with ONLY the category name, nothing else.`;
             for (const event of events) {
                 if (!event) continue;
 
-                // Distance check (Manhattan for speed)
                 const dx = event.x - px;
                 const dy = event.y - py;
                 const dist = Math.abs(dx) + Math.abs(dy);
                 if (dist > radius || dist === 0) continue;
 
-                const classification = this._classifyEvent(event);
-                if (!classification) continue;
-
-                results.push({
-                    ...classification,
-                    distance: dist,
-                    direction: this._getDirection(dx, dy),
-                    x: event.x,
-                    y: event.y
-                });
+                const snapshot = this._eventSnapshot(event, px, py);
+                if (!snapshot) continue;
+                results.push(snapshot);
             }
 
-            // Sort by danger (high first), then by distance
             const dangerOrder = { high: 0, medium: 1, low: 2, none: 3 };
             results.sort((a, b) => {
                 const da = dangerOrder[a.danger] || 3;
                 const db = dangerOrder[b.danger] || 3;
                 if (da !== db) return da - db;
+                if (a.type !== b.type) return a.type < b.type ? -1 : 1;
                 return a.distance - b.distance;
             });
 
-            // Cache and return (limit to 8 most relevant)
-            this._cache = results.slice(0, 8);
+            this._cache = results.slice(0, this.MAX_NEARBY_EVENTS);
             this._cacheMapId = $gameMap.mapId();
             this._cachePlayerPos = posKey;
             this._cacheTick = 0;
             return this._cache;
+        },
+
+        getPointsOfInterest() {
+            const nearby = this.scan();
+            const priority = {
+                trap: 120,
+                enemy: 100,
+                container: 80,
+                save_point: 70,
+                door: 60,
+                npc: 50,
+                hazard: 40,
+                corpse: 10
+            };
+            return nearby
+                .filter(entry => ['trap', 'enemy', 'container', 'save_point', 'door', 'npc', 'hazard'].includes(entry.type))
+                .sort((a, b) => {
+                    const pa = priority[a.type] || 0;
+                    const pb = priority[b.type] || 0;
+                    if (pa !== pb) return pb - pa;
+                    return a.distance - b.distance;
+                })
+                .slice(0, 8);
+        },
+
+        getLocalGrid(radius) {
+            if (!this._mapReady() || !$gamePlayer) return null;
+            const scanRadius = radius === undefined ? this.LOCAL_GRID_RADIUS : Number(radius) || this.LOCAL_GRID_RADIUS;
+            const nearby = this.scan();
+            const eventsByKey = {};
+            nearby.forEach(entry => { eventsByKey[entry.x + ',' + entry.y] = entry; });
+
+            const rows = [];
+            for (let y = $gamePlayer.y - scanRadius; y <= $gamePlayer.y + scanRadius; y++) {
+                let text = '';
+                for (let x = $gamePlayer.x - scanRadius; x <= $gamePlayer.x + scanRadius; x++) {
+                    const key = x + ',' + y;
+                    if (!$gameMap.isValid(x, y)) {
+                        text += ' ';
+                    } else if ($gamePlayer.x === x && $gamePlayer.y === y) {
+                        text += '@';
+                    } else if (eventsByKey[key]) {
+                        text += this._symbolForEventType(eventsByKey[key].type);
+                    } else {
+                        text += this._tileStandable(x, y) ? '.' : '#';
+                    }
+                }
+                rows.push({ y: y, text: text });
+            }
+
+            return {
+                radius: scanRadius,
+                origin: { x: $gamePlayer.x, y: $gamePlayer.y },
+                rows: rows
+            };
+        },
+
+        observe() {
+            return {
+                map: {
+                    id: $gameMap ? $gameMap.mapId() : null,
+                    name: $gameMap && $gameMap.displayName ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null
+                },
+                nearbyEvents: this.scan(),
+                pointsOfInterest: this.getPointsOfInterest(),
+                localGrid: this.getLocalGrid()
+            };
         },
 
         /**
@@ -1319,12 +1609,12 @@ Reply with ONLY the category name, nothing else.`;
          * Returns empty string if nothing notable nearby.
          */
         getSummary() {
-            const nearby = this.scan();
+            const nearby = this.getPointsOfInterest();
             if (nearby.length === 0) return '';
 
             const lines = [];
-            const dangerItems = nearby.filter(n => n.danger === 'high');
-            const otherItems = nearby.filter(n => n.danger !== 'high');
+            const dangerItems = nearby.filter(n => n.danger === 'high' || n.type === 'trap');
+            const otherItems = nearby.filter(n => !(n.danger === 'high' || n.type === 'trap'));
 
             for (const item of dangerItems) {
                 lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
@@ -1342,7 +1632,11 @@ Reply with ONLY the category name, nothing else.`;
          */
         getImmediateThreats() {
             const nearby = this.scan();
-            return nearby.filter(n => n.danger === 'high' && n.distance <= 2);
+            return nearby.filter(n =>
+                (n.type === 'enemy' || n.type === 'trap' || n.type === 'hazard') &&
+                (n.danger === 'high' || n.danger === 'medium') &&
+                n.distance <= 2
+            );
         }
     };
 
@@ -4328,6 +4622,7 @@ Respond ONLY with this JSON:
                 })),
                 // NEW: spatial awareness — nearby objects from EnvironmentScanner
                 nearby_objects: EnvironmentScanner.getSummary(),
+                nearby_observation: EnvironmentScanner.observe(),
                 // Branch 6: World State Engine — aggregated situational summary
                 world_state: WorldStateEngine.getWorldSummary(),
                 // Branch 7: NPC Intelligence — recent NPC dialogue
