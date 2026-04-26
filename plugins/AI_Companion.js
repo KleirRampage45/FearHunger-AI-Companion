@@ -2840,7 +2840,7 @@ Respond ONLY with this JSON:
             // Telemetry helper for combat logging
             const _logCombatDecision = (decision, modelUsed, source) => {
                 const latency = Math.round(performance.now() - startTime);
-                ThesisLogger.log('combat_decision', {
+                const snapshot = {
                     battle_turn: battleState.turn_number,
                     enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
                     companion_battle_hp: battleState.companion ? battleState.companion.hp : null,
@@ -2854,7 +2854,9 @@ Respond ONLY with this JSON:
                     response_source: source,
                     model_used: modelUsed,
                     latency_ms: latency
-                });
+                };
+                ThesisLogger.log('combat_decision', snapshot);
+                DebugState.captureCombat(snapshot);
             };
 
             // Helper: try a single sync request
@@ -4571,6 +4573,37 @@ Respond ONLY with this JSON:
         EquipmentHelper
     };
 
+    const DebugState = {
+        lastChat: null,
+        lastCombat: null,
+        lastNearbyObservation: null,
+
+        _clone(value) {
+            try { return JSON.parse(JSON.stringify(value)); }
+            catch (e) { return value; }
+        },
+
+        captureChat(snapshot) {
+            this.lastChat = this._clone(snapshot);
+        },
+
+        captureCombat(snapshot) {
+            this.lastCombat = this._clone(snapshot);
+        },
+
+        captureNearby(snapshot) {
+            this.lastNearbyObservation = this._clone(snapshot);
+        },
+
+        getSnapshot() {
+            return {
+                lastChat: this._clone(this.lastChat),
+                lastCombat: this._clone(this.lastCombat),
+                lastNearbyObservation: this._clone(this.lastNearbyObservation)
+            };
+        }
+    };
+
     //=========================================================================
     // PHASE 4.1: Chat System (Keypress C to talk - T is torch)
     //=========================================================================
@@ -5388,6 +5421,7 @@ Respond ONLY with this JSON:
                 npc_dialogue_entries: NPCIntelligence.getRecentDialogueEntries(),
                 recently_mentioned_facts: DialogueMemory.getPromptFacts($gameMap ? $gameMap.mapId() : null),
             };
+            DebugState.captureNearby(ctx.nearby_observation);
             if (Config.debugMode) {
                 Debug.log('[Chat] getContext:', JSON.stringify(ctx, null, 2));
             }
@@ -5453,6 +5487,16 @@ Respond ONLY with this JSON:
                         latency_ms: chatLatency,
                         model_used: null
                     });
+                    DebugState.captureChat({
+                        player_message: playerMessage,
+                        intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                        prompt_length: prompt.length,
+                        prompt_sections: this._lastPromptSections || null,
+                        response_text: fallback,
+                        response_source: 'kb_fallback',
+                        latency_ms: chatLatency,
+                        model_used: null
+                    });
                     return fallback;
                 }
                 const validation = this._validateChatResponse(response, playerMessage, context, intent);
@@ -5481,6 +5525,21 @@ Respond ONLY with this JSON:
                     latency_ms: chatLatency,
                     model_used: this._lastModelUsed || null
                 });
+                DebugState.captureChat({
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    prompt_sections: this._lastPromptSections || null,
+                    response_text: finalResponse,
+                    raw_response_text: response,
+                    response_source: validation.changed ? 'llm_validated' : 'llm',
+                    response_validated: validation.changed,
+                    validator_reason: validation.reason,
+                    latency_ms: chatLatency,
+                    model_used: this._lastModelUsed || null,
+                    context_map: context.current_map,
+                    nearby_objects: context.nearby_objects
+                });
                 return finalResponse;
             } catch (error) {
                 const chatLatency = Math.round(performance.now() - chatStartTime);
@@ -5500,6 +5559,18 @@ Respond ONLY with this JSON:
                     response_source: 'kb_fallback_error',
                     latency_ms: chatLatency,
                     error: error.message
+                });
+                DebugState.captureChat({
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    prompt_sections: this._lastPromptSections || null,
+                    response_text: fallback,
+                    response_source: 'kb_fallback_error',
+                    latency_ms: chatLatency,
+                    error: error.message,
+                    context_map: context.current_map,
+                    nearby_objects: context.nearby_objects
                 });
                 return fallback;
             }
@@ -7437,6 +7508,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
     window.AI_Companion.WorldStateEngine = WorldStateEngine;
     window.AI_Companion.NPCIntelligence = NPCIntelligence;
+    window.AI_Companion.DebugState = DebugState;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)
