@@ -702,12 +702,13 @@
         _patterns: {
             item_info: /(?:que es|what is|para que sirve|what does|donde encuentro|where.*find|como usar|how.*use|tengo un[oa]?|hierba|herb|vial|pocion|potion|soul stone|piedra|cloth|fragmento|pinecone|dagger|espada|escudo|shield|ring|anillo|armor|armadura|weapon|arma)/i,
             tactical: /(?:que hago|what.*do|como.*mato|how.*kill|como.*peleo|how.*fight|estrategia|strategy|debilidad|weakness|vulnerab|atacar|attack|defender|defend|guard|guardia|coin flip|moneda|limb|miembro|brazo|arm|pierna|leg|cabeza|head|prioridad|priority|enemigo|enemy|pelea|pelear|combate|combat|monstruo|monster|criatura|creature)/i,
+            npc_recall: /(?:con quien acabamos de hablar|con quién acabamos de hablar|con quien hablamos|con quién hablamos|con quien hable|con quién hablé|quien era ese npc|quién era ese npc|quien nos hablo|quién nos habló|que dijo ese npc|qué dijo ese npc|who did we just talk to|who was that npc|what did that npc say)/i,
             recent_battle: /(?:acabamos|derrotamos|matamos|vencimos|peleamos|que era eso|what was that|que matamos|what.*kill|last fight|ultima pelea|enemigo anterior|que acaba de pasar|recien|just fought|just killed|que paso en la pelea|batalla anterior)/i,
             lore: /(?:quien es|who is|que es este lugar|where.*we|donde estamos|historia|story|lore|dios|god|sylvian|gro.goroth|rher|vinushka|alll.mer|fellowship|mahab|ma'hab|tower|torre|void|vacio|nosramus|pocketcat|legarde|le'garde)/i,
             social: /(?:que opinas|que te parece|del grupo|integrante|nuevo|de ella|de el|quien es este|quienes son|acompañan|que piensas)/i,
             emotional: /(?:como estas|how.*you|como te sientes|how.*feel|tengo miedo|i'm scared|estoy asustado|nervios|nervous|vamos a morir|we.*die|gracias|thank|lo siento|sorry|te quiero|confio|trust)/i,
             status_help: /(?:icon|icono|status|estado|efecto|effect|cura|cure|poison|veneno|bleed|sangr|infect|parasi|burn|quemad|fear|miedo|hunger|hambre|blind|cieg|curse|maldic|fractur|paraliz|ruin|brain flower|flor|confused|confundid|toxic|toxico)/i,
-            location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path|que ves|qué ves|ves algo|what do you see|what.*around|que hay alrededor|qué hay alrededor)/i
+            location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path|que ves|qué ves|ves algo|ves un npc|hay un npc cerca|npc cerca|what do you see|what.*around|que hay alrededor|qué hay alrededor)/i
         },
 
         // Branch 5: Intent classification cache (input hash → result)
@@ -1250,12 +1251,39 @@ Reply with ONLY the category name, nothing else.`;
             return null;
         },
 
+        _identifyNpcName(eventName, spriteName) {
+            const normalized = this._normalize(String(eventName || '') + ' ' + String(spriteName || ''));
+            if (!normalized) return null;
+
+            const mappings = [
+                { pattern: /buckman/, label: 'Buckman' },
+                { pattern: /trortur|trorrtur/, label: 'Trortur' },
+                { pattern: /nashrah|nas_hrah/, label: "Nas'hrah" },
+                { pattern: /moonless/, label: 'Moonless' },
+                { pattern: /legarde|le_garde/, label: "Le'garde" },
+                { pattern: /darce|d_arce/, label: "D'arce" },
+                { pattern: /enki/, label: 'Enki' },
+                { pattern: /cahara/, label: 'Cahara' },
+                { pattern: /ragnvaldr/, label: 'Ragnvaldr' },
+                { pattern: /girl/, label: 'Niña' },
+                { pattern: /merchant/, label: 'Mercader' }
+            ];
+
+            for (let i = 0; i < mappings.length; i++) {
+                if (mappings[i].pattern.test(normalized)) return mappings[i].label;
+            }
+            return null;
+        },
+
         _eventMetadata(event) {
             const commands = this._pageCommands(event);
             const loot = [];
             let transferMapId = null;
             let battleTroopId = null;
             const speakerName = this._extractSpeakerName(commands);
+            const page = event && event.page ? event.page() : null;
+            const spriteName = page && page.image ? page.image.characterName : '';
+            const inferredNpcName = this._identifyNpcName(event && event.event ? event.event().name : '', spriteName);
 
             commands.forEach(command => {
                 if (!command) return;
@@ -1277,6 +1305,7 @@ Reply with ONLY the category name, nothing else.`;
 
             return {
                 speakerName: speakerName,
+                npcName: speakerName || inferredNpcName,
                 loot: loot,
                 transferMapId: transferMapId,
                 transferMapName: transferMapId !== null ? this._mapNameById(transferMapId) : null,
@@ -1367,7 +1396,7 @@ Reply with ONLY the category name, nothing else.`;
             if (hasBattle && !hasVisiblePresentation) tags.push('combat_trigger');
             else if ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/))) tags.push('enemy');
             if (hasShop) tags.push('shop');
-            if (metadata.speakerName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child/)))) tags.push('npc');
+            if (metadata.npcName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child|buckman|trortur/)))) tags.push('npc');
             if (hasKeyword(/dead|corpse/) || sprite.includes('dead')) tags.push('corpse');
             if (hasKeyword(/flesh|growth|demonseed|seed/) || sprite.includes('flesh') || sprite.includes('growth')) tags.push('hazard');
 
@@ -1435,7 +1464,7 @@ Reply with ONLY the category name, nothing else.`;
             const sprite = this._normalize(page && page.image ? page.image.characterName : '');
             const lowerRawName = rawName.toLowerCase();
 
-            if (metadata.speakerName) return metadata.speakerName;
+            if (metadata.npcName) return metadata.npcName;
             if (type === 'enemy') {
                 if (metadata.battleTroopName) {
                     if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
@@ -1471,6 +1500,7 @@ Reply with ONLY the category name, nothing else.`;
             }
             if (type === 'npc') {
                 if (sprite.includes('chained') || lowerRawName.includes('chained')) return 'Prisionero encadenado';
+                if (metadata.npcName) return metadata.npcName;
                 if (this._looksPlayerFacingEventName(rawName)) return rawName;
                 return 'NPC';
             }
@@ -4185,6 +4215,22 @@ Respond ONLY with this JSON:
         _lastSpeaker: null,
         _lastSpeakerTime: 0,
 
+        _cleanDialogueText(speakerName, text) {
+            let cleaned = String(text || '')
+                .replace(/\\c\[\d+\]/gi, '')
+                .replace(/\\[a-zA-Z]+\[[^\]]*\]/g, '')
+                .replace(/\\/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            if (speakerName) {
+                const escaped = speakerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                cleaned = cleaned.replace(new RegExp('^' + escaped + '\\s*[:"]?\\s*', 'i'), '').trim();
+            }
+            cleaned = cleaned.replace(/^["'\u201c\u201d]+|["'\u201c\u201d]+$/g, '').trim();
+            return cleaned;
+        },
+
         /**
          * Identify who is speaking based on face sprite and event context.
          * @param {string} faceName - Face image filename from command101
@@ -4269,34 +4315,46 @@ Respond ONLY with this JSON:
             if (!speakerName || speakerName === 'Narrator') return;
 
             const now = Date.now();
+            const cleanedText = this._cleanDialogueText(speakerName, text);
+            if (!cleanedText || cleanedText.length < 2) return;
 
             // Deduplicate (same speaker within 200ms is likely multi-line continuation)
             if (this._lastSpeaker === speakerName && now - this._lastSpeakerTime < 200) return;
             this._lastSpeaker = speakerName;
             this._lastSpeakerTime = now;
 
-            // Add to dialogue buffer
-            this._recentDialogue.push({
-                speaker: speakerName,
-                text: text.substring(0, 200), // Truncate long text
-                map: mapName,
-                time: now
-            });
-            if (this._recentDialogue.length > this.MAX_DIALOGUE_BUFFER) {
-                this._recentDialogue.shift();
+            const lastEntry = this._recentDialogue.length > 0 ? this._recentDialogue[this._recentDialogue.length - 1] : null;
+            if (lastEntry && lastEntry.speaker === speakerName && lastEntry.map === mapName && now - lastEntry.time < 5000) {
+                if (lastEntry.text.indexOf(cleanedText) === -1) {
+                    lastEntry.text = (lastEntry.text + ' ' + cleanedText).trim().substring(0, 200);
+                }
+                lastEntry.time = now;
+            } else {
+                this._recentDialogue.push({
+                    speaker: speakerName,
+                    text: cleanedText.substring(0, 200),
+                    map: mapName,
+                    time: now
+                });
+                if (this._recentDialogue.length > this.MAX_DIALOGUE_BUFFER) {
+                    this._recentDialogue.shift();
+                }
             }
 
             // Update encounter tracking
             const encounter = this._encounters.get(speakerName) || { count: 0, lastSeen: 0, lastMap: '' };
+            const shouldAddConversationEvent = !encounter.lastSeen || encounter.lastMap !== mapName || (now - encounter.lastSeen > 15000);
             encounter.count++;
             encounter.lastSeen = now;
             encounter.lastMap = mapName;
             this._encounters.set(speakerName, encounter);
 
             // Add to ShortTermMemory so the AI knows the player talked to someone
-            ShortTermMemory.addEvent(`${speakerName} spoke to the party.`);
+            if (shouldAddConversationEvent) {
+                ShortTermMemory.addEvent(`${speakerName} spoke to the party.`);
+            }
 
-            Debug.log(`[NPCIntelligence] ${speakerName} spoke: "${text.substring(0, 60)}..."`);
+            Debug.log(`[NPCIntelligence] ${speakerName} spoke: "${cleanedText.substring(0, 60)}..."`);
         },
 
         /**
@@ -4313,6 +4371,18 @@ Respond ONLY with this JSON:
             const header = es ? 'DIÁLOGOS RECIENTES DE NPCs:' : 'RECENT NPC DIALOGUE:';
             const lines = recent.map(d => `${d.speaker}: "${d.text.substring(0, 80)}"`);
             return `${header}\n${lines.join('\n')}`;
+        },
+
+        getRecentDialogueEntries() {
+            const now = Date.now();
+            return this._recentDialogue
+                .filter(d => now - d.time < 180000)
+                .map(d => ({
+                    speaker: d.speaker,
+                    text: d.text,
+                    map: d.map,
+                    time: d.time
+                }));
         },
 
         /**
@@ -4666,6 +4736,10 @@ Respond ONLY with this JSON:
             return /(?:que ves|qué ves|ves algo|que hay alrededor|qué hay alrededor|que tienes delante|qué tienes delante|what do you see|what's around|what is around|what can you see|look around)/i.test(message || '');
         },
 
+        _isNpcRecallQuery(message) {
+            return /(?:con quien acabamos de hablar|con quién acabamos de hablar|con quien hablamos|con quién hablamos|con quien hable|con quién hablé|quien era ese npc|quién era ese npc|quien nos hablo|quién nos habló|que dijo ese npc|qué dijo ese npc|who did we just talk to|who was that npc|what did that npc say)/i.test(message || '');
+        },
+
         _getNearbyContainers(context) {
             if (!context || !context.nearby_observation || !context.nearby_observation.nearbyEvents) return [];
             return context.nearby_observation.nearbyEvents.filter(entry => entry && entry.type === 'container');
@@ -4825,6 +4899,21 @@ Respond ONLY with this JSON:
             return `El último combate fue contra ${names}, David.`;
         },
 
+        _buildNpcRecallFallback(context) {
+            const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
+            if (!entries || entries.length === 0) {
+                return 'No estoy seguro de con quién hablamos recién, David.';
+            }
+            const latest = entries[entries.length - 1];
+            if (!latest || !latest.speaker) {
+                return 'No estoy seguro de con quién hablamos recién, David.';
+            }
+            if (latest.text) {
+                return `Era ${latest.speaker}, David. Nos habló de esto: "${latest.text.substring(0, 90)}"`;
+            }
+            return `Era ${latest.speaker}, David.`;
+        },
+
         _buildEmotionalFallback(playerMessage) {
             const msg = String(playerMessage || '').toLowerCase();
             if (/lo hice bien|did i do well|did i do good/.test(msg)) {
@@ -4880,6 +4969,18 @@ Respond ONLY with this JSON:
                 const mentionsExpectedEnemy = lastBattleEnemies.some(name => normalizedText.includes(this._normalizeLookupText(name)));
                 if (lastBattleEnemies.length > 0 && (mentionsWrongEnemy || !mentionsExpectedEnemy)) {
                     return { text: this._buildRecentBattleFallback(context), changed: true, reason: 'recent_battle_mismatch' };
+                }
+            }
+
+            if (intent && intent.primary === 'npc_recall') {
+                const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
+                const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+                if (!latest || !latest.speaker) {
+                    return { text: this._buildNpcRecallFallback(context), changed: true, reason: 'npc_recall_no_dialogue' };
+                }
+                const speakerToken = this._normalizeLookupText(latest.speaker);
+                if (!speakerToken || normalizedText.indexOf(speakerToken) === -1) {
+                    return { text: this._buildNpcRecallFallback(context), changed: true, reason: 'npc_recall_missing_speaker' };
                 }
             }
 
@@ -4983,6 +5084,9 @@ Respond ONLY with this JSON:
             let playerSection = `The player says: "${playerMessage}"\n`;
             if (this._isVisionQuery(playerMessage)) {
                 playerSection += `VISION QUERY RULE: Answer ONLY from LIVE NEARBY DETECTION above. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
+            }
+            if (this._isNpcRecallQuery(playerMessage)) {
+                playerSection += `NPC RECALL RULE: Use RECENT NPC DIALOGUE and RECENT NPC CONTACT to name who just spoke to us. Mention the speaker explicitly by name.\n`;
             }
             const recentCompanionMsgs = context.recent_exchanges
                 .filter(e => e.role === 'companion')
@@ -5178,6 +5282,7 @@ Respond ONLY with this JSON:
                 world_state: WorldStateEngine.getWorldSummary(),
                 // Branch 7: NPC Intelligence — recent NPC dialogue
                 npc_dialogue: NPCIntelligence.getRecentDialogueSummary(),
+                npc_dialogue_entries: NPCIntelligence.getRecentDialogueEntries(),
                 recently_mentioned_facts: DialogueMemory.getPromptFacts($gameMap ? $gameMap.mapId() : null),
             };
             if (Config.debugMode) {
@@ -5470,6 +5575,16 @@ CRITICAL GAME RULES (NEVER violate these):
                     }
                     return block;
                 }
+                case 'npc_recall': {
+                    let block = '';
+                    if (context.npc_dialogue_entries && context.npc_dialogue_entries.length > 0) {
+                        const latest = context.npc_dialogue_entries[context.npc_dialogue_entries.length - 1];
+                        block += `\nRECENT NPC CONTACT:\n`;
+                        block += `- Most recent speaker: ${latest.speaker}\n`;
+                        if (latest.text) block += `- Most recent line: ${latest.text}\n`;
+                    }
+                    return block;
+                }
                 case 'lore': {
                     let block = `\nSTATIC LOCATION KNOWLEDGE:\n- Area: ${context.current_map}`;
                     if (context.current_map_tips && context.current_map_tips.length > 0) {
@@ -5573,6 +5688,8 @@ CRITICAL GAME RULES (NEVER violate these):
                     return anchors + 'MODE: TACTICAL — Give combat advice ONLY from the KNOWLEDGE section above. If enemy data is provided, mention ONLY the limb priorities, coin flip turns, and tactics listed in that data. Do NOT invent weaknesses, resistances, attack patterns, or abilities. Do NOT claim enemies use "sorcery" or any attack type not explicitly listed. Refer to the player\'s ACTUAL equipped weapon (shown in equipment data). If no enemy data is provided, give only generic survival advice like "be careful" or "guard when unsure". NEVER make up game mechanics.\n';
                 case 'recent_battle':
                     return anchors + 'MODE: RECALL — The player asks about a recent battle. Answer ONLY from the LAST BATTLE DATA above. Name the enemies you fought. Do NOT invent details not present in the data.\n';
+                case 'npc_recall':
+                    return anchors + 'MODE: NPC RECALL — The player is asking who just spoke to us or what that NPC said. Answer from RECENT NPC DIALOGUE and RECENT NPC CONTACT only. Name the speaker explicitly. Do NOT answer from combat memory unless the NPC dialogue itself mentions combat.\n';
                 case 'lore':
                     return anchors + 'MODE: LORE — Be atmospheric and descriptive about the location/character. Draw ONLY from provided data. If no lore data is provided, respond atmospherically without inventing specific game facts. STATIC LOCATION KNOWLEDGE describes the area in general; do NOT claim you currently see an NPC, enemy, or object unless LIVE NEARBY DETECTION or RECENT NPC DIALOGUE explicitly shows it.\n';
                 case 'status_help':
