@@ -118,6 +118,11 @@
     };
 
     const _providerOrder = ['groq', 'openrouter', 'local'];
+    const FAST_AUTONOMY_MODEL_HINTS = [
+        'gemma-4-e4b-uncensored-hauhaucs-aggressive',
+        'gemma-4',
+        'gemma'
+    ];
 
     const Config = {
         apiKey: savedApiKey || String(parameters['apiKey'] || ''),
@@ -232,6 +237,9 @@
             const pushUnique = (value) => {
                 if (value && options.indexOf(value) === -1) options.push(value);
             };
+            for (let i = 0; i < FAST_AUTONOMY_MODEL_HINTS.length; i++) {
+                pushUnique(FAST_AUTONOMY_MODEL_HINTS[i]);
+            }
             pushUnique(this.localModel);
             pushUnique(this.chatModel);
             const defaults = this.getProvider().defaultModels || [];
@@ -240,7 +248,11 @@
         },
 
         getAutonomyModel() {
-            return this.autonomyModel || this.localModel || this.getChatModel();
+            if (this.autonomyModel) return this.autonomyModel;
+            if (this.localModel && !/qwen|thinking|reasoning/i.test(this.localModel)) {
+                return this.localModel;
+            }
+            return FAST_AUTONOMY_MODEL_HINTS[0] || this.localModel || this.getChatModel();
         },
 
         setAutonomyModel(model) {
@@ -4109,16 +4121,58 @@ Respond ONLY with this JSON:
             return { action: 'FOLLOW', reason: 'stay with player' };
         },
 
-        async _heartbeat() {
-            const snapshot = this._buildSnapshot();
-            this._state.pending = true;
-
+        _logTick(snapshot, decision, source, latencyMs, errorMessage) {
             try {
+                ThesisLogger.log('autonomy_tick', {
+                    map_id: $gameMap ? $gameMap.mapId() : null,
+                    map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
+                    enabled: Config.autonomyEnabled,
+                    mode: this._state.mode,
+                    source: source,
+                    latency_ms: latencyMs,
+                    model_used: source === 'local' ? Config.getAutonomyModel() : null,
+                    reason: decision ? decision.reason : null,
+                    action: decision ? decision.action : null,
+                    event_id: decision && decision.eventId != null ? decision.eventId : null,
+                    error: errorMessage || null,
+                    snapshot: snapshot ? {
+                        leashDistance: snapshot.leashDistance,
+                        threatLevel: snapshot.threatLevel,
+                        situation: snapshot.situation,
+                        threatNearby: snapshot.threatNearby,
+                        interestingNearby: snapshot.interestingNearby,
+                        hpPct: snapshot.hpPct,
+                        nearby: snapshot.nearby
+                    } : null
+                });
+            } catch (e) {
+                Debug.warn('[Autonomy] Failed to log tick:', e.message);
+            }
+        },
+
+        async _heartbeat() {
+            const start = Date.now();
+            this._state.pending = true;
+            try {
+                const snapshot = this._buildSnapshot();
                 const decision = await this._requestDecision(snapshot);
-                this._applyDecision(decision || this._fallbackDecision(snapshot), snapshot);
+                const finalDecision = decision || this._fallbackDecision(snapshot);
+                this._applyDecision(finalDecision, snapshot);
+                this._logTick(snapshot, finalDecision, (finalDecision && finalDecision._autonomySource) || 'fallback', Date.now() - start, null);
             } catch (error) {
                 Debug.warn('[Autonomy] heartbeat failed:', error.message);
-                this._applyDecision(this._fallbackDecision(snapshot), snapshot);
+                const snapshot = this._state.lastSnapshot || null;
+                const fallback = this._fallbackDecision(snapshot || {
+                    nearby: [],
+                    autoReturn: true,
+                    leashDistance: 0,
+                    scoutLimit: Config.autonomyMaxScoutDistance,
+                    detourLimit: Config.autonomyMaxDetourDistance,
+                    threatNearby: 0,
+                    allowDoors: false
+                });
+                this._applyDecision(fallback, snapshot);
+                this._logTick(snapshot, fallback, 'error_fallback', Date.now() - start, error.message);
             } finally {
                 this._state.pending = false;
             }
@@ -4126,7 +4180,7 @@ Respond ONLY with this JSON:
 
         async _requestDecision(snapshot) {
             const fallback = this._fallbackDecision(snapshot);
-            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return fallback;
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'fallback' }, fallback);
 
             const prompt = [
                 'You control a cautious RPG companion in Fear & Hunger.',
@@ -4142,41 +4196,49 @@ Respond ONLY with this JSON:
                 JSON.stringify(snapshot)
             ].join('\n');
 
-            const response = await fetch(Config.getLocalEndpoint(), {
-                method: 'POST',
-                headers: Config.getLocalHeaders(),
-                body: JSON.stringify({
-                    model: Config.getAutonomyModel(),
-                    messages: [
-                        { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
-                        { role: 'user', content: prompt }
-                    ],
-                    temperature: 0.2,
-                    max_tokens: 160,
-                    enable_thinking: false
-                })
-            });
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 1200);
+            let response;
+            try {
+                response = await fetch(Config.getLocalEndpoint(), {
+                    method: 'POST',
+                    headers: Config.getLocalHeaders(),
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: Config.getAutonomyModel(),
+                        messages: [
+                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+                            { role: 'user', content: prompt }
+                        ],
+                        temperature: 0.0,
+                        max_tokens: 80,
+                        enable_thinking: false
+                    })
+                });
+            } finally {
+                clearTimeout(timer);
+            }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
-                return fallback;
+                return Object.assign({ _autonomySource: 'fallback' }, fallback);
             }
 
             const data = await response.json();
             let decision = GeminiAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
-                return fallback;
+                return Object.assign({ _autonomySource: 'fallback' }, fallback);
             }
             decision.action = String(decision.action).toUpperCase();
 
             if ((decision.action === 'LOOT' || decision.action === 'INTERACT') && decision.eventId != null) {
                 const exists = snapshot.nearby.some(item => item.eventId === Number(decision.eventId));
-                if (!exists) return fallback;
+                if (!exists) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 decision.eventId = Number(decision.eventId);
             }
 
-            if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
-            if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return decision;
-            return fallback;
+            if (decision.action === 'LOOT' || decision.action === 'INTERACT') return Object.assign({ _autonomySource: 'local' }, decision);
+            if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return Object.assign({ _autonomySource: 'local' }, decision);
+            return Object.assign({ _autonomySource: 'fallback' }, fallback);
         },
 
         _applyDecision(decision, snapshot) {
