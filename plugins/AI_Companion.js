@@ -6704,6 +6704,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         this._pendingReplyTimestamp = null;
         this._layoutBlocks = [];
         this._contentHeight = 0;
+        this._filterMode = 'all';
         this._syncTranscript();
         this._scrollToBottom();
         this._refreshChat();
@@ -6725,14 +6726,26 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         this._helpHint.backOpacity = 100;
         this._helpHint.contents.fontSize = 14;
         this._helpHint.contents.textColor = '#888888';
-        const helpText = Config.language === 'es' ? 'ESC: cerrar chat  |  ↑↓ / rueda: scroll  |  Enter: enviar' : 'ESC: close chat  |  ↑↓ / wheel: scroll  |  Enter: send';
-        this._helpHint.contents.drawText(helpText, 8, 0, this._helpHint.contentsWidth() - 16, 24, 'center');
+        this._refreshHelpHint();
         this.addWindow(this._helpHint);
+    };
+
+    Scene_AIChat.prototype._refreshHelpHint = function () {
+        if (!this._helpHint) return;
+        this._helpHint.contents.clear();
+        this._helpHint.contents.fontSize = 14;
+        this._helpHint.contents.textColor = '#888888';
+        const filterText = this._getFilterLabel();
+        const helpText = Config.language === 'es'
+            ? `ESC: cerrar  |  ↑↓ / rueda: scroll  |  ←→: filtro (${filterText})  |  PgUp/PgDn: salto  |  Enter: enviar`
+            : `ESC: close  |  ↑↓ / wheel: scroll  |  ←→: filter (${filterText})  |  PgUp/PgDn: jump  |  Enter: send`;
+        this._helpHint.contents.drawText(helpText, 8, 0, this._helpHint.contentsWidth() - 16, 24, 'center');
     };
 
     Scene_AIChat.prototype.update = function () {
         Scene_MenuBase.prototype.update.call(this);
         const scrollStep = this._lineHeight * 2;
+        const pageStep = Math.max(this._lineHeight * 6, this._getChatContentHeight() - this._lineHeight * 2);
         // Scrolling with arrow keys
         if (Input.isRepeated('up')) {
             this._scrollY = Math.max(0, this._scrollY - scrollStep);
@@ -6741,6 +6754,20 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         if (Input.isRepeated('down')) {
             const maxScroll = this._getMaxScroll();
             this._scrollY = Math.min(maxScroll, this._scrollY + scrollStep);
+            this._refreshChat();
+        }
+        if (Input.isTriggered('left')) {
+            this._cycleFilter(-1);
+        }
+        if (Input.isTriggered('right')) {
+            this._cycleFilter(1);
+        }
+        if (Input.isTriggered('pageup')) {
+            this._scrollY = Math.max(0, this._scrollY - pageStep);
+            this._refreshChat();
+        }
+        if (Input.isTriggered('pagedown')) {
+            this._scrollY = Math.min(this._getMaxScroll(), this._scrollY + pageStep);
             this._refreshChat();
         }
         if (TouchInput.wheelY <= -20) {
@@ -6752,6 +6779,51 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             this._scrollY = Math.min(maxScroll, this._scrollY + scrollStep);
             this._refreshChat();
         }
+    };
+
+    Scene_AIChat.prototype._getFilterModes = function () {
+        return ['all', 'field', 'battle'];
+    };
+
+    Scene_AIChat.prototype._getFilterLabel = function () {
+        const labels = Config.language === 'es'
+            ? { all: 'todo', field: 'exploración', battle: 'combate' }
+            : { all: 'all', field: 'exploration', battle: 'battle' };
+        return labels[this._filterMode] || labels.all;
+    };
+
+    Scene_AIChat.prototype._cycleFilter = function (direction) {
+        const modes = this._getFilterModes();
+        const index = Math.max(0, modes.indexOf(this._filterMode));
+        const next = (index + direction + modes.length) % modes.length;
+        this._filterMode = modes[next];
+        this._refreshHelpHint();
+        this._rebuildTranscriptView(true);
+    };
+
+    Scene_AIChat.prototype._getFilteredEntries = function (entries) {
+        if (this._filterMode === 'all') return entries;
+
+        const filtered = [];
+        let lastIncludedTag = null;
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (entry.type === 'separator') {
+                if (entry.contextTag === this._filterMode) {
+                    filtered.push(entry);
+                    lastIncludedTag = entry.contextTag;
+                } else {
+                    lastIncludedTag = null;
+                }
+                continue;
+            }
+
+            if (entry.contextTag === this._filterMode && lastIncludedTag === this._filterMode) {
+                filtered.push(entry);
+            }
+        }
+
+        return filtered;
     };
 
     Scene_AIChat.prototype._getChatContentHeight = function () {
@@ -6784,8 +6856,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 pending: true
             });
         }
-        this._chatEntries = entries;
-        this._layoutBlocks = this._buildLayoutBlocks(entries);
+        const filteredEntries = this._getFilteredEntries(entries);
+        this._chatEntries = filteredEntries;
+        this._layoutBlocks = this._buildLayoutBlocks(filteredEntries);
         this._contentHeight = this._layoutBlocks.reduce((sum, block, index) => {
             return sum + block.height + (index > 0 ? this._blockGap : 0);
         }, 8);
@@ -6886,15 +6959,22 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const maxContentHeight = this._getChatContentHeight();
 
         if (!this._layoutBlocks || this._layoutBlocks.length === 0) {
-            const hint = Config.language === 'es'
-                ? 'Escribe y pulsa Enter. El historial queda guardado en esta partida.'
-                : 'Type and press Enter. Chat history is saved with this playthrough.';
+            const hint = this._filterMode !== 'all'
+                ? (Config.language === 'es'
+                    ? `No hay mensajes para el filtro "${this._getFilterLabel()}".`
+                    : `No messages match the "${this._getFilterLabel()}" filter.`)
+                : (Config.language === 'es'
+                    ? 'Escribe y pulsa Enter. El historial queda guardado en esta partida.'
+                    : 'Type and press Enter. Chat history is saved with this playthrough.');
             this._chatWindow.drawTextEx(hint, 10, 10);
             return;
         }
 
         let drawY = 4 - this._scrollY;
         const separatorText = Config.language === 'es' ? { up: '▲ historial', down: '▼ más' } : { up: '▲ history', down: '▼ more' };
+        const filterBadge = Config.language === 'es'
+            ? `Filtro: ${this._getFilterLabel()}`
+            : `Filter: ${this._getFilterLabel()}`;
 
         for (let i = 0; i < this._layoutBlocks.length; i++) {
             const block = this._layoutBlocks[i];
@@ -6952,12 +7032,26 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const cw = this._chatWindow.contentsWidth();
         this._chatWindow.contents.fontSize = 14;
         this._chatWindow.contents.textColor = '#aaaaaa';
+        this._chatWindow.contents.drawText(filterBadge, 8, 0, 180, 16, 'left');
         if (this._scrollY > 0) {
             this._chatWindow.contents.drawText(separatorText.up, cw - 100, 0, 96, 16, 'right');
         }
         const maxScroll = this._getMaxScroll();
         if (this._scrollY < maxScroll) {
             this._chatWindow.contents.drawText(separatorText.down, cw - 100, maxContentHeight - 14, 96, 16, 'right');
+        }
+
+        if (this._contentHeight > maxContentHeight) {
+            const trackX = cw - 8;
+            const trackY = 20;
+            const trackHeight = Math.max(24, maxContentHeight - 40);
+            const visibleRatio = Math.min(1, maxContentHeight / Math.max(this._contentHeight, 1));
+            const thumbHeight = Math.max(28, Math.floor(trackHeight * visibleRatio));
+            const scrollRatio = maxScroll > 0 ? (this._scrollY / maxScroll) : 0;
+            const thumbY = trackY + Math.floor((trackHeight - thumbHeight) * scrollRatio);
+
+            this._chatWindow.contents.fillRect(trackX, trackY, 2, trackHeight, 'rgba(120,120,120,0.35)');
+            this._chatWindow.contents.fillRect(trackX - 1, thumbY, 4, thumbHeight, 'rgba(220,220,220,0.65)');
         }
         this._chatWindow.contents.fontSize = 20;
         this._chatWindow.contents.textColor = '#ffffff';
