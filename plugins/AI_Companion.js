@@ -2186,6 +2186,15 @@ Reply with ONLY the category name, nothing else.`;
                             Debug.log(`Resolved limb target: ${decision.target} [${decision.limb}] -> troop index ${limb.troop_index}`);
                             return limb.troop_index;
                         } else {
+                            const availableLimbKeys = Object.keys(enemy.limbs || {});
+                            // Some enemies expose a main body target but no explicit torso limb.
+                            // In that case, "torso" should resolve to the enemy body directly.
+                            if (limbKey === 'torso' && enemy.troop_index != null && availableLimbKeys.length === 0) {
+                                decision.target = enemy.name;
+                                decision.limb = null;
+                                Debug.log(`Resolved torso fallback to main body: ${enemy.name} -> troop index ${enemy.troop_index}`);
+                                return enemy.troop_index;
+                            }
                             Debug.warn(`Limb not found or dead: ${decision.limb}. Available limbs:`, Object.keys(enemy.limbs));
                             // Fallback: find ANY alive limb to avoid wasting turn
                             for (const [key, value] of Object.entries(enemy.limbs)) {

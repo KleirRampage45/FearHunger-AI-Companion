@@ -272,6 +272,8 @@ FearHungerKB.enemies = {
     },
     "miner_spectre": {
         displayName: "Miner Spectre",
+        displayNameEs: "Espectro minero",
+        altNames: ["Espectro minero", "Miner Spectre"],
         danger: 3,
         confidence: 0.8,
         location: ["Mines"],
@@ -662,6 +664,8 @@ FearHungerKB.bosses = {
     },
     "assassin_spectre": {
         displayName: "Assassin Spectre",
+        displayNameEs: "Espectro asesino",
+        altNames: ["Espectro asesino", "Assassin Spectre"],
         danger: 5,
         confidence: 0.65,
         location: ["Various"],
