@@ -1216,6 +1216,12 @@ Reply with ONLY the category name, nothing else.`;
             return page && page.list ? page.list : [];
         },
 
+        _hasVisiblePresentation(page) {
+            if (!page || !page.image) return false;
+            const image = page.image;
+            return !!(image.characterName || (image.tileId && image.tileId > 0));
+        },
+
         _databaseName(kind, id) {
             let db = null;
             switch (kind) {
@@ -1341,6 +1347,7 @@ Reply with ONLY the category name, nothing else.`;
             const name = this._normalize(data.name);
             const note = this._normalize(data.note);
             const sprite = this._normalize(page.image ? page.image.characterName : '');
+            const hasVisiblePresentation = this._hasVisiblePresentation(page);
             const tags = [];
 
             const hasKeyword = pattern => pattern.test(name) || pattern.test(note) || pattern.test(sprite);
@@ -1357,9 +1364,10 @@ Reply with ONLY the category name, nothing else.`;
             if (hasKeyword(/circle|ritual/) || sprite.includes('portal')) tags.push('save_point');
             if (hasTransfer || hasKeyword(/door|gate|stairs|stair|ladder|warp|exit|entrance|passage/)) tags.push('door');
             if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/)) tags.push('container');
-            if (hasBattle || hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/)) tags.push('enemy');
+            if (hasBattle && !hasVisiblePresentation) tags.push('combat_trigger');
+            else if ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/))) tags.push('enemy');
             if (hasShop) tags.push('shop');
-            if (hasText || metadata.speakerName || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child/)) tags.push('npc');
+            if (metadata.speakerName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child/)))) tags.push('npc');
             if (hasKeyword(/dead|corpse/) || sprite.includes('dead')) tags.push('corpse');
             if (hasKeyword(/flesh|growth|demonseed|seed/) || sprite.includes('flesh') || sprite.includes('growth')) tags.push('hazard');
 
@@ -1367,6 +1375,7 @@ Reply with ONLY the category name, nothing else.`;
         },
 
         _eventType(tags) {
+            if (tags.includes('combat_trigger')) return 'combat_trigger';
             if (tags.includes('enemy')) return 'enemy';
             if (tags.includes('trap')) return 'trap';
             if (tags.includes('door')) return 'door';
@@ -1381,6 +1390,7 @@ Reply with ONLY the category name, nothing else.`;
 
         _dangerFor(type, subtype) {
             if (type === 'enemy') return 'high';
+            if (type === 'combat_trigger') return 'none';
             if (type === 'trap') return subtype === 'bear_trap' ? 'high' : 'medium';
             if (type === 'hazard') return subtype === 'demon_seed' ? 'medium' : 'low';
             return 'none';
@@ -1400,6 +1410,10 @@ Reply with ONLY the category name, nothing else.`;
                 }
                 if (metadata.battleTroopName) return metadata.battleTroopName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
                 return 'enemy';
+            }
+            if (type === 'combat_trigger') {
+                if (metadata.battleTroopName) return metadata.battleTroopName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                return 'combat_trigger';
             }
             if (type === 'container') {
                 if (name.includes('coin')) return 'coin';
@@ -1434,6 +1448,13 @@ Reply with ONLY the category name, nothing else.`;
                 if (spriteLabel !== 'Enemigo') return spriteLabel;
                 if (this._looksPlayerFacingEventName(rawName)) return rawName;
                 return 'Enemigo';
+            }
+            if (type === 'combat_trigger') {
+                if (metadata.battleTroopName && typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                    const troopEnemy = FearHungerKB.getEnemy(metadata.battleTroopName);
+                    if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || 'Emboscada';
+                }
+                return 'Emboscada';
             }
             if (type === 'door') return 'Puerta';
             if (type === 'save_point') return 'Círculo ritual';
@@ -1482,6 +1503,7 @@ Reply with ONLY the category name, nothing else.`;
         _symbolForEventType(type) {
             switch (type) {
                 case 'enemy': return 'E';
+                case 'combat_trigger': return '?';
                 case 'trap': return 'T';
                 case 'door': return 'D';
                 case 'container': return 'C';
@@ -1503,6 +1525,12 @@ Reply with ONLY the category name, nothing else.`;
             if (!sprite && !rawName) return null;
 
             const metadata = this._eventMetadata(event);
+            const hasVisiblePresentation = this._hasVisiblePresentation(page);
+            if (!hasVisiblePresentation && metadata.battleTroopId !== null && this._genericEventName(rawName)) {
+                // Hidden battle triggers are real gameplay logic, but not visible objects Marcoh can "see".
+                // Keep them out of spatial perception summaries.
+                return null;
+            }
             const tags = this._eventTags(event, metadata);
             if (tags.length === 0) return null;
 
@@ -1520,6 +1548,7 @@ Reply with ONLY the category name, nothing else.`;
                 danger: this._dangerFor(type, subtype),
                 label: label,
                 tags: tags,
+                visible: hasVisiblePresentation,
                 distance: distance,
                 direction: this._getDirection(dx, dy),
                 x: event.x,
