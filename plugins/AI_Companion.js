@@ -4560,6 +4560,94 @@ Respond ONLY with this JSON:
             return intent;
         },
 
+        _renderPromptSection(title, body) {
+            const text = Array.isArray(body) ? body.join('\n') : String(body || '');
+            const trimmed = text.trim();
+            if (!trimmed) return '';
+            return `\n=== ${title} ===\n${trimmed}\n`;
+        },
+
+        _formatConversationEntries(entries) {
+            if (!entries || entries.length === 0) return '';
+            return entries.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n');
+        },
+
+        _getRecentPickupLines(context) {
+            if (!context || !context.recent_events) return [];
+            return context.recent_events
+                .filter(e => e && /picked up|recogi|obtuvo/i.test(e.desc))
+                .map(e => `- ${e.desc}`);
+        },
+
+        _buildPromptSections(playerMessage, context, intent) {
+            const sections = [];
+            const pushSection = (title, body) => {
+                const rendered = this._renderPromptSection(title, body);
+                if (!rendered) return;
+                sections.push({ title: title, body: String(Array.isArray(body) ? body.join('\n') : body || '').trim(), rendered: rendered });
+            };
+
+            for (const type of intent.types) {
+                pushSection(`INTENT CONTEXT · ${type.toUpperCase()}`, this._getContextBlock(type, intent, context));
+            }
+
+            pushSection('EVENT MEMORY', this._buildEventContext(context, intent));
+
+            const pickupLines = this._getRecentPickupLines(context);
+            if (pickupLines.length > 0) pushSection('RECENT PICKUPS', pickupLines);
+
+            if (context.older_chat_memory && context.older_chat_memory.length > 0) {
+                pushSection('EARLIER CHAT MEMORY', this._formatConversationEntries(context.older_chat_memory));
+            }
+            pushSection('RECENT CONVERSATION', this._formatConversationEntries(context.recent_exchanges));
+            pushSection('MODE INSTRUCTIONS', this._buildInstructions(intent));
+
+            if (context.party_members && context.party_members.length > 0) {
+                pushSection('PARTY MEMBERS', context.party_members.map(m => {
+                    const statesStr = m.states.length > 0 ? m.states.join(', ') : 'ninguno';
+                    return `- ${m.name}: HP ${m.hp}/${m.max_hp}, Estados: ${statesStr}`;
+                }));
+            }
+
+            if (context.status_effects_summary) {
+                pushSection('STATUS EFFECTS INFO', context.status_effects_summary);
+            }
+
+            if (context.nearby_objects && context.nearby_objects.length > 0) {
+                const spatialIntents = new Set(['tactical', 'location', 'generic_query']);
+                if (spatialIntents.has(intent.primary)) {
+                    pushSection('LIVE NEARBY DETECTION', context.nearby_objects);
+                } else if (!new Set(['emotional', 'recent_battle', 'social']).has(intent.primary) &&
+                    /⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
+                    pushSection('LIVE NEARBY THREAT', context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /[12] pasos/.test(s)).join(';').trim());
+                }
+            }
+
+            if (context.world_state && context.world_state.length > 0) {
+                pushSection('WORLD SITUATION', context.world_state);
+            }
+
+            if (context.npc_dialogue && context.npc_dialogue.length > 0) {
+                pushSection('RECENT NPC DIALOGUE', `${context.npc_dialogue}\nYou may comment on what NPCs said, react to their words, or warn the player about untrustworthy characters.`);
+            }
+
+            let playerSection = `The player says: "${playerMessage}"\n`;
+            if (this._isVisionQuery(playerMessage)) {
+                playerSection += `VISION QUERY RULE: Answer ONLY from LIVE NEARBY DETECTION above. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
+            }
+            const recentCompanionMsgs = context.recent_exchanges
+                .filter(e => e.role === 'companion')
+                .slice(-2)
+                .map(e => e.message);
+            if (recentCompanionMsgs.length > 0) {
+                playerSection += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
+            }
+            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            pushSection('RESPONSE CONTRACT', playerSection);
+
+            return sections;
+        },
+
         open() {
             if ($gameMessage.isBusy()) return; // Allow in battle now
 
@@ -4798,6 +4886,7 @@ Respond ONLY with this JSON:
                         player_message: playerMessage,
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                         prompt_length: prompt.length,
+                        prompt_sections: this._lastPromptSections || null,
                         response_text: fallback,
                         response_source: 'kb_fallback',
                         latency_ms: chatLatency,
@@ -4812,6 +4901,7 @@ Respond ONLY with this JSON:
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
                     prompt_text: prompt,
+                    prompt_sections: this._lastPromptSections || null,
                     response_text: response,
                     response_source: 'llm',
                     latency_ms: chatLatency,
@@ -4829,6 +4919,7 @@ Respond ONLY with this JSON:
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
+                    prompt_sections: this._lastPromptSections || null,
                     response_text: fallback,
                     response_source: 'kb_fallback_error',
                     latency_ms: chatLatency,
@@ -4859,71 +4950,12 @@ CRITICAL GAME RULES (NEVER violate these):
 - Never invent visual details such as age, scars, clothing, beard, gender, count, or exact position unless those details are explicitly present in the provided context.
 `;
 
-            // Modular context injection based on intent types
-            for (const type of intent.types) {
-                prompt += this._getContextBlock(type, intent, context);
-            }
-
-            // Filtered events (only relevant ones)
-            prompt += this._buildEventContext(context, intent);
-
-            // Recent conversation (always)
-            if (context.older_chat_memory && context.older_chat_memory.length > 0) {
-                prompt += `\nEARLIER CHAT MEMORY:\n${context.older_chat_memory.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n')}\n`;
-            }
-            prompt += `\nRECENT CONVERSATION:\n${context.recent_exchanges.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n')}\n`;
-
-            // Answer mode instructions
-            prompt += this._buildInstructions(intent);
-
-            // Inject party members and their states
-            if (context.party_members && context.party_members.length > 0) {
-                prompt += `\nPARTY MEMBERS:\n`;
-                for (const m of context.party_members) {
-                    const statesStr = m.states.length > 0 ? m.states.join(', ') : 'ninguno';
-                    prompt += `- ${m.name}: HP ${m.hp}/${m.max_hp}, Estados: ${statesStr}\n`;
-                }
-            }
-
-            // Inject active status effects with KB descriptions
-            if (context.status_effects_summary) {
-                prompt += `\nSTATUS EFFECTS INFO:\n${context.status_effects_summary}\n`;
-            }
-
-            // Inject spatial awareness — gated by intent to prevent "guard obsession"
-            if (context.nearby_objects && context.nearby_objects.length > 0) {
-                const spatialIntents = new Set(['tactical', 'location', 'generic_query']);
-                if (spatialIntents.has(intent.primary)) {
-                    prompt += `\nLIVE NEARBY DETECTION (objects/events actually near you right now): ${context.nearby_objects}\n`;
-                } else if (!new Set(['emotional', 'recent_battle', 'social']).has(intent.primary) &&
-                    /⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
-                    prompt += `\n(LIVE NEARBY THREAT: ${context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /[12] pasos/.test(s)).join(';').trim()})\n`;
-                }
-            }
-
-
-            // Branch 6: World State summary — overall situation awareness
-            if (context.world_state && context.world_state.length > 0) {
-                prompt += `\nSITUATION: ${context.world_state}\n`;
-            }
-
-            // Branch 7: NPC Intelligence — recent NPC dialogue context
-            if (context.npc_dialogue && context.npc_dialogue.length > 0) {
-                prompt += `\n${context.npc_dialogue}\nYou may comment on what NPCs said, react to their words, or warn the player about untrustworthy characters.\n`;
-            }
-
-            prompt += `\nThe player says: "${playerMessage}"\n`;
-            if (this._isVisionQuery(playerMessage)) {
-                prompt += `VISION QUERY RULE: Answer ONLY from LIVE NEARBY DETECTION above. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
-            }
-            const recentCompanionMsgs = context.recent_exchanges
-                .filter(e => e.role === 'companion')
-                .slice(-2)
-                .map(e => e.message);
-            if (recentCompanionMsgs.length > 0) {
-                prompt += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
-            }
-            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            const sections = this._buildPromptSections(playerMessage, context, intent);
+            this._lastPromptSections = sections.map(section => ({
+                title: section.title,
+                body: section.body
+            }));
+            prompt += sections.map(section => section.rendered).join('');
 
             return prompt;
         },
