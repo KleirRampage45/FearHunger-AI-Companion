@@ -2801,19 +2801,40 @@ Respond ONLY with this JSON:
 
         static _parseResponse(response) {
             try {
+                const _extractJsonText = (value) => {
+                    if (!value) return '';
+                    if (typeof value === 'string') return value;
+                    if (Array.isArray(value)) {
+                        return value.map(part => {
+                            if (typeof part === 'string') return part;
+                            if (part && typeof part.text === 'string') return part.text;
+                            if (part && part.type === 'text' && typeof part.content === 'string') return part.content;
+                            return '';
+                        }).join('\n');
+                    }
+                    if (typeof value === 'object') {
+                        if (typeof value.arguments === 'string') return value.arguments;
+                        if (typeof value.content === 'string') return value.content;
+                        if (typeof value.text === 'string') return value.text;
+                    }
+                    return '';
+                };
+
                 // Robust content extraction for multiple API formats
                 let text = '';
                 if (response.choices && response.choices[0]) {
                     const choice = response.choices[0];
-                    if (choice.message && choice.message.content) {
-                        text = choice.message.content;
-                    } else if (choice.text) {
-                        text = choice.text;
-                    } else if (choice.delta && choice.delta.content) {
-                        text = choice.delta.content;
-                    }
+                    const message = choice.message || {};
+                    text =
+                        _extractJsonText(message.content) ||
+                        _extractJsonText(choice.text) ||
+                        _extractJsonText(choice.delta && choice.delta.content) ||
+                        _extractJsonText(message.reasoning_content) ||
+                        _extractJsonText(message.function_call) ||
+                        _extractJsonText(message.tool_calls && message.tool_calls[0] && message.tool_calls[0].function) ||
+                        '';
                 } else if (response.response) {
-                    text = response.response; // Ollama format
+                    text = _extractJsonText(response.response); // Ollama format
                 }
                 if (!text) {
                     Debug.error('No content in API response:', JSON.stringify(response).substring(0, 300));
@@ -3088,7 +3109,7 @@ Respond ONLY with this JSON:
             try {
                 const enemies = $gameTroop.members().filter(e => e.isAlive());
                 if (enemies.length > 0) {
-                    targetName = enemies[0].name();
+                    targetName = enemies[0].name().replace(/\s*\[.*?\]\s*$/, '').trim();
                 }
             } catch (e) { /* troop may not be ready */ }
             const es = Config.language === 'es';
