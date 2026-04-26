@@ -2905,7 +2905,7 @@ Respond ONLY with this JSON:
                         return null;
                     }
                     const response = JSON.parse(xhr.responseText);
-                    const decision = this._parseResponse(response);
+                    let decision = this._parseResponse(response);
                     if (decision) {
                         decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
                     }
@@ -2941,6 +2941,9 @@ Respond ONLY with this JSON:
                     return null;
                 } catch (error) {
                     Debug.warn(`[Combat] ${model} error:`, error.message, error.name);
+                    if (error && error.stack) {
+                        Debug.warn('[Combat] Stack:', String(error.stack).substring(0, 400));
+                    }
                     return null;
                 }
             };
