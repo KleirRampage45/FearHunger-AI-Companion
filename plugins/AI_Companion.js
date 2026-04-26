@@ -1575,7 +1575,7 @@ Reply with ONLY the category name, nothing else.`;
             if (hasTransfer || hasKeyword(/door|gate|stairs|stair|ladder|warp|exit|entrance|passage/)) tags.push('door');
             if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/) || bookcaseHint) tags.push('container');
             if (hasBattle && !hasVisiblePresentation) tags.push('combat_trigger');
-            else if ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/))) tags.push('enemy');
+            else if (!metadata.npcName && ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/)))) tags.push('enemy');
             if (hasShop) tags.push('shop');
             if (metadata.npcName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child|buckman|trortur|enki|cahara|ragnvaldr|darce|legarde|le_garde/)))) tags.push('npc');
             if (hasKeyword(/dead|corpse/) || sprite.includes('dead')) tags.push('corpse');
@@ -1586,6 +1586,7 @@ Reply with ONLY the category name, nothing else.`;
 
         _eventType(tags) {
             if (tags.includes('combat_trigger')) return 'combat_trigger';
+            if (tags.includes('npc') && !tags.includes('enemy')) return 'npc';
             if (tags.includes('enemy')) return 'enemy';
             if (tags.includes('trap')) return 'trap';
             if (tags.includes('door')) return 'door';
@@ -1735,10 +1736,38 @@ Reply with ONLY the category name, nothing else.`;
             }
         },
 
-        _eventSnapshot(event, px, py) {
+        _bestApproachForEvent(event, origin) {
+            if (!event || !origin) return null;
+            const candidates = [
+                { x: event.x, y: event.y - 1, faceDirection: 2 },
+                { x: event.x + 1, y: event.y, faceDirection: 4 },
+                { x: event.x - 1, y: event.y, faceDirection: 6 },
+                { x: event.x, y: event.y + 1, faceDirection: 8 }
+            ];
+            const valid = candidates
+                .filter(candidate => {
+                    if (!$gameMap.isValid(candidate.x, candidate.y)) return false;
+                    if (!this._tileStandable(candidate.x, candidate.y)) return false;
+                    const occupied = $gameMap.eventsXyNt
+                        ? $gameMap.eventsXyNt(candidate.x, candidate.y).filter(other => other && other !== event && other.isNormalPriority && other.isNormalPriority())
+                        : [];
+                    return occupied.length === 0;
+                })
+                .map(candidate => Object.assign({}, candidate, {
+                    distance: Math.abs(origin.x - candidate.x) + Math.abs(origin.y - candidate.y),
+                    firstDirection: origin.findDirectionTo ? origin.findDirectionTo(candidate.x, candidate.y) : 0
+                }))
+                .filter(candidate => candidate.firstDirection > 0 || (origin.x === candidate.x && origin.y === candidate.y))
+                .sort((a, b) => a.distance - b.distance);
+            return valid.length > 0 ? valid[0] : null;
+        },
+
+        _eventSnapshot(event, origin) {
             const data = this._safeEventData(event);
             const page = this._safeEventPage(event);
             if (!data || !page) return null;
+            const px = origin.x;
+            const py = origin.y;
 
             const rawName = data.name || '';
             const sprite = this._normalize(page.image ? page.image.characterName : '');
@@ -1760,6 +1789,7 @@ Reply with ONLY the category name, nothing else.`;
             const dy = event.y - py;
             const distance = Math.abs(dx) + Math.abs(dy);
             const label = this._labelForEvent(event, type, tags, metadata);
+            const bestApproach = this._bestApproachForEvent(event, origin);
 
             return {
                 id: event.eventId ? event.eventId() : event._eventId,
@@ -1775,6 +1805,9 @@ Reply with ONLY the category name, nothing else.`;
                 y: event.y,
                 dx: dx,
                 dy: dy,
+                approachX: bestApproach ? bestApproach.x : null,
+                approachY: bestApproach ? bestApproach.y : null,
+                faceDirection: bestApproach ? bestApproach.faceDirection : null,
                 sprite: page.image ? page.image.characterName : '',
                 loot: metadata.loot,
                 transferMapId: metadata.transferMapId,
@@ -1817,7 +1850,7 @@ Reply with ONLY the category name, nothing else.`;
                 const dist = Math.abs(dx) + Math.abs(dy);
                 if (dist > radius || dist === 0) continue;
 
-                const snapshot = this._eventSnapshot(event, px, py);
+                const snapshot = this._eventSnapshot(event, origin);
                 if (!snapshot) continue;
                 results.push(snapshot);
             }
@@ -4736,6 +4769,7 @@ Respond ONLY with this JSON:
             mode: 'follow',
             targetEventId: null,
             targetPoint: null,
+            targetApproach: null,
             targetLabel: '',
             reason: '',
             lastSnapshot: null,
@@ -4805,6 +4839,7 @@ Respond ONLY with this JSON:
             this._state.mode = 'follow';
             this._state.targetEventId = null;
             this._state.targetPoint = null;
+            this._state.targetApproach = null;
             this._state.targetLabel = '';
             this._state.reason = '';
             this._state.currentTask = null;
@@ -4926,7 +4961,10 @@ Respond ONLY with this JSON:
                     distance: item.distance,
                     direction: item.direction,
                     x: item.x,
-                    y: item.y
+                    y: item.y,
+                    approachX: item.approachX,
+                    approachY: item.approachY,
+                    faceDirection: item.faceDirection
                 })),
                 threatNearby: threatNearby.length,
                 interestingNearby: interesting.length,
@@ -5005,6 +5043,33 @@ Respond ONLY with this JSON:
                 ? nearby.find(item => item.type === 'door' && item.distance <= Math.max(1, snapshot.detourLimit))
                 : null;
 
+            if (safeToDetour && (finalDecision.action === 'FOLLOW' || finalDecision.action === 'SCOUT')) {
+                if (nearestNpc) {
+                    return {
+                        action: 'INTERACT',
+                        eventId: nearestNpc.eventId,
+                        reason: finalDecision.reason || 'safe nearby npc',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+                if (nearestLoot) {
+                    return {
+                        action: 'LOOT',
+                        eventId: nearestLoot.eventId,
+                        reason: finalDecision.reason || 'safe nearby loot',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+                if (nearestDoor) {
+                    return {
+                        action: 'INTERACT',
+                        eventId: nearestDoor.eventId,
+                        reason: finalDecision.reason || 'safe nearby door',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+            }
+
             if (finalDecision.action === 'FOLLOW' && safeToDetour && finalDecision.frontierIndex != null && frontiers.length > 0) {
                 const idx = Math.max(0, Math.min(frontiers.length - 1, Number(finalDecision.frontierIndex) || 0));
                 return {
@@ -5016,30 +5081,6 @@ Respond ONLY with this JSON:
             }
 
             if (finalDecision.action === 'FOLLOW' && safeToDetour) {
-                if (nearestNpc) {
-                    return {
-                        action: 'INTERACT',
-                        eventId: nearestNpc.eventId,
-                        reason: 'safe nearby npc',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
-                if (nearestLoot) {
-                    return {
-                        action: 'LOOT',
-                        eventId: nearestLoot.eventId,
-                        reason: 'safe nearby loot',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
-                if (nearestDoor) {
-                    return {
-                        action: 'INTERACT',
-                        eventId: nearestDoor.eventId,
-                        reason: 'safe nearby door',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
                 if (frontiers.length > 0 && snapshot.leashDistance <= 2) {
                     return {
                         action: 'SCOUT',
@@ -5250,6 +5291,7 @@ Respond ONLY with this JSON:
                 this._state.mode = action === 'RETURN' ? 'return' : 'follow';
                 this._state.targetEventId = null;
                 this._state.targetPoint = null;
+                this._state.targetApproach = null;
                 this._state.targetLabel = '';
                 if (!preserveTask) this._clearTask();
                 return;
@@ -5259,6 +5301,7 @@ Respond ONLY with this JSON:
                 this._state.mode = 'hold';
                 this._state.targetEventId = null;
                 this._state.targetPoint = null;
+                this._state.targetApproach = null;
                 this._state.targetLabel = '';
                 if (!preserveTask) this._clearTask();
                 return;
@@ -5275,6 +5318,7 @@ Respond ONLY with this JSON:
                 this._state.mode = 'target_point';
                 this._state.targetEventId = null;
                 this._state.targetPoint = { x: frontier.x, y: frontier.y };
+                this._state.targetApproach = null;
                 this._state.targetLabel = 'Frontier';
                 if (!preserveTask) {
                     this._beginTask('SCOUT', { point: frontier, distance: this._distance(this.getFollower(), frontier) }, snapshot);
@@ -5287,6 +5331,7 @@ Respond ONLY with this JSON:
                 this._state.mode = 'follow';
                 this._state.targetEventId = null;
                 this._state.targetPoint = null;
+                this._state.targetApproach = null;
                 this._state.targetLabel = '';
                 if (!preserveTask) this._clearTask();
                 return;
@@ -5295,6 +5340,9 @@ Respond ONLY with this JSON:
             this._state.mode = 'target_event';
             this._state.targetEventId = target.eventId;
             this._state.targetPoint = null;
+            this._state.targetApproach = (target.approachX != null && target.approachY != null)
+                ? { x: target.approachX, y: target.approachY, faceDirection: target.faceDirection }
+                : null;
             this._state.targetLabel = target.label;
             this._state.targetAction = action;
             if (!preserveTask) {
@@ -5346,6 +5394,7 @@ Respond ONLY with this JSON:
                     this._state.mode = 'follow';
                     this._state.targetEventId = null;
                     this._state.targetPoint = null;
+                    this._state.targetApproach = null;
                     this._clearTask();
                     return;
                 }
@@ -5354,22 +5403,28 @@ Respond ONLY with this JSON:
                     this._state.mode = 'return';
                     this._state.targetEventId = null;
                     this._state.targetPoint = null;
+                    this._state.targetApproach = null;
                     this._clearTask();
                     return;
                 }
 
-                const dist = this._distance(follower, event);
-                if (dist <= 1) {
+                const approach = this._state.targetApproach;
+                const dist = approach ? this._distance(follower, approach) : this._distance(follower, event);
+                if (dist <= 0 || (!approach && this._distance(follower, event) <= 1)) {
+                    if (approach && approach.faceDirection && follower.setDirection) follower.setDirection(approach.faceDirection);
                     this._interactWithEvent(follower, event);
                     this._state.mode = 'hold';
                     this._state.targetEventId = null;
                     this._state.targetPoint = null;
+                    this._state.targetApproach = null;
                     this._state.lingerUntil = Date.now() + 900;
                     this._clearTask();
                     return;
                 }
 
-                const dirToEvent = follower.findDirectionTo(event.x, event.y);
+                const goalX = approach ? approach.x : event.x;
+                const goalY = approach ? approach.y : event.y;
+                const dirToEvent = follower.findDirectionTo(goalX, goalY);
                 if (dirToEvent > 0) follower.moveStraight(dirToEvent);
                 return;
             }
