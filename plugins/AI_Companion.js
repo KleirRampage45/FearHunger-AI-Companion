@@ -2274,6 +2274,19 @@ Reply with ONLY the category name, nothing else.`;
             const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? FearHungerKB.getEnemy(enemy.name) : null;
             const requestedLimb = this._normalizeLimbName(normalized.limb).replace(/_/g, ' ');
             let chosenLimb = null;
+            const preferredAliveLimbs = [];
+
+            if (kbEnemy && kbEnemy.limbPriority) {
+                for (let i = 0; i < kbEnemy.limbPriority.length; i++) {
+                    const expanded = this._expandPriorityToken(kbEnemy.limbPriority[i], enemy);
+                    for (let j = 0; j < expanded.length; j++) {
+                        const limbKey = expanded[j];
+                        if (enemy.limbs[limbKey] && enemy.limbs[limbKey].alive && preferredAliveLimbs.indexOf(limbKey) === -1) {
+                            preferredAliveLimbs.push(limbKey);
+                        }
+                    }
+                }
+            }
 
             if (requestedLimb && enemy.limbs[requestedLimb] && enemy.limbs[requestedLimb].alive) {
                 chosenLimb = requestedLimb;
@@ -2282,11 +2295,10 @@ Reply with ONLY the category name, nothing else.`;
                 chosenLimb = expandedRequested.find(key => enemy.limbs[key] && enemy.limbs[key].alive) || null;
             }
 
-            if (!chosenLimb && kbEnemy && kbEnemy.limbPriority) {
-                for (let i = 0; i < kbEnemy.limbPriority.length; i++) {
-                    const expanded = this._expandPriorityToken(kbEnemy.limbPriority[i], enemy);
-                    chosenLimb = expanded.find(key => enemy.limbs[key] && enemy.limbs[key].alive) || null;
-                    if (chosenLimb) break;
+            if (preferredAliveLimbs.length > 0) {
+                const requestedIsPreferred = chosenLimb && preferredAliveLimbs.indexOf(chosenLimb) !== -1;
+                if (!requestedIsPreferred) {
+                    chosenLimb = preferredAliveLimbs[0];
                 }
             }
 
