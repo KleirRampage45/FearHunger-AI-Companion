@@ -2360,10 +2360,14 @@ Reply with ONLY the category name, nothing else.`;
 
             // Get enemy-specific knowledge from KB
             let knowledgeHints = '';
+            const seenKnowledge = {};
             if (typeof FearHungerKB !== 'undefined') {
                 for (const enemy of battleState.enemies) {
                     const kb = FearHungerKB.getEnemyHints(enemy.name);
                     if (kb) {
+                        const kbKey = (kb.name || enemy.name || '').toLowerCase();
+                        if (seenKnowledge[kbKey]) continue;
+                        seenKnowledge[kbKey] = true;
                         const prefix = kb.dangerLevel >= 4 ? 'DANGEROUS: ' : (kb.dangerLevel === 0 ? 'HARMLESS: ' : '');
                         knowledgeHints += `\n${prefix}${kb.name || enemy.name}:\n`;
                         if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
@@ -3047,6 +3051,130 @@ Respond ONLY with this JSON:
     }
 
     //=========================================================================
+    // DialogueMemory - persistent anti-repetition memory shared by chat/ambient
+    //=========================================================================
+    const DialogueMemory = {
+        LINE_TTL_MS: 10 * 60 * 1000,
+        FACT_TTL_MS: 15 * 60 * 1000,
+        MAX_LINES: 40,
+        MAX_FACTS: 60,
+
+        _normalize(text) {
+            if (typeof FearHungerKB !== 'undefined' && FearHungerKB._normalizeLookup) {
+                return FearHungerKB._normalizeLookup(text);
+            }
+            return String(text || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .replace(/_+/g, '_');
+        },
+
+        _getMemoryObject() {
+            if (!$gameSystem._aiCompanionDialogueMemory) {
+                $gameSystem._aiCompanionDialogueMemory = {
+                    recent_lines: [],
+                    recent_facts: []
+                };
+            }
+            this._prune();
+            return $gameSystem._aiCompanionDialogueMemory;
+        },
+
+        _prune() {
+            if (!$gameSystem || !$gameSystem._aiCompanionDialogueMemory) return;
+            const now = Date.now();
+            const memory = $gameSystem._aiCompanionDialogueMemory;
+            memory.recent_lines = (memory.recent_lines || []).filter(entry => now - entry.time < this.LINE_TTL_MS);
+            memory.recent_facts = (memory.recent_facts || []).filter(entry => now - entry.time < this.FACT_TTL_MS);
+        },
+
+        clear() {
+            if ($gameSystem) {
+                $gameSystem._aiCompanionDialogueMemory = {
+                    recent_lines: [],
+                    recent_facts: []
+                };
+            }
+        },
+
+        rememberLine(text, topic, meta) {
+            const normalized = this._normalize(text);
+            if (!normalized) return;
+            const memory = this._getMemoryObject();
+            memory.recent_lines.push({
+                text: String(text || ''),
+                normalized: normalized,
+                topic: topic || 'unknown',
+                map_id: meta && meta.mapId != null ? meta.mapId : ($gameMap ? $gameMap.mapId() : null),
+                time: Date.now()
+            });
+            while (memory.recent_lines.length > this.MAX_LINES) memory.recent_lines.shift();
+        },
+
+        wasLineRecent(text, topic, withinMs) {
+            const normalized = this._normalize(text);
+            if (!normalized) return false;
+            const cutoff = Date.now() - (withinMs || this.LINE_TTL_MS);
+            const lines = this._getMemoryObject().recent_lines || [];
+            return lines.some(entry =>
+                entry.time >= cutoff &&
+                (!topic || entry.topic === topic) &&
+                entry.normalized === normalized
+            );
+        },
+
+        rememberFact(key, label, topic, meta) {
+            const normalizedKey = this._normalize(key);
+            if (!normalizedKey) return;
+            const memory = this._getMemoryObject();
+            const mapId = meta && meta.mapId != null ? meta.mapId : ($gameMap ? $gameMap.mapId() : null);
+            const now = Date.now();
+            memory.recent_facts = (memory.recent_facts || []).filter(entry =>
+                !(entry.key === normalizedKey && entry.topic === (topic || 'unknown') && entry.map_id === mapId)
+            );
+            memory.recent_facts.push({
+                key: normalizedKey,
+                label: label || normalizedKey,
+                topic: topic || 'unknown',
+                map_id: mapId,
+                time: now
+            });
+            while (memory.recent_facts.length > this.MAX_FACTS) memory.recent_facts.shift();
+        },
+
+        hasRecentFact(key, topic, withinMs, mapId) {
+            const normalizedKey = this._normalize(key);
+            if (!normalizedKey) return false;
+            const cutoff = Date.now() - (withinMs || this.FACT_TTL_MS);
+            const facts = this._getMemoryObject().recent_facts || [];
+            return facts.some(entry =>
+                entry.time >= cutoff &&
+                entry.key === normalizedKey &&
+                (!topic || entry.topic === topic) &&
+                (mapId == null || entry.map_id === mapId)
+            );
+        },
+
+        getPromptFacts(mapId) {
+            const facts = this._getMemoryObject().recent_facts || [];
+            const cutoff = Date.now() - this.FACT_TTL_MS;
+            const labels = [];
+            const seen = {};
+            facts
+                .filter(entry => entry.time >= cutoff && (mapId == null || entry.map_id === mapId))
+                .sort((a, b) => b.time - a.time)
+                .forEach(entry => {
+                    const norm = this._normalize(entry.label);
+                    if (!norm || seen[norm]) return;
+                    seen[norm] = true;
+                    labels.push(entry.label);
+                });
+            return labels.slice(0, 6);
+        }
+    };
+
+    //=========================================================================
     // Hook: BattleManager.selectNextCommand - PROPER INPUT PHASE HOOK
     // This is called when it's time for an actor to select their action
     //=========================================================================
@@ -3533,6 +3661,9 @@ Respond ONLY with this JSON:
         if (typeof ShortTermMemory !== 'undefined') {
             ShortTermMemory._events = [];
             ShortTermMemory._lastBattle = null;
+        }
+        if (typeof DialogueMemory !== 'undefined') {
+            DialogueMemory.clear();
         }
         if (typeof AIState !== 'undefined') {
             AIState.lastBattleStateCache = null;
@@ -4723,6 +4854,39 @@ Respond ONLY with this JSON:
             return { text: text, changed: false, reason: null };
         },
 
+        _buildNearbyFactEntries(context) {
+            const observation = context && context.nearby_observation;
+            const points = observation && observation.pointsOfInterest ? observation.pointsOfInterest : [];
+            return points.slice(0, 6).map(point => {
+                const label = `${point.label} al ${point.direction}`;
+                const key = `nearby:${point.type}:${point.label}:${point.direction}:${point.distance}`;
+                return { key: key, label: label, point: point };
+            });
+        },
+
+        _rememberChatFacts(text, intent, context) {
+            if (!text) return;
+            const normalizedText = this._normalizeLookupText(text);
+            const mapId = $gameMap ? $gameMap.mapId() : null;
+
+            if (intent && ['location', 'generic_query', 'tactical'].includes(intent.primary)) {
+                this._buildNearbyFactEntries(context).forEach(entry => {
+                    const normalizedLabel = this._normalizeLookupText(entry.point.label);
+                    if (normalizedLabel && normalizedText.includes(normalizedLabel)) {
+                        DialogueMemory.rememberFact(entry.key, entry.label, 'chat_fact', { mapId: mapId });
+                    }
+                });
+            }
+
+            if (intent && intent.primary === 'recent_battle' && context && context.last_battle && context.last_battle.enemies) {
+                context.last_battle.enemies.forEach(name => {
+                    if (normalizedText.includes(this._normalizeLookupText(name))) {
+                        DialogueMemory.rememberFact(`battle:${name}`, `Combate reciente: ${name}`, 'chat_fact', { mapId: mapId });
+                    }
+                });
+            }
+        },
+
         _buildPromptSections(playerMessage, context, intent) {
             const sections = [];
             const pushSection = (title, body) => {
@@ -4744,6 +4908,9 @@ Respond ONLY with this JSON:
                 pushSection('EARLIER CHAT MEMORY', this._formatConversationEntries(context.older_chat_memory));
             }
             pushSection('RECENT CONVERSATION', this._formatConversationEntries(context.recent_exchanges));
+            if (context.recently_mentioned_facts && context.recently_mentioned_facts.length > 0) {
+                pushSection('RECENTLY MENTIONED FACTS', context.recently_mentioned_facts.map(f => `- ${f}`));
+            }
             pushSection('MODE INSTRUCTIONS', this._buildInstructions(intent));
 
             if (context.party_members && context.party_members.length > 0) {
@@ -4786,7 +4953,7 @@ Respond ONLY with this JSON:
             if (recentCompanionMsgs.length > 0) {
                 playerSection += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
             }
-            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
             pushSection('RESPONSE CONTRACT', playerSection);
 
             return sections;
@@ -4973,6 +5140,7 @@ Respond ONLY with this JSON:
                 world_state: WorldStateEngine.getWorldSummary(),
                 // Branch 7: NPC Intelligence — recent NPC dialogue
                 npc_dialogue: NPCIntelligence.getRecentDialogueSummary(),
+                recently_mentioned_facts: DialogueMemory.getPromptFacts($gameMap ? $gameMap.mapId() : null),
             };
             if (Config.debugMode) {
                 Debug.log('[Chat] getContext:', JSON.stringify(ctx, null, 2));
@@ -4982,6 +5150,7 @@ Respond ONLY with this JSON:
 
         async sendMessage(playerMessage) {
             const exchangeContext = this._ensureContextSeparator();
+            const dialogueMeta = { mapId: $gameMap ? $gameMap.mapId() : null };
             this.addToHistory('player', playerMessage, exchangeContext);
             this.addTranscriptMessage('player', playerMessage, exchangeContext);
             RelationshipTracker.onConversation();
@@ -5026,6 +5195,8 @@ Respond ONLY with this JSON:
                     const fallback = KBFallback.respond(intent);
                     this.addToHistory('companion', fallback, exchangeContext);
                     this.addTranscriptMessage('companion', fallback, exchangeContext);
+                    DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
+                    this._rememberChatFacts(fallback, intent, context);
                     ThesisLogger.log('chat', {
                         player_message: playerMessage,
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -5042,6 +5213,8 @@ Respond ONLY with this JSON:
                 const finalResponse = validation.text;
                 this.addToHistory('companion', finalResponse, exchangeContext);
                 this.addTranscriptMessage('companion', finalResponse, exchangeContext);
+                DialogueMemory.rememberLine(finalResponse, 'chat', dialogueMeta);
+                this._rememberChatFacts(finalResponse, intent, context);
                 if (validation.changed && Config.debugMode) {
                     Debug.log('[Chat] validator corrected response:', validation.reason, {
                         original: response,
@@ -5070,6 +5243,8 @@ Respond ONLY with this JSON:
                 const fallback = KBFallback.respond(intent);
                 this.addToHistory('companion', fallback, exchangeContext);
                 this.addTranscriptMessage('companion', fallback, exchangeContext);
+                DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
+                this._rememberChatFacts(fallback, intent, context);
                 ThesisLogger.log('chat', {
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -5699,6 +5874,8 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             for (const threat of threats) {
                 const posKey = `${$gameMap.mapId()}_${threat.x}_${threat.y}`;
                 if (this._warnedPositions.has(posKey)) continue;
+                const factKey = `threat:${threat.subtype || threat.type}:${threat.label || threat.type}:${threat.direction}`;
+                if (DialogueMemory.hasRecentFact(factKey, 'ambient_warning', 90000, $gameMap.mapId())) continue;
 
                 // Mark as warned
                 this._warnedPositions.add(posKey);
@@ -5731,6 +5908,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
 
                 const pick = warning[Math.floor(Math.random() * warning.length)]
                     .replace('${DIR}', threat.direction);
+                DialogueMemory.rememberFact(factKey, `${threat.label || 'Peligro'} al ${threat.direction}`, 'ambient_warning', { mapId: $gameMap.mapId() });
                 this._speak(pick, 'threat_warning');
                 return; // One warning at a time
             }
@@ -5913,6 +6091,9 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
                 return;
             }
             this._markVisited(mapKey);
+            DialogueMemory.rememberFact(`area:${mapKey}`, locationEntry.displayNameEs || locationEntry.displayName || mapName, 'ambient_lore', {
+                mapId: $gameMap ? $gameMap.mapId() : null
+            });
 
             Debug.log('[Ambient] First visit to:', mapName, '- generating AI comment');
 
@@ -5970,9 +6151,16 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         },
 
         _speak(text, topic) {
+            const meta = { mapId: $gameMap ? $gameMap.mapId() : null };
+            if (DialogueMemory.wasLineRecent(text, topic, 180000)) {
+                Debug.log('[Ambient] Suppressed repeated line:', topic, text);
+                return;
+            }
+
             this._lastTime = Date.now();
             this._lastTopic = topic;
             DialogueGovernor.recordDialogue();
+            DialogueMemory.rememberLine(text, topic, meta);
 
             // Telemetry: log all ambient dialogue
             ThesisLogger.log('ambient', {
@@ -6789,7 +6977,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         if (!wasInParty && this._actors.includes(actorId) && typeof ShortTermMemory !== 'undefined') {
             const actor = $gameActors.actor(actorId);
             if (actor) {
-                const actorName = actor.name() || 'Unknown';
+                const actorName = actor.name() || (actorId === Config.companionActorId ? Config.companionName : 'Unknown');
                 ShortTermMemory.addEvent(`${actorName} joined the party.`, 'map');
                 // AI comments on new party members
                 if (actorId !== Config.companionActorId) {
