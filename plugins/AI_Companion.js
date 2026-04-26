@@ -4740,7 +4740,11 @@ Respond ONLY with this JSON:
             reason: '',
             lastSnapshot: null,
             lastDecision: null,
-            lastSnapshotHash: null
+            lastSnapshotHash: null,
+            currentTask: null,
+            lingerUntil: 0,
+            followAnchor: null,
+            lastRawLocalContent: ''
         },
 
         ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT'],
@@ -4803,11 +4807,97 @@ Respond ONLY with this JSON:
             this._state.targetPoint = null;
             this._state.targetLabel = '';
             this._state.reason = '';
+            this._state.currentTask = null;
+            this._state.lingerUntil = 0;
+            this._state.lastRawLocalContent = '';
         },
 
         _distance(a, b) {
             if (!a || !b) return 999;
             return Math.abs((a.x || 0) - (b.x || 0)) + Math.abs((a.y || 0) - (b.y || 0));
+        },
+
+        _clearTask() {
+            this._state.currentTask = null;
+        },
+
+        _beginTask(action, payload, snapshot) {
+            const follower = this.getFollower();
+            if (!follower) return;
+            this._state.currentTask = {
+                action: action,
+                startedAt: Date.now(),
+                lastProgressAt: Date.now(),
+                lastDistance: payload && payload.distance != null ? payload.distance : null,
+                mapId: $gameMap ? $gameMap.mapId() : null,
+                leashAtStart: snapshot ? snapshot.leashDistance : 0,
+                eventId: payload && payload.eventId != null ? payload.eventId : null,
+                point: payload && payload.point ? { x: payload.point.x, y: payload.point.y } : null
+            };
+        },
+
+        _isCurrentTaskStillValid(snapshot) {
+            const task = this._state.currentTask;
+            const follower = this.getFollower();
+            if (!task || !snapshot || !follower) return false;
+            if (($gameMap ? $gameMap.mapId() : null) !== task.mapId) return false;
+
+            const now = Date.now();
+            const ageMs = now - task.startedAt;
+            const maxAgeMs = task.action === 'SCOUT' ? 12000 : 9000;
+            if (ageMs > maxAgeMs) return false;
+
+            if (snapshot.autoReturn && snapshot.threatNearby > 0) return false;
+            if (snapshot.leashDistance > snapshot.scoutLimit + 2) return false;
+
+            let distance = null;
+            if (task.action === 'SCOUT' && task.point) {
+                distance = this._distance(follower, task.point);
+                if (distance <= 0) return false;
+            } else if ((task.action === 'INTERACT' || task.action === 'LOOT') && task.eventId != null) {
+                const target = snapshot.nearby.find(item => item.eventId === task.eventId);
+                if (!target) return false;
+                distance = target.distance;
+                if (distance <= 1) return false;
+            } else {
+                return false;
+            }
+
+            if (task.lastDistance === null || distance < task.lastDistance) {
+                task.lastDistance = distance;
+                task.lastProgressAt = now;
+            }
+
+            if (now - task.lastProgressAt > 2500) return false;
+            return true;
+        },
+
+        _pickFollowAnchor(player) {
+            const follower = this.getFollower();
+            if (!player || !follower) return null;
+            const choices = [
+                { dx: 0, dy: 1 },
+                { dx: 1, dy: 0 },
+                { dx: -1, dy: 0 },
+                { dx: 0, dy: -1 },
+                { dx: 1, dy: 1 },
+                { dx: -1, dy: 1 }
+            ];
+            for (let i = 0; i < choices.length; i++) {
+                const candidate = choices[Math.floor(Math.random() * choices.length)];
+                const tx = player.x + candidate.dx;
+                const ty = player.y + candidate.dy;
+                if (!$gameMap.isValid(tx, ty)) continue;
+                if (!EnvironmentScanner._tileStandable(tx, ty)) continue;
+                const occupied = $gameMap.eventsXyNt ? $gameMap.eventsXyNt(tx, ty).filter(event => event && event.isNormalPriority && event.isNormalPriority()) : [];
+                if (occupied.length > 0) continue;
+                return {
+                    x: tx,
+                    y: ty,
+                    expiresAt: Date.now() + 2500
+                };
+            }
+            return { x: player.x, y: player.y, expiresAt: Date.now() + 1500 };
         },
 
         _buildSnapshot() {
@@ -4999,6 +5089,7 @@ Respond ONLY with this JSON:
                     action: decision ? decision.action : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
                     frontier_index: decision && decision.frontierIndex != null ? decision.frontierIndex : null,
+                    raw_response_content: this._state.lastRawLocalContent || null,
                     error: errorMessage || null,
                     snapshot: snapshot ? {
                         leashDistance: snapshot.leashDistance,
@@ -5039,6 +5130,12 @@ Respond ONLY with this JSON:
             this._state.pending = true;
             try {
                 const snapshot = this._buildSnapshot();
+                if (this._isCurrentTaskStillValid(snapshot) && this._state.lastDecision) {
+                    this._applyDecision(this._state.lastDecision, snapshot, true);
+                    this._logTick(snapshot, this._state.lastDecision, 'task_in_progress', Date.now() - start, null);
+                    return;
+                }
+                if (this._state.currentTask) this._clearTask();
                 const snapshotHash = this._hashSnapshot(snapshot);
                 if (this._state.lastSnapshotHash === snapshotHash && this._state.lastDecision) {
                     this._applyDecision(this._state.lastDecision, snapshot);
@@ -5072,6 +5169,7 @@ Respond ONLY with this JSON:
         async _requestDecision(snapshot) {
             const fallback = this._fallbackDecision(snapshot);
             if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+            this._state.lastRawLocalContent = '';
 
             const prompt = [
                 'You control a cautious RPG companion in Fear & Hunger.',
@@ -5120,6 +5218,15 @@ Respond ONLY with this JSON:
             }
 
             const data = await response.json();
+            this._state.lastRawLocalContent = String(
+                data &&
+                data.choices &&
+                data.choices[0] &&
+                data.choices[0].message &&
+                data.choices[0].message.content
+                    ? data.choices[0].message.content
+                    : ''
+            );
             let decision = GeminiAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
                 return Object.assign({ _autonomySource: 'fallback' }, fallback);
@@ -5133,7 +5240,7 @@ Respond ONLY with this JSON:
             return Object.assign({ _autonomySource: 'fallback' }, fallback);
         },
 
-        _applyDecision(decision, snapshot) {
+        _applyDecision(decision, snapshot, preserveTask) {
             const action = String((decision && decision.action) || 'FOLLOW').toUpperCase();
             const reason = String((decision && decision.reason) || '');
             this._state.lastDecision = Object.assign({}, decision || {});
@@ -5144,6 +5251,7 @@ Respond ONLY with this JSON:
                 this._state.targetEventId = null;
                 this._state.targetPoint = null;
                 this._state.targetLabel = '';
+                if (!preserveTask) this._clearTask();
                 return;
             }
 
@@ -5152,6 +5260,7 @@ Respond ONLY with this JSON:
                 this._state.targetEventId = null;
                 this._state.targetPoint = null;
                 this._state.targetLabel = '';
+                if (!preserveTask) this._clearTask();
                 return;
             }
 
@@ -5160,12 +5269,16 @@ Respond ONLY with this JSON:
                 if (!frontier) {
                     this._state.mode = 'follow';
                     this._state.targetPoint = null;
+                    if (!preserveTask) this._clearTask();
                     return;
                 }
                 this._state.mode = 'target_point';
                 this._state.targetEventId = null;
                 this._state.targetPoint = { x: frontier.x, y: frontier.y };
                 this._state.targetLabel = 'Frontier';
+                if (!preserveTask) {
+                    this._beginTask('SCOUT', { point: frontier, distance: this._distance(this.getFollower(), frontier) }, snapshot);
+                }
                 return;
             }
 
@@ -5175,6 +5288,7 @@ Respond ONLY with this JSON:
                 this._state.targetEventId = null;
                 this._state.targetPoint = null;
                 this._state.targetLabel = '';
+                if (!preserveTask) this._clearTask();
                 return;
             }
 
@@ -5183,6 +5297,9 @@ Respond ONLY with this JSON:
             this._state.targetPoint = null;
             this._state.targetLabel = target.label;
             this._state.targetAction = action;
+            if (!preserveTask) {
+                this._beginTask(action, { eventId: target.eventId, distance: target.distance }, snapshot);
+            }
         },
 
         _maintainMovement() {
@@ -5196,17 +5313,26 @@ Respond ONLY with this JSON:
 
             if (this._state.mode === 'hold') return;
 
+            if (this._state.lingerUntil && now < this._state.lingerUntil) return;
+            if (this._state.lingerUntil && now >= this._state.lingerUntil) {
+                this._state.lingerUntil = 0;
+                if (this._state.mode === 'hold') this._state.mode = 'follow';
+            }
+
             if (this._state.mode === 'target_point' && this._state.targetPoint) {
                 const targetPoint = this._state.targetPoint;
                 const distToPoint = this._distance(follower, targetPoint);
                 if (distToPoint <= 0) {
-                    this._state.mode = 'return';
+                    this._state.mode = 'hold';
                     this._state.targetPoint = null;
+                    this._state.lingerUntil = Date.now() + 1200;
+                    this._clearTask();
                     return;
                 }
                 if (Config.autonomyAutoReturnOnDanger && this._hasImmediateThreat(follower)) {
                     this._state.mode = 'return';
                     this._state.targetPoint = null;
+                    this._clearTask();
                     return;
                 }
                 const dirToPoint = follower.findDirectionTo(targetPoint.x, targetPoint.y);
@@ -5220,6 +5346,7 @@ Respond ONLY with this JSON:
                     this._state.mode = 'follow';
                     this._state.targetEventId = null;
                     this._state.targetPoint = null;
+                    this._clearTask();
                     return;
                 }
 
@@ -5227,15 +5354,18 @@ Respond ONLY with this JSON:
                     this._state.mode = 'return';
                     this._state.targetEventId = null;
                     this._state.targetPoint = null;
+                    this._clearTask();
                     return;
                 }
 
                 const dist = this._distance(follower, event);
                 if (dist <= 1) {
                     this._interactWithEvent(follower, event);
-                    this._state.mode = 'return';
+                    this._state.mode = 'hold';
                     this._state.targetEventId = null;
                     this._state.targetPoint = null;
+                    this._state.lingerUntil = Date.now() + 900;
+                    this._clearTask();
                     return;
                 }
 
@@ -5246,6 +5376,23 @@ Respond ONLY with this JSON:
 
             const leashLimit = Math.max(1, this._state.mode === 'return' ? 0 : Config.autonomyMaxDetourDistance);
             const distToPlayer = this._distance(follower, player);
+            if (this._state.mode === 'follow') {
+                if (!this._state.followAnchor || this._state.followAnchor.expiresAt <= now || this._distance(follower, this._state.followAnchor) <= 0) {
+                    this._state.followAnchor = this._pickFollowAnchor(player);
+                }
+                const anchor = this._state.followAnchor;
+                if (distToPlayer > leashLimit + 1) {
+                    const dir = follower.findDirectionTo(player.x, player.y);
+                    if (dir > 0) follower.moveStraight(dir);
+                    return;
+                }
+                if (anchor && this._distance(follower, anchor) > 0 && distToPlayer >= 1 && distToPlayer <= Math.max(2, leashLimit + 1)) {
+                    const dir = follower.findDirectionTo(anchor.x, anchor.y);
+                    if (dir > 0) follower.moveStraight(dir);
+                }
+                return;
+            }
+
             if (distToPlayer > leashLimit + 1) {
                 const dir = follower.findDirectionTo(player.x, player.y);
                 if (dir > 0) follower.moveStraight(dir);
