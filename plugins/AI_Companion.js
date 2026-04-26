@@ -136,6 +136,20 @@
         // Selected chat model (persisted per provider)
         chatModel: localStorage.getItem('AI_Companion_ChatModel') || '',
 
+        // Future autonomy / heartbeat config
+        autonomyEnabled: localStorage.getItem('AI_Companion_AutonomyEnabled') === 'true',
+        autonomyModel: localStorage.getItem('AI_Companion_AutonomyModel') || '',
+        autonomyTickSeconds: Number(localStorage.getItem('AI_Companion_AutonomyTickSeconds') || '4'),
+        autonomyBehaviorProfile: localStorage.getItem('AI_Companion_AutonomyProfile') || 'cautious',
+        autonomyMaxScoutDistance: Number(localStorage.getItem('AI_Companion_AutonomyScoutDistance') || '6'),
+        autonomyMaxDetourDistance: Number(localStorage.getItem('AI_Companion_AutonomyDetourDistance') || '3'),
+        autonomyLootRadius: Number(localStorage.getItem('AI_Companion_AutonomyLootRadius') || '2'),
+        autonomyAllowNpcInteraction: localStorage.getItem('AI_Companion_AutonomyNpcInteraction') === 'true',
+        autonomyAllowDoorTesting: localStorage.getItem('AI_Companion_AutonomyDoorTesting') === 'true',
+        autonomyAllowSoloEngagement: localStorage.getItem('AI_Companion_AutonomySoloEngagement') === 'true',
+        autonomyAutoReturnOnDanger: localStorage.getItem('AI_Companion_AutonomyAutoReturn') !== 'false',
+        debugOverlay: localStorage.getItem('AI_Companion_DebugOverlay') === 'true',
+
         // Local AI config
         localEndpoint: localStorage.getItem('AI_Companion_LocalEndpoint') || 'http://192.168.100.3:1234/v1/chat/completions',
         localModel: localStorage.getItem('AI_Companion_LocalModel') || 'qwen3.5-4b-uncensored-hauhaucs-aggressive',
@@ -196,6 +210,36 @@
             localStorage.setItem('AI_Companion_ChatModel', model);
         },
 
+        getAutonomyModelOptions() {
+            const options = [];
+            const pushUnique = (value) => {
+                if (value && options.indexOf(value) === -1) options.push(value);
+            };
+            pushUnique(this.localModel);
+            pushUnique(this.chatModel);
+            const defaults = this.getProvider().defaultModels || [];
+            for (let i = 0; i < defaults.length; i++) pushUnique(defaults[i]);
+            return options.length > 0 ? options : ['local-current'];
+        },
+
+        getAutonomyModel() {
+            return this.autonomyModel || this.localModel || this.getChatModel();
+        },
+
+        setAutonomyModel(model) {
+            this.autonomyModel = model || '';
+            localStorage.setItem('AI_Companion_AutonomyModel', this.autonomyModel);
+        },
+
+        cycleAutonomyModel() {
+            const options = this.getAutonomyModelOptions();
+            const current = this.getAutonomyModel();
+            const idx = options.indexOf(current);
+            const next = options[(idx + 1 + options.length) % options.length];
+            this.setAutonomyModel(next);
+            return next;
+        },
+
         setLocalEndpoint(url) {
             this.localEndpoint = url;
             localStorage.setItem('AI_Companion_LocalEndpoint', url);
@@ -229,6 +273,93 @@
         setCompanionClass(cls) {
             this.companionClass = cls;
             localStorage.setItem('AI_Companion_Class', cls);
+        },
+
+        setAutonomyEnabled(on) {
+            this.autonomyEnabled = !!on;
+            localStorage.setItem('AI_Companion_AutonomyEnabled', on ? 'true' : 'false');
+        },
+
+        cycleAutonomyProfile() {
+            const profiles = ['cautious', 'balanced', 'aggressive'];
+            const idx = profiles.indexOf(this.autonomyBehaviorProfile);
+            const next = profiles[(idx + 1 + profiles.length) % profiles.length];
+            this.autonomyBehaviorProfile = next;
+            localStorage.setItem('AI_Companion_AutonomyProfile', next);
+            return next;
+        },
+
+        setAutonomyTickSeconds(seconds) {
+            this.autonomyTickSeconds = Math.max(2, Math.min(10, Number(seconds) || 4));
+            localStorage.setItem('AI_Companion_AutonomyTickSeconds', String(this.autonomyTickSeconds));
+        },
+
+        cycleAutonomyTickSeconds() {
+            const values = [2, 3, 4, 5, 7, 10];
+            const idx = values.indexOf(this.autonomyTickSeconds);
+            this.setAutonomyTickSeconds(values[(idx + 1 + values.length) % values.length]);
+            return this.autonomyTickSeconds;
+        },
+
+        setAutonomyScoutDistance(value) {
+            this.autonomyMaxScoutDistance = Math.max(2, Math.min(12, Number(value) || 6));
+            localStorage.setItem('AI_Companion_AutonomyScoutDistance', String(this.autonomyMaxScoutDistance));
+        },
+
+        cycleAutonomyScoutDistance() {
+            const values = [4, 6, 8, 10, 12];
+            const idx = values.indexOf(this.autonomyMaxScoutDistance);
+            this.setAutonomyScoutDistance(values[(idx + 1 + values.length) % values.length]);
+            return this.autonomyMaxScoutDistance;
+        },
+
+        setAutonomyDetourDistance(value) {
+            this.autonomyMaxDetourDistance = Math.max(1, Math.min(6, Number(value) || 3));
+            localStorage.setItem('AI_Companion_AutonomyDetourDistance', String(this.autonomyMaxDetourDistance));
+        },
+
+        cycleAutonomyDetourDistance() {
+            const values = [1, 2, 3, 4, 5, 6];
+            const idx = values.indexOf(this.autonomyMaxDetourDistance);
+            this.setAutonomyDetourDistance(values[(idx + 1 + values.length) % values.length]);
+            return this.autonomyMaxDetourDistance;
+        },
+
+        setAutonomyLootRadius(value) {
+            this.autonomyLootRadius = Math.max(1, Math.min(4, Number(value) || 2));
+            localStorage.setItem('AI_Companion_AutonomyLootRadius', String(this.autonomyLootRadius));
+        },
+
+        cycleAutonomyLootRadius() {
+            const values = [1, 2, 3, 4];
+            const idx = values.indexOf(this.autonomyLootRadius);
+            this.setAutonomyLootRadius(values[(idx + 1 + values.length) % values.length]);
+            return this.autonomyLootRadius;
+        },
+
+        setAutonomyNpcInteraction(on) {
+            this.autonomyAllowNpcInteraction = !!on;
+            localStorage.setItem('AI_Companion_AutonomyNpcInteraction', on ? 'true' : 'false');
+        },
+
+        setAutonomyDoorTesting(on) {
+            this.autonomyAllowDoorTesting = !!on;
+            localStorage.setItem('AI_Companion_AutonomyDoorTesting', on ? 'true' : 'false');
+        },
+
+        setAutonomySoloEngagement(on) {
+            this.autonomyAllowSoloEngagement = !!on;
+            localStorage.setItem('AI_Companion_AutonomySoloEngagement', on ? 'true' : 'false');
+        },
+
+        setAutonomyAutoReturnOnDanger(on) {
+            this.autonomyAutoReturnOnDanger = !!on;
+            localStorage.setItem('AI_Companion_AutonomyAutoReturn', on ? 'true' : 'false');
+        },
+
+        setDebugOverlay(on) {
+            this.debugOverlay = !!on;
+            localStorage.setItem('AI_Companion_DebugOverlay', on ? 'true' : 'false');
         },
 
         // ── Fetch free models from OpenRouter ────────────────────────────
@@ -2770,14 +2901,16 @@ Respond ONLY with this JSON:
     };
 
     Scene_AIConfig.prototype.createHelpWindow = function () {
-        this._helpWindow = new Window_Help(2);
-        this._helpWindow.setText(Config.language === 'es' ? 'Configuración del compañero IA\nElige una opción' : 'AI Companion Configuration\nSelect an option below');
+        this._helpWindow = new Window_Help(3);
+        this._helpWindow.setText(Config.language === 'es'
+            ? 'Configuración del compañero IA\nAjusta chat, depuración y autonomía beta.\nElige una opción abajo.'
+            : 'AI Companion Configuration\nAdjust chat, debugging, and beta autonomy.\nSelect an option below.');
         this.addWindow(this._helpWindow);
     };
 
     Scene_AIConfig.prototype.createStatusWindow = function () {
         const wy = this._helpWindow.height;
-        this._statusWindow = new Window_Base(0, wy, Graphics.boxWidth, 80);
+        this._statusWindow = new Window_Base(0, wy, Graphics.boxWidth, 180);
         this.addWindow(this._statusWindow);
         this.refreshStatus();
     };
@@ -2785,20 +2918,43 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.refreshStatus = function () {
         this._statusWindow.contents.clear();
         const es = Config.language === 'es';
-        const apiStatus = Config.apiKey ? (es ? 'API Key: CONFIGURADA' : 'API Key: SET') + ' (' + Config.apiKey.substring(0, 8) + '...)' : (es ? 'API Key: NO' : 'API Key: NOT SET');
-        const modeStatus = Config.useMockAI ? (es ? 'Modo: PRUEBA (Mock)' : 'Mode: MOCK AI') : (es ? 'Modo: API real' : 'Mode: REAL API');
-        const debugStatus = Config.debugMode ? (es ? 'Debug: SÍ (F12 consola)' : 'Debug: ON (F12 console)') : (es ? 'Debug: NO' : 'Debug: OFF');
-        this._statusWindow.drawText(apiStatus, 10, 0, Graphics.boxWidth - 40, 'left');
-        this._statusWindow.drawText(modeStatus, 10, 28, Graphics.boxWidth - 40, 'left');
-        this._statusWindow.drawText(debugStatus, 10, 56, Graphics.boxWidth - 40, 'left');
+        const lineH = 24;
+        const drawLine = (text, row) => this._statusWindow.drawText(text, 10, row * lineH, Graphics.boxWidth - 40, 'left');
+        const apiStatus = Config.apiKey
+            ? (es ? 'API key: OK' : 'API key: OK') + ' (' + Config.apiKey.substring(0, 8) + '...)'
+            : (es ? 'API key: no configurada' : 'API key: not set');
+        const chatModel = (Config.apiProvider === 'local' ? Config.localModel : (Config.chatModel || Config.getProvider().defaultModels[0] || 'auto')).split('/').pop();
+        const autonomyModel = String(Config.getAutonomyModel() || 'local-current').split('/').pop();
+        const autonomyRisk = Config.getAutonomyModel() === Config.localModel
+            ? (es ? 'local preferido' : 'local preferred')
+            : (es ? 'posible uso cloud' : 'may use cloud');
+
+        drawLine((es ? 'Compañero: ' : 'Companion: ') + Config.companionName + '  |  ' + (es ? 'Aspecto: ' : 'Look: ') + CharacterPresets.getCurrentPresetName(), 0);
+        drawLine((es ? 'Personalidad: ' : 'Personality: ') + CharacterPresets.getCurrentPersonalityName() + '  |  ' + (es ? 'Clase: ' : 'Class: ') + (STARTING_LOADOUTS[Config.companionClass] ? STARTING_LOADOUTS[Config.companionClass].nameEs : Config.companionClass), 1);
+        drawLine((es ? 'Chat: ' : 'Chat: ') + (PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider) + ' / ' + chatModel, 2);
+        drawLine((es ? 'Modo: ' : 'Mode: ') + (Config.useMockAI ? (es ? 'mock / prueba' : 'mock / test') : (es ? 'API real' : 'live API')) + '  |  ' + apiStatus, 3);
+        drawLine((es ? 'Autonomía beta: ' : 'Beta autonomy: ') + (Config.autonomyEnabled ? (es ? 'ACTIVA' : 'ON') : (es ? 'apagada' : 'OFF')) + '  |  ' + (es ? 'perfil: ' : 'profile: ') + Config.autonomyBehaviorProfile, 4);
+        drawLine((es ? 'Modelo auto.: ' : 'Auto model: ') + autonomyModel + ' (' + autonomyRisk + ')', 5);
+        drawLine((es ? 'Pulso: ' : 'Heartbeat: ') + Config.autonomyTickSeconds + 's  |  ' + (es ? 'explorar: ' : 'scout: ') + Config.autonomyMaxScoutDistance + '  |  ' + (es ? 'desvío: ' : 'detour: ') + Config.autonomyMaxDetourDistance + '  |  ' + (es ? 'botín: ' : 'loot: ') + Config.autonomyLootRadius, 6);
+        drawLine((es ? 'Debug: ' : 'Debug: ') + (Config.debugMode ? 'ON' : 'OFF') + '  |  ' + (es ? 'Overlay: ' : 'Overlay: ') + (Config.debugOverlay ? 'ON' : 'OFF'), 7);
+    };
+
+    Scene_AIConfig.prototype._refreshConfigScene = function (helpText) {
+        if (helpText) this._helpWindow.setText(helpText);
+        this.refreshStatus();
+        this._commandWindow.refresh();
+        this._commandWindow.activate();
+        this._commandWindow.updateHelp();
     };
 
     Scene_AIConfig.prototype.createCommandWindow = function () {
         const wy = this._helpWindow.height + this._statusWindow.height;
         this._commandWindow = new Window_AIConfigCommand(0, wy);
+        this._commandWindow.setHelpWindow(this._helpWindow);
         this._commandWindow.setHandler('apiKey', this.commandApiKey.bind(this));
         this._commandWindow.setHandler('toggleMock', this.commandToggleMock.bind(this));
         this._commandWindow.setHandler('toggleDebug', this.commandToggleDebug.bind(this));
+        this._commandWindow.setHandler('toggleDebugOverlay', this.commandToggleDebugOverlay.bind(this));
         this._commandWindow.setHandler('setName', this.commandSetName.bind(this));
         this._commandWindow.setHandler('setAppearance', this.commandSetAppearance.bind(this));
         this._commandWindow.setHandler('setPersonality', this.commandSetPersonality.bind(this));
@@ -2806,13 +2962,26 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('setLanguage', this.commandSetLanguage.bind(this));
         this._commandWindow.setHandler('setProvider', this.commandSetProvider.bind(this));
         this._commandWindow.setHandler('setModel', this.commandSetModel.bind(this));
+        this._commandWindow.setHandler('toggleAutonomy', this.commandToggleAutonomy.bind(this));
+        this._commandWindow.setHandler('setAutonomyModel', this.commandSetAutonomyModel.bind(this));
+        this._commandWindow.setHandler('setAutonomyTick', this.commandSetAutonomyTick.bind(this));
+        this._commandWindow.setHandler('setAutonomyProfile', this.commandSetAutonomyProfile.bind(this));
+        this._commandWindow.setHandler('setAutonomyScout', this.commandSetAutonomyScout.bind(this));
+        this._commandWindow.setHandler('setAutonomyDetour', this.commandSetAutonomyDetour.bind(this));
+        this._commandWindow.setHandler('setAutonomyLoot', this.commandSetAutonomyLoot.bind(this));
+        this._commandWindow.setHandler('toggleAutonomyNpc', this.commandToggleAutonomyNpc.bind(this));
+        this._commandWindow.setHandler('toggleAutonomyDoors', this.commandToggleAutonomyDoors.bind(this));
+        this._commandWindow.setHandler('toggleAutonomySolo', this.commandToggleAutonomySolo.bind(this));
+        this._commandWindow.setHandler('toggleAutonomyReturn', this.commandToggleAutonomyReturn.bind(this));
         this._commandWindow.setHandler('fetchModels', this.commandFetchModels.bind(this));
         this._commandWindow.setHandler('cancel', this.popScene.bind(this));
         this.addWindow(this._commandWindow);
     };
 
     Scene_AIConfig.prototype.commandApiKey = function () {
-        this._helpWindow.setText('Paste your Gemini API Key with Ctrl+V\nPress Enter to save, Escape to cancel');
+        this._helpWindow.setText(Config.language === 'es'
+            ? 'Pega tu API key con Ctrl+V\nEnter para guardar, Escape para cancelar'
+            : 'Paste your API key with Ctrl+V\nPress Enter to save, Escape to cancel');
         this._inputMode = true;
         this._commandWindow.deactivate();
         // Create input window if it doesn't exist
@@ -2836,18 +3005,20 @@ Respond ONLY with this JSON:
         Config.forceMockAI = !Config.forceMockAI;
         if (Config.debugMode) Debug.log('Mock toggled:', Config.forceMockAI);
         SoundManager.playOk();
-        this.refreshStatus();
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
+        this._refreshConfigScene();
     };
 
     Scene_AIConfig.prototype.commandToggleDebug = function () {
         Config.setDebugMode(!Config.debugMode);
         if (Config.debugMode) console.log('[AI_Companion] Debug mode ON – verás logs en la consola (F12).');
         SoundManager.playOk();
-        this.refreshStatus();
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
+        this._refreshConfigScene();
+    };
+
+    Scene_AIConfig.prototype.commandToggleDebugOverlay = function () {
+        Config.setDebugOverlay(!Config.debugOverlay);
+        SoundManager.playOk();
+        this._refreshConfigScene();
     };
 
     Scene_AIConfig.prototype.onInputOk = function () {
@@ -2860,10 +3031,9 @@ Respond ONLY with this JSON:
             SoundManager.playOk();
             this._inputWindow.hide();
             this._inputMode = false;
-            this._helpWindow.setText('API Key saved successfully!\nSelect an option below');
-            this.refreshStatus();
-            this._commandWindow.refresh();
-            this._commandWindow.activate();
+            this._refreshConfigScene(Config.language === 'es'
+                ? 'API key guardada correctamente\nElige una opción abajo'
+                : 'API key saved successfully!\nSelect an option below');
         } else {
             SoundManager.playBuzzer();
             this._inputWindow.activate();
@@ -2873,8 +3043,9 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.onInputCancel = function () {
         this._inputWindow.hide();
         this._inputMode = false;
-        this._helpWindow.setText('AI Companion Configuration\nSelect an option below');
-        this._commandWindow.activate();
+        this._refreshConfigScene(Config.language === 'es'
+            ? 'Configuración del compañero IA\nAjusta chat, depuración y autonomía beta.\nElige una opción abajo.'
+            : 'AI Companion Configuration\nAdjust chat, debugging, and beta autonomy.\nSelect an option below.');
     };
 
     // Name input handler
@@ -2912,9 +3083,7 @@ Respond ONLY with this JSON:
         const nextIndex = (currentIndex + 1) % presets.length;
         CharacterPresets.setAppearance(presets[nextIndex].id);
         SoundManager.playOk();
-        this._helpWindow.setText(`Appearance: ${presets[nextIndex].name}`);
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
+        this._refreshConfigScene(`Appearance: ${presets[nextIndex].name}`);
     };
 
     // Personality cycling handler
@@ -2924,9 +3093,7 @@ Respond ONLY with this JSON:
         const nextIndex = (currentIndex + 1) % types.length;
         CharacterPresets.setPersonality(types[nextIndex].id);
         SoundManager.playOk();
-        this._helpWindow.setText(`Personality: ${types[nextIndex].name}\n(${types[nextIndex].traits})`);
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
+        this._refreshConfigScene(`Personality: ${types[nextIndex].name}\n(${types[nextIndex].traits})`);
     };
 
     // Class cycling handler
@@ -2938,9 +3105,7 @@ Respond ONLY with this JSON:
         Config.setCompanionClass(nextClass);
         const loadout = STARTING_LOADOUTS[nextClass];
         SoundManager.playOk();
-        this._helpWindow.setText(`${loadout.nameEs}\n${loadout.desc}`);
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
+        this._refreshConfigScene(`${loadout.nameEs}\n${loadout.desc}`);
     };
 
     // Language toggle handler
@@ -2948,9 +3113,7 @@ Respond ONLY with this JSON:
         const newLang = Config.language === 'es' ? 'en' : 'es';
         Config.setLanguage(newLang);
         SoundManager.playOk();
-        this._helpWindow.setText(`Language set to: ${newLang === 'es' ? 'Español' : 'English'}`);
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
+        this._refreshConfigScene(`Language set to: ${newLang === 'es' ? 'Español' : 'English'}`);
     };
 
     // Provider cycling handler (groq → openrouter → local)
@@ -2959,13 +3122,11 @@ Respond ONLY with this JSON:
         const providerDef = PROVIDERS[newProvider];
         SoundManager.playOk();
         if (newProvider === 'local') {
-            this._helpWindow.setText(`IA Local: ${Config.localModel}\n${Config.localEndpoint}`);
+            this._refreshConfigScene(`IA Local: ${Config.localModel}\n${Config.localEndpoint}`);
         } else {
             const modelName = Config.getChatModel();
-            this._helpWindow.setText(`${providerDef.name}\nModel: ${modelName}`);
+            this._refreshConfigScene(`${providerDef.name}\nModel: ${modelName}`);
         }
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
     };
 
     // Model selection handler — cycles through available models for current provider
@@ -2982,13 +3143,11 @@ Respond ONLY with this JSON:
         } else if (Config.apiProvider === 'groq') {
             models = PROVIDERS.groq.defaultModels;
         } else {
-            this._helpWindow.setText(es ? 'Modelo local se configura en LM Studio' : 'Local model is set in LM Studio');
-            this._commandWindow.activate();
+            this._refreshConfigScene(es ? 'Modelo local se configura en LM Studio' : 'Local model is set in LM Studio');
             return;
         }
         if (models.length === 0) {
-            this._helpWindow.setText(es ? 'No hay modelos. Usa "Buscar modelos gratis"' : 'No models. Use "Fetch Free Models"');
-            this._commandWindow.activate();
+            this._refreshConfigScene(es ? 'No hay modelos. Usa "Buscar modelos gratis"' : 'No models. Use "Fetch Free Models"');
             return;
         }
         const currentIdx = models.indexOf(Config.chatModel);
@@ -2996,9 +3155,75 @@ Respond ONLY with this JSON:
         Config.setChatModel(models[nextIdx]);
         SoundManager.playOk();
         const shortName = models[nextIdx].length > 40 ? models[nextIdx].substring(0, 40) + '...' : models[nextIdx];
-        this._helpWindow.setText(`${es ? 'Modelo' : 'Model'}: ${shortName}`);
-        this._commandWindow.refresh();
-        this._commandWindow.activate();
+        this._refreshConfigScene(`${es ? 'Modelo de chat' : 'Chat model'}: ${shortName}`);
+    };
+
+    Scene_AIConfig.prototype.commandToggleAutonomy = function () {
+        Config.setAutonomyEnabled(!Config.autonomyEnabled);
+        SoundManager.playOk();
+        this._refreshConfigScene(Config.language === 'es'
+            ? `Autonomía beta: ${Config.autonomyEnabled ? 'ACTIVA' : 'apagada'}`
+            : `Beta autonomy: ${Config.autonomyEnabled ? 'ON' : 'OFF'}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutonomyModel = function () {
+        const next = Config.cycleAutonomyModel();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Modelo de autonomía' : 'Autonomy model'}: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutonomyTick = function () {
+        const next = Config.cycleAutonomyTickSeconds();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Pulso de autonomía' : 'Autonomy heartbeat'}: ${next}s`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutonomyProfile = function () {
+        const next = Config.cycleAutonomyProfile();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Perfil de riesgo' : 'Risk profile'}: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutonomyScout = function () {
+        const next = Config.cycleAutonomyScoutDistance();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Distancia máx. de exploración' : 'Max scout distance'}: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutonomyDetour = function () {
+        const next = Config.cycleAutonomyDetourDistance();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Desvío máximo' : 'Max detour distance'}: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutonomyLoot = function () {
+        const next = Config.cycleAutonomyLootRadius();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Radio de botín' : 'Loot radius'}: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandToggleAutonomyNpc = function () {
+        Config.setAutonomyNpcInteraction(!Config.autonomyAllowNpcInteraction);
+        SoundManager.playOk();
+        this._refreshConfigScene();
+    };
+
+    Scene_AIConfig.prototype.commandToggleAutonomyDoors = function () {
+        Config.setAutonomyDoorTesting(!Config.autonomyAllowDoorTesting);
+        SoundManager.playOk();
+        this._refreshConfigScene();
+    };
+
+    Scene_AIConfig.prototype.commandToggleAutonomySolo = function () {
+        Config.setAutonomySoloEngagement(!Config.autonomyAllowSoloEngagement);
+        SoundManager.playOk();
+        this._refreshConfigScene();
+    };
+
+    Scene_AIConfig.prototype.commandToggleAutonomyReturn = function () {
+        Config.setAutonomyAutoReturnOnDanger(!Config.autonomyAutoReturnOnDanger);
+        SoundManager.playOk();
+        this._refreshConfigScene();
     };
 
     // Fetch free models from OpenRouter
@@ -3039,18 +3264,17 @@ Respond ONLY with this JSON:
     };
 
     Window_AIConfigCommand.prototype.numVisibleRows = function () {
-        return 8; // Scrollable — shows 8 items at a time
+        return 11;
     };
 
     Window_AIConfigCommand.prototype.makeCommandList = function () {
         const es = Config.language === 'es';
+        this.addCommand(es ? '--- Núcleo ---' : '--- Core ---', 'separator', false);
         this.addCommand(es ? 'Configurar API Key' : 'Set API Key', 'apiKey');
         const mockLabel = Config.forceMockAI ? (es ? 'Modo prueba: ON (pulsa para API real)' : 'Mock Mode: ON (click to use Real API)') :
             Config.apiKey ? (es ? 'Modo prueba: OFF (usando API real)' : 'Mock Mode: OFF (using Real API)') :
                 (es ? 'Modo prueba: ON (configura API key antes)' : 'Mock Mode: ON (set API key first)');
         this.addCommand(mockLabel, 'toggleMock');
-        this.addCommand(es ? '--- Depuración ---' : '--- Debug ---', 'separator', false);
-        this.addCommand(es ? `Consola debug: ${Config.debugMode ? 'SÍ' : 'NO'}` : `Debug console: ${Config.debugMode ? 'ON' : 'OFF'}`, 'toggleDebug');
         this.addCommand(es ? '--- Personaje ---' : '--- Character ---', 'separator', false);
         this.addCommand(`${es ? 'Nombre' : 'Name'}: ${Config.companionName}`, 'setName');
         this.addCommand(`${es ? 'Aspecto' : 'Appearance'}: ${CharacterPresets.getCurrentPresetName()}`, 'setAppearance');
@@ -3059,7 +3283,7 @@ Respond ONLY with this JSON:
         const className = loadout ? (es ? loadout.nameEs : loadout.name) : Config.companionClass;
         this.addCommand(`${es ? 'Clase inicial' : 'Starting class'}: ${className}`, 'setClass');
         this.addCommand(`${es ? 'Idioma' : 'Language'}: ${Config.language === 'es' ? 'Español' : 'English'}`, 'setLanguage');
-        this.addCommand(es ? '--- IA ---' : '--- AI ---', 'separator', false);
+        this.addCommand(es ? '--- Chat / IA ---' : '--- Chat / AI ---', 'separator', false);
         // Provider label
         const providerDef = PROVIDERS[Config.apiProvider] || PROVIDERS.groq;
         let providerLabel;
@@ -3073,12 +3297,59 @@ Respond ONLY with this JSON:
         const modelLabel = Config.apiProvider === 'local'
             ? Config.localModel.substring(0, 30)
             : (Config.chatModel || providerDef.defaultModels[0] || 'auto').split('/').pop().substring(0, 30);
-        this.addCommand(`${es ? 'Modelo' : 'Model'}: ${modelLabel}`, 'setModel');
+        this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
         // Fetch free models (OpenRouter only)
         if (Config.apiProvider === 'openrouter') {
             const freeCount = Config.getFreeModels().length;
             this.addCommand(`${es ? 'Buscar modelos gratis' : 'Fetch Free Models'} (${freeCount})`, 'fetchModels');
         }
+        this.addCommand(es ? '--- Autonomía beta ---' : '--- Beta Autonomy ---', 'separator', false);
+        this.addCommand(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'}`, 'toggleAutonomy');
+        this.addCommand(`${es ? 'Modelo de autonomía' : 'Autonomy model'}: ${String(Config.getAutonomyModel()).split('/').pop().substring(0, 30)}`, 'setAutonomyModel');
+        this.addCommand(`${es ? 'Pulso' : 'Heartbeat'}: ${Config.autonomyTickSeconds}s`, 'setAutonomyTick');
+        this.addCommand(`${es ? 'Perfil' : 'Profile'}: ${Config.autonomyBehaviorProfile}`, 'setAutonomyProfile');
+        this.addCommand(`${es ? 'Exploración máxima' : 'Max scout'}: ${Config.autonomyMaxScoutDistance}`, 'setAutonomyScout');
+        this.addCommand(`${es ? 'Desvío máximo' : 'Max detour'}: ${Config.autonomyMaxDetourDistance}`, 'setAutonomyDetour');
+        this.addCommand(`${es ? 'Radio de botín' : 'Loot radius'}: ${Config.autonomyLootRadius}`, 'setAutonomyLoot');
+        this.addCommand(`${es ? 'Hablar con NPCs' : 'Talk to NPCs'}: ${Config.autonomyAllowNpcInteraction ? 'ON' : 'OFF'}`, 'toggleAutonomyNpc');
+        this.addCommand(`${es ? 'Probar puertas' : 'Test doors'}: ${Config.autonomyAllowDoorTesting ? 'ON' : 'OFF'}`, 'toggleAutonomyDoors');
+        this.addCommand(`${es ? 'Pelea en solitario' : 'Solo engage'}: ${Config.autonomyAllowSoloEngagement ? 'ON' : 'OFF'}`, 'toggleAutonomySolo');
+        this.addCommand(`${es ? 'Volver si hay peligro' : 'Auto return on danger'}: ${Config.autonomyAutoReturnOnDanger ? 'ON' : 'OFF'}`, 'toggleAutonomyReturn');
+        this.addCommand(es ? '--- Depuración ---' : '--- Debug ---', 'separator', false);
+        this.addCommand(es ? `Consola debug: ${Config.debugMode ? 'SÍ' : 'NO'}` : `Debug console: ${Config.debugMode ? 'ON' : 'OFF'}`, 'toggleDebug');
+        this.addCommand(es ? `Overlay debug: ${Config.debugOverlay ? 'SÍ' : 'NO'}` : `Debug overlay: ${Config.debugOverlay ? 'ON' : 'OFF'}`, 'toggleDebugOverlay');
+    };
+
+    Window_AIConfigCommand.prototype.updateHelp = function () {
+        if (!this._helpWindow) return;
+        const es = Config.language === 'es';
+        const symbol = this.currentSymbol();
+        const help = {
+            apiKey: es ? 'Pega tu API key. Se usa para chat y funciones cloud.' : 'Paste your API key. Used for chat and cloud features.',
+            toggleMock: es ? 'Activa o desactiva el modo de prueba sin llamadas reales.' : 'Toggle mock mode to disable real API calls.',
+            setName: es ? 'Abre la edición nativa del nombre del compañero.' : 'Open the native companion name editor.',
+            setAppearance: es ? 'Cambia el preset visual del compañero.' : 'Cycle the companion appearance preset.',
+            setPersonality: es ? 'Cambia la personalidad base del compañero.' : 'Cycle the companion base personality.',
+            setClass: es ? 'Cambia el equipamiento inicial del compañero.' : 'Cycle the companion starting loadout.',
+            setLanguage: es ? 'Alterna el idioma principal del plugin.' : 'Toggle the plugin language.',
+            setProvider: es ? 'Cambia el proveedor de chat principal.' : 'Cycle the primary chat provider.',
+            setModel: es ? 'Cambia el modelo usado para chat y rol.' : 'Cycle the model used for chat and roleplay.',
+            fetchModels: es ? 'Busca modelos gratis disponibles en OpenRouter.' : 'Fetch available free models from OpenRouter.',
+            toggleAutonomy: es ? 'Activa la futura autonomía beta. Por ahora es preparación/configuración.' : 'Enable future beta autonomy. For now this is configuration prep.',
+            setAutonomyModel: es ? 'Modelo preferido para la autonomía. Lo ideal es mantenerlo local.' : 'Preferred model for autonomy. Local is recommended.',
+            setAutonomyTick: es ? 'Cada cuántos segundos tomaría decisiones la autonomía.' : 'How often autonomy would make decisions.',
+            setAutonomyProfile: es ? 'Riesgo base: cauteloso, balanceado o agresivo.' : 'Base risk profile: cautious, balanced, or aggressive.',
+            setAutonomyScout: es ? 'Distancia máxima para alejarse explorando.' : 'Maximum distance the companion may scout away.',
+            setAutonomyDetour: es ? 'Desvío máximo permitido para recoger o investigar.' : 'Maximum detour allowed for looting or checking something.',
+            setAutonomyLoot: es ? 'Qué tan cerca debe estar el botín para ir por él.' : 'How close loot must be before going for it.',
+            toggleAutonomyNpc: es ? 'Permite charlas automáticas con NPCs.' : 'Allow autonomous NPC interactions.',
+            toggleAutonomyDoors: es ? 'Permite probar puertas o interactivos simples.' : 'Allow autonomous door and simple interactable testing.',
+            toggleAutonomySolo: es ? 'Permite entrar en combate sin el jugador cerca.' : 'Allow autonomous solo engagement.',
+            toggleAutonomyReturn: es ? 'Hace que vuelva al jugador cuando detecta peligro.' : 'Return to the player when danger rises.',
+            toggleDebug: es ? 'Activa logs detallados en la consola F12.' : 'Enable detailed logs in the F12 console.',
+            toggleDebugOverlay: es ? 'Reservado para mostrar overlays de depuración en pantalla.' : 'Reserved for on-screen debug overlays.'
+        };
+        this._helpWindow.setText(help[symbol] || (es ? 'Configuración del compañero IA' : 'AI companion configuration'));
     };
 
     //=========================================================================
