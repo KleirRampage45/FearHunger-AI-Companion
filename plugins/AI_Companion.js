@@ -862,12 +862,13 @@
         _patterns: {
             item_info: /(?:que es|what is|para que sirve|what does|donde encuentro|where.*find|como usar|how.*use|tengo un[oa]?|hierba|herb|vial|pocion|potion|soul stone|piedra|cloth|fragmento|pinecone|dagger|espada|escudo|shield|ring|anillo|armor|armadura|weapon|arma)/i,
             tactical: /(?:que hago|what.*do|como.*mato|how.*kill|como.*peleo|how.*fight|estrategia|strategy|debilidad|weakness|vulnerab|atacar|attack|defender|defend|guard|guardia|coin flip|moneda|limb|miembro|brazo|arm|pierna|leg|cabeza|head|prioridad|priority|enemigo|enemy|pelea|pelear|combate|combat|monstruo|monster|criatura|creature)/i,
+            npc_recall: /(?:con quien acabamos de hablar|con quién acabamos de hablar|con quien hablamos|con quién hablamos|con quien hable|con quién hablé|quien era ese npc|quién era ese npc|quien nos hablo|quién nos habló|que dijo ese npc|qué dijo ese npc|who did we just talk to|who was that npc|what did that npc say)/i,
             recent_battle: /(?:acabamos|derrotamos|matamos|vencimos|peleamos|que era eso|what was that|que matamos|what.*kill|last fight|ultima pelea|enemigo anterior|que acaba de pasar|recien|just fought|just killed|que paso en la pelea|batalla anterior)/i,
             lore: /(?:quien es|who is|que es este lugar|where.*we|donde estamos|historia|story|lore|dios|god|sylvian|gro.goroth|rher|vinushka|alll.mer|fellowship|mahab|ma'hab|tower|torre|void|vacio|nosramus|pocketcat|legarde|le'garde)/i,
             social: /(?:que opinas|que te parece|del grupo|integrante|nuevo|de ella|de el|quien es este|quienes son|acompañan|que piensas)/i,
             emotional: /(?:como estas|how.*you|como te sientes|how.*feel|tengo miedo|i'm scared|estoy asustado|nervios|nervous|vamos a morir|we.*die|gracias|thank|lo siento|sorry|te quiero|confio|trust)/i,
             status_help: /(?:icon|icono|status|estado|efecto|effect|cura|cure|poison|veneno|bleed|sangr|infect|parasi|burn|quemad|fear|miedo|hunger|hambre|blind|cieg|curse|maldic|fractur|paraliz|ruin|brain flower|flor|confused|confundid|toxic|toxico)/i,
-            location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path|que ves|qué ves|ves algo|what do you see|what.*around|que hay alrededor|qué hay alrededor)/i
+            location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path|que ves|qué ves|ves algo|ves un npc|hay un npc cerca|npc cerca|what do you see|what.*around|que hay alrededor|qué hay alrededor)/i
         },
 
         // Branch 5: Intent classification cache (input hash → result)
@@ -1324,79 +1325,348 @@ Reply with ONLY the category name, nothing else.`;
     //=========================================================================
     const EnvironmentScanner = {
         SCAN_RADIUS: 6,  // tiles around the player
+        LOCAL_GRID_RADIUS: 4,
+        MAX_NEARBY_EVENTS: 16,
         _cache: null,
         _cacheMapId: -1,
         _cachePlayerPos: '',
         _cacheTick: 0,
         CACHE_TTL: 60,   // frames between rescans (~1 second at 60fps)
 
-        /**
-         * Classification rules: sprite name or event name → object type.
-         * Built from analysis of Fear & Hunger map data.
-         */
-        _classifyEvent(event) {
-            if (!event || !event.event) return null;
-            const ev = event.event();
-            const name = (ev.name || '').toLowerCase();
-            const note = (ev.note || '').toLowerCase();
+        _enemySpriteLabels: {
+            guard: 'Guardia',
+            ghoul: 'Ghoul',
+            skeleton: 'Esqueleto',
+            mauler: 'Crow Mauler',
+            moonless: 'Moonless',
+            dark_priest: 'Sacerdote oscuro',
+            demon_child: 'Niño demonio',
+            demonbaby: 'Bebé demonio',
+            mercenary: 'Mercenario',
+            knight: 'Caballero',
+            captain: "Le'garde",
+            outlander: 'Forastero',
+            girl: 'Niña'
+        },
 
-            // Get active page's sprite
-            const page = event.page();
-            const sprite = page ? (page.image.characterName || '').toLowerCase() : '';
+        _normalize(text) {
+            return String(text || '').toLowerCase();
+        },
 
-            // Skip invisible/empty events
-            if (!sprite && !name) return null;
+        _mapReady() {
+            return !!($gameMap && $dataMap);
+        },
 
-            // --- TRAPS ---
-            if (sprite.includes('beartrap') || name.includes('beartrap'))
-                return { type: 'trap', subtype: 'bear_trap', danger: 'high', label: 'Trampa de oso' };
-            if (name.includes('fear_floor') || name.includes('spike'))
-                return { type: 'trap', subtype: 'floor_trap', danger: 'medium', label: 'Suelo peligroso' };
-            if (name.includes('arrow_check') || name.includes('arrow'))
-                return { type: 'trap', subtype: 'arrow_trap', danger: 'medium', label: 'Trampa de flechas' };
+        _safeEventData(event) {
+            if (!event || event._erased || !$dataMap || !$dataMap.events) return null;
+            const eventId = event.eventId ? event.eventId() : event._eventId;
+            if (!eventId) return null;
+            return $dataMap.events[eventId] || null;
+        },
 
-            // --- SAVE POINTS ---
-            if (name.includes('circle') || sprite.includes('portal'))
-                return { type: 'save_point', subtype: 'ritual_circle', danger: 'none', label: 'Círculo ritual (guardar)' };
+        _safeEventPage(event) {
+            const data = this._safeEventData(event);
+            if (!data || !data.pages) return null;
+            const pageIndex = event && event._pageIndex !== undefined ? event._pageIndex : -1;
+            if (pageIndex == null || pageIndex < 0 || pageIndex >= data.pages.length) return null;
+            return data.pages[pageIndex] || null;
+        },
 
-            // --- CONTAINERS / LOOT ---
-            if (sprite.includes('chest') || sprite.includes('$boxes'))
-                return { type: 'container', subtype: 'chest', danger: 'none', label: 'Cofre' };
-            if (name.includes('coin'))
-                return { type: 'loot', subtype: 'coin', danger: 'none', label: 'Moneda' };
+        _pageCommands(event) {
+            const page = this._safeEventPage(event);
+            return page && page.list ? page.list : [];
+        },
 
-            // --- DOORS ---
-            if (sprite.includes('door') || name.includes('door'))
-                return { type: 'door', subtype: 'door', danger: 'none', label: 'Puerta' };
+        _hasVisiblePresentation(page) {
+            if (!page || !page.image) return false;
+            const image = page.image;
+            return !!(image.characterName || (image.tileId && image.tileId > 0));
+        },
 
-            // --- ENEMIES (roaming) ---
-            const enemySprites = ['guard', 'ghoul', 'skeleton', 'mauler', 'moonless',
-                'dark_priest', 'demon_child', 'demonbaby', 'mercenary', 'knight',
-                'captain', 'outlander', 'girl'];
-            for (const es of enemySprites) {
-                if (sprite.includes(es) && !sprite.includes('sawing') && !sprite.includes('dead')
-                    && !name.includes('dead') && !name.includes('DEAD')) {
-                    return { type: 'enemy', subtype: es, danger: 'high', label: es.charAt(0).toUpperCase() + es.slice(1) };
+        _databaseName(kind, id) {
+            let db = null;
+            switch (kind) {
+                case 'item': db = window.$dataItems; break;
+                case 'weapon': db = window.$dataWeapons; break;
+                case 'armor': db = window.$dataArmors; break;
+                case 'troop': db = window.$dataTroops; break;
+                default: return null;
+            }
+            return db && db[id] ? db[id].name : null;
+        },
+
+        _mapNameById(mapId) {
+            if (!$dataMapInfos || !$dataMapInfos[mapId]) return null;
+            return $dataMapInfos[mapId].name || null;
+        },
+
+        _extractSpeakerName(commands) {
+            for (let i = 0; i < commands.length; i++) {
+                const command = commands[i];
+                if (!command || (command.code !== 108 && command.code !== 408)) continue;
+                const text = command.parameters && command.parameters[0] ? String(command.parameters[0]) : '';
+                const match = text.match(/(?:name|speaker|nombre|habla)\s*[:=]\s*(.+)$/i);
+                if (match) return match[1].trim();
+            }
+            return null;
+        },
+
+        _identifyNpcName(eventName, spriteName) {
+            const normalized = this._normalize(String(eventName || '') + ' ' + String(spriteName || ''));
+            if (!normalized) return null;
+
+            const mappings = [
+                { pattern: /buckman/, label: 'Buckman' },
+                { pattern: /trortur|trorrtur/, label: 'Trortur' },
+                { pattern: /nashrah|nas_hrah/, label: "Nas'hrah" },
+                { pattern: /moonless/, label: 'Moonless' },
+                { pattern: /legarde|le_garde/, label: "Le'garde" },
+                { pattern: /darce|d_arce/, label: "D'arce" },
+                { pattern: /enki/, label: 'Enki' },
+                { pattern: /cahara/, label: 'Cahara' },
+                { pattern: /ragnvaldr/, label: 'Ragnvaldr' },
+                { pattern: /girl/, label: 'Niña' },
+                { pattern: /merchant/, label: 'Mercader' }
+            ];
+
+            for (let i = 0; i < mappings.length; i++) {
+                if (mappings[i].pattern.test(normalized)) return mappings[i].label;
+            }
+            return null;
+        },
+
+        _eventMetadata(event) {
+            const commands = this._pageCommands(event);
+            const loot = [];
+            let transferMapId = null;
+            let battleTroopId = null;
+            const speakerName = this._extractSpeakerName(commands);
+            const page = event && event.page ? event.page() : null;
+            const spriteName = page && page.image ? page.image.characterName : '';
+            const inferredNpcName = this._identifyNpcName(event && event.event ? event.event().name : '', spriteName);
+
+            commands.forEach(command => {
+                if (!command) return;
+                const params = command.parameters || [];
+                if (command.code === 201 && transferMapId === null) {
+                    transferMapId = Number(params[1]) || null;
+                } else if (command.code === 301 && battleTroopId === null) {
+                    battleTroopId = Number(params[1]) || null;
+                } else if (command.code === 125) {
+                    loot.push({ kind: 'gold', amount: Number(params[2]) || 0 });
+                } else if (command.code === 126) {
+                    loot.push({ kind: 'item', id: Number(params[0]) || 0, name: this._databaseName('item', Number(params[0]) || 0) });
+                } else if (command.code === 127) {
+                    loot.push({ kind: 'weapon', id: Number(params[0]) || 0, name: this._databaseName('weapon', Number(params[0]) || 0) });
+                } else if (command.code === 128) {
+                    loot.push({ kind: 'armor', id: Number(params[0]) || 0, name: this._databaseName('armor', Number(params[0]) || 0) });
+                }
+            });
+
+            return {
+                speakerName: speakerName,
+                npcName: speakerName || inferredNpcName,
+                loot: loot,
+                transferMapId: transferMapId,
+                transferMapName: transferMapId !== null ? this._mapNameById(transferMapId) : null,
+                battleTroopId: battleTroopId,
+                battleTroopName: battleTroopId !== null ? this._databaseName('troop', battleTroopId) : null
+            };
+        },
+
+        _genericEventName(name) {
+            const raw = String(name || '').trim();
+            if (!raw) return false;
+
+            const normalized = raw.toLowerCase();
+            if (/^(?:ev\d+|event\d+|evt\d+|e\d+)$/i.test(raw)) return true;
+            if (/^[a-z0-9]+(?:[_-][a-z0-9]+)+$/i.test(raw)) return true;
+            if (/^[a-z]+[_-]?\d+$/i.test(raw)) return true;
+            if (/^(?:event|npc|enemy|monster|mob|boss|guard|skeleton|ghoul|chest|crate|barrel|coin|door|gate|stairs?|ladder|warp|exit|entrance|passage|transfer|teleport|trap|switch|lever|corpse|merchant|shop|save|ritual|circle|prisoner|woman|man|girl|child)(?:[_-]?[a-z0-9]+)*$/i.test(normalized)) {
+                return true;
+            }
+
+            return false;
+        },
+
+        _looksPlayerFacingEventName(name) {
+            const raw = String(name || '').trim();
+            if (!raw) return false;
+            if (this._genericEventName(raw)) return false;
+            if (/^ev_/i.test(raw)) return false;
+            if (/[\\/:]/.test(raw)) return false;
+            if (/^[a-z0-9_-]+$/.test(raw) && raw === raw.toLowerCase()) return false;
+            return true;
+        },
+
+        _labelFromEnemySprite(sprite) {
+            const normalizedSprite = this._normalize(sprite);
+            for (const key in this._enemySpriteLabels) {
+                if (normalizedSprite.includes(key)) {
+                    const fallbackLabel = this._enemySpriteLabels[key];
+                    if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                        const enemy = FearHungerKB.getEnemy(key);
+                        if (enemy && enemy.displayNameEs) return enemy.displayNameEs;
+                    }
+                    return fallbackLabel;
                 }
             }
 
-            // --- CORPSES ---
-            if (name.includes('dead') || sprite.includes('dead'))
-                return { type: 'corpse', subtype: 'body', danger: 'none', label: 'Cadáver' };
+            const lookupCandidates = [
+                normalizedSprite,
+                normalizedSprite.replace(/[_-]?\d+[a-z]?$/i, ''),
+                normalizedSprite.replace(/\d+/g, ''),
+                normalizedSprite.replace(/[_-]+/g, ' ')
+            ].filter(Boolean);
 
-            // --- CHAINED / PRISONERS ---
-            if (sprite.includes('chained') || name.includes('chained'))
-                return { type: 'npc', subtype: 'chained', danger: 'none', label: 'Prisionero encadenado' };
+            if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                for (const candidate of lookupCandidates) {
+                    const enemy = FearHungerKB.getEnemy(candidate);
+                    if (enemy) return enemy.displayNameEs || enemy.displayName || 'Enemigo';
+                }
+            }
+            return 'Enemigo';
+        },
 
-            // --- FLESH / ORGANIC ---
-            if (sprite.includes('flesh') || sprite.includes('growth'))
-                return { type: 'hazard', subtype: 'organic', danger: 'low', label: 'Crecimiento orgánico' };
+        _eventTags(event, metadata) {
+            const data = this._safeEventData(event);
+            const page = this._safeEventPage(event);
+            if (!data || !page) return [];
 
-            // --- DEMON SEEDS ---
-            if (name.includes('demonseed') || sprite.includes('seed'))
-                return { type: 'hazard', subtype: 'demon_seed', danger: 'medium', label: 'Semilla demoníaca' };
+            const name = this._normalize(data.name);
+            const note = this._normalize(data.note);
+            const sprite = this._normalize(page.image ? page.image.characterName : '');
+            const hasVisiblePresentation = this._hasVisiblePresentation(page);
+            const tags = [];
 
-            return null; // Unknown or irrelevant event (lights, blood stains, etc.)
+            const hasKeyword = pattern => pattern.test(name) || pattern.test(note) || pattern.test(sprite);
+            const hasTransfer = metadata.transferMapId !== null;
+            const hasBattle = metadata.battleTroopId !== null;
+            const hasLoot = metadata.loot.length > 0;
+            const commands = this._pageCommands(event);
+            const commandCodes = {};
+            commands.forEach(command => { if (command) commandCodes[command.code] = true; });
+            const hasText = !!commandCodes[101] || !!commandCodes[401] || !!commandCodes[102];
+            const hasShop = !!commandCodes[302];
+
+            if (hasKeyword(/beartrap/) || hasKeyword(/fear_floor|spike/) || hasKeyword(/arrow_check|arrow/)) tags.push('trap');
+            if (hasKeyword(/circle|ritual/) || sprite.includes('portal')) tags.push('save_point');
+            if (hasTransfer || hasKeyword(/door|gate|stairs|stair|ladder|warp|exit|entrance|passage/)) tags.push('door');
+            if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/)) tags.push('container');
+            if (hasBattle && !hasVisiblePresentation) tags.push('combat_trigger');
+            else if ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/))) tags.push('enemy');
+            if (hasShop) tags.push('shop');
+            if (metadata.npcName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child|buckman|trortur/)))) tags.push('npc');
+            if (hasKeyword(/dead|corpse/) || sprite.includes('dead')) tags.push('corpse');
+            if (hasKeyword(/flesh|growth|demonseed|seed/) || sprite.includes('flesh') || sprite.includes('growth')) tags.push('hazard');
+
+            return tags.filter((tag, index, list) => list.indexOf(tag) === index);
+        },
+
+        _eventType(tags) {
+            if (tags.includes('combat_trigger')) return 'combat_trigger';
+            if (tags.includes('enemy')) return 'enemy';
+            if (tags.includes('trap')) return 'trap';
+            if (tags.includes('door')) return 'door';
+            if (tags.includes('container')) return 'container';
+            if (tags.includes('save_point')) return 'save_point';
+            if (tags.includes('shop')) return 'shop';
+            if (tags.includes('npc')) return 'npc';
+            if (tags.includes('hazard')) return 'hazard';
+            if (tags.includes('corpse')) return 'corpse';
+            return 'event';
+        },
+
+        _dangerFor(type, subtype) {
+            if (type === 'enemy') return 'high';
+            if (type === 'combat_trigger') return 'none';
+            if (type === 'trap') return subtype === 'bear_trap' ? 'high' : 'medium';
+            if (type === 'hazard') return subtype === 'demon_seed' ? 'medium' : 'low';
+            return 'none';
+        },
+
+        _subtypeFor(type, data, page, metadata) {
+            const name = this._normalize(data.name);
+            const sprite = this._normalize(page && page.image ? page.image.characterName : '');
+            if (type === 'trap') {
+                if (sprite.includes('beartrap') || name.includes('beartrap')) return 'bear_trap';
+                if (name.includes('arrow_check') || name.includes('arrow')) return 'arrow_trap';
+                return 'floor_trap';
+            }
+            if (type === 'enemy') {
+                for (const key in this._enemySpriteLabels) {
+                    if (sprite.includes(key)) return key;
+                }
+                if (metadata.battleTroopName) return metadata.battleTroopName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                return 'enemy';
+            }
+            if (type === 'combat_trigger') {
+                if (metadata.battleTroopName) return metadata.battleTroopName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                return 'combat_trigger';
+            }
+            if (type === 'container') {
+                if (name.includes('coin')) return 'coin';
+                return 'chest';
+            }
+            if (type === 'save_point') return 'ritual_circle';
+            if (type === 'hazard') {
+                if (name.includes('demonseed') || sprite.includes('seed')) return 'demon_seed';
+                return 'organic';
+            }
+            if (type === 'npc' && (sprite.includes('chained') || name.includes('chained'))) return 'chained';
+            return type;
+        },
+
+        _labelForEvent(event, type, tags, metadata) {
+            const data = this._safeEventData(event);
+            const page = this._safeEventPage(event);
+            const rawName = data && data.name ? String(data.name).trim() : '';
+            const sprite = this._normalize(page && page.image ? page.image.characterName : '');
+            const lowerRawName = rawName.toLowerCase();
+
+            if (metadata.npcName) return metadata.npcName;
+            if (type === 'enemy') {
+                if (metadata.battleTroopName) {
+                    if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                        const troopEnemy = FearHungerKB.getEnemy(metadata.battleTroopName);
+                        if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || metadata.battleTroopName;
+                    }
+                    return metadata.battleTroopName;
+                }
+                const spriteLabel = this._labelFromEnemySprite(sprite);
+                if (spriteLabel !== 'Enemigo') return spriteLabel;
+                if (this._looksPlayerFacingEventName(rawName)) return rawName;
+                return 'Enemigo';
+            }
+            if (type === 'combat_trigger') {
+                if (metadata.battleTroopName && typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+                    const troopEnemy = FearHungerKB.getEnemy(metadata.battleTroopName);
+                    if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || 'Emboscada';
+                }
+                return 'Emboscada';
+            }
+            if (type === 'door') return 'Puerta';
+            if (type === 'save_point') return 'Círculo ritual';
+            if (type === 'container') return lowerRawName.includes('coin') ? 'Moneda' : 'Cofre';
+            if (type === 'corpse') return 'Cadáver';
+            if (type === 'trap') {
+                if (lowerRawName.includes('arrow')) return 'Trampa de flechas';
+                if (sprite.includes('beartrap') || lowerRawName.includes('beartrap')) return 'Trampa de oso';
+                return 'Suelo peligroso';
+            }
+            if (type === 'hazard') {
+                if (lowerRawName.includes('demonseed') || sprite.includes('seed')) return 'Semilla demoníaca';
+                return 'Crecimiento orgánico';
+            }
+            if (type === 'npc') {
+                if (sprite.includes('chained') || lowerRawName.includes('chained')) return 'Prisionero encadenado';
+                if (metadata.npcName) return metadata.npcName;
+                if (this._looksPlayerFacingEventName(rawName)) return rawName;
+                return 'NPC';
+            }
+            if (type === 'shop') return 'Comerciante';
+            if (this._looksPlayerFacingEventName(rawName)) return rawName;
+            return 'Evento';
         },
 
         /**
@@ -1407,15 +1677,87 @@ Reply with ONLY the category name, nothing else.`;
                 return dx > 0 ? 'este' : 'oeste';
             } else if (Math.abs(dy) > Math.abs(dx)) {
                 return dy > 0 ? 'sur' : 'norte';
-            } else {
-                // Diagonal
-                return (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
             }
+            return (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
+        },
+
+        _tileStandable(x, y) {
+            if (!this._mapReady() || !$gameMap.isValid(x, y)) return false;
+            const directions = [2, 4, 6, 8];
+            for (let i = 0; i < directions.length; i++) {
+                if ($gameMap.isPassable(x, y, directions[i])) return true;
+            }
+            return false;
+        },
+
+        _symbolForEventType(type) {
+            switch (type) {
+                case 'enemy': return 'E';
+                case 'combat_trigger': return '?';
+                case 'trap': return 'T';
+                case 'door': return 'D';
+                case 'container': return 'C';
+                case 'npc': return 'N';
+                case 'save_point': return 'S';
+                case 'hazard': return 'H';
+                case 'corpse': return 'X';
+                default: return '?';
+            }
+        },
+
+        _eventSnapshot(event, px, py) {
+            const data = this._safeEventData(event);
+            const page = this._safeEventPage(event);
+            if (!data || !page) return null;
+
+            const rawName = data.name || '';
+            const sprite = this._normalize(page.image ? page.image.characterName : '');
+            if (!sprite && !rawName) return null;
+
+            const metadata = this._eventMetadata(event);
+            const hasVisiblePresentation = this._hasVisiblePresentation(page);
+            if (!hasVisiblePresentation && metadata.battleTroopId !== null && this._genericEventName(rawName)) {
+                // Hidden battle triggers are real gameplay logic, but not visible objects Marcoh can "see".
+                // Keep them out of spatial perception summaries.
+                return null;
+            }
+            const tags = this._eventTags(event, metadata);
+            if (tags.length === 0) return null;
+
+            const type = this._eventType(tags);
+            const subtype = this._subtypeFor(type, data, page, metadata);
+            const dx = event.x - px;
+            const dy = event.y - py;
+            const distance = Math.abs(dx) + Math.abs(dy);
+            const label = this._labelForEvent(event, type, tags, metadata);
+
+            return {
+                id: event.eventId ? event.eventId() : event._eventId,
+                type: type,
+                subtype: subtype,
+                danger: this._dangerFor(type, subtype),
+                label: label,
+                tags: tags,
+                visible: hasVisiblePresentation,
+                distance: distance,
+                direction: this._getDirection(dx, dy),
+                x: event.x,
+                y: event.y,
+                dx: dx,
+                dy: dy,
+                sprite: page.image ? page.image.characterName : '',
+                loot: metadata.loot,
+                transferMapId: metadata.transferMapId,
+                transferMapName: metadata.transferMapName,
+                battleTroopId: metadata.battleTroopId,
+                battleTroopName: metadata.battleTroopName,
+                speakerName: metadata.speakerName
+            };
         },
 
         /**
          * Scan the current map for notable objects near the player.
-         * Returns array of { type, subtype, label, danger, distance, direction, x, y }
+         * Returns structured snapshots instead of only a flat label list.
          */
         _scanAround(origin, radius) {
             if (!$gameMap || !origin) return [];
@@ -1440,36 +1782,26 @@ Reply with ONLY the category name, nothing else.`;
             for (const event of events) {
                 if (!event) continue;
 
-                // Distance check (Manhattan for speed)
                 const dx = event.x - px;
                 const dy = event.y - py;
                 const dist = Math.abs(dx) + Math.abs(dy);
                 if (dist > radius || dist === 0) continue;
 
-                const classification = this._classifyEvent(event);
-                if (!classification) continue;
-
-                results.push({
-                    ...classification,
-                    eventId: event.eventId ? event.eventId() : null,
-                    distance: dist,
-                    direction: this._getDirection(dx, dy),
-                    x: event.x,
-                    y: event.y
-                });
+                const snapshot = this._eventSnapshot(event, px, py);
+                if (!snapshot) continue;
+                results.push(snapshot);
             }
 
-            // Sort by danger (high first), then by distance
             const dangerOrder = { high: 0, medium: 1, low: 2, none: 3 };
             results.sort((a, b) => {
                 const da = dangerOrder[a.danger] || 3;
                 const db = dangerOrder[b.danger] || 3;
                 if (da !== db) return da - db;
+                if (a.type !== b.type) return a.type < b.type ? -1 : 1;
                 return a.distance - b.distance;
             });
 
-            // Cache and return (limit to 8 most relevant)
-            const finalResults = results.slice(0, 8);
+            const finalResults = results.slice(0, this.MAX_NEARBY_EVENTS);
             if (origin === $gamePlayer) {
                 this._cache = finalResults;
                 this._cacheMapId = $gameMap.mapId();
@@ -1488,17 +1820,128 @@ Reply with ONLY the category name, nothing else.`;
             return this._scanAround(origin, radius || this.SCAN_RADIUS);
         },
 
+        getPointsOfInterestAround(origin, radius) {
+            const nearby = origin ? this.scanAround(origin, radius) : this.scan();
+            const priority = {
+                trap: 120,
+                enemy: 100,
+                container: 80,
+                save_point: 70,
+                door: 60,
+                npc: 50,
+                hazard: 40,
+                corpse: 10
+            };
+            return nearby
+                .filter(entry => ['trap', 'enemy', 'container', 'save_point', 'door', 'npc', 'hazard'].includes(entry.type))
+                .sort((a, b) => {
+                    const pa = priority[a.type] || 0;
+                    const pb = priority[b.type] || 0;
+                    if (pa !== pb) return pb - pa;
+                    return a.distance - b.distance;
+                })
+                .slice(0, 8);
+        },
+
+        getPointsOfInterest() {
+            return this.getPointsOfInterestAround(null, null);
+        },
+
+        getFrontierTargets(origin, radius) {
+            if (!this._mapReady() || !origin) return [];
+            const scanRadius = radius === undefined ? this.SCAN_RADIUS : Number(radius) || this.SCAN_RADIUS;
+            const actor = origin;
+            const candidates = [];
+            const seen = {};
+
+            const tryAdd = (x, y) => {
+                const key = x + ',' + y;
+                if (seen[key]) return;
+                seen[key] = true;
+                if (!$gameMap.isValid(x, y)) return;
+                if (!this._tileStandable(x, y)) return;
+                if (actor.findDirectionTo && !(actor.findDirectionTo(x, y) > 0 || (actor.x === x && actor.y === y))) return;
+                const occupiedEvents = $gameMap.eventsXyNt ? $gameMap.eventsXyNt(x, y).filter(event => event && event.isNormalPriority && event.isNormalPriority()) : [];
+                if (occupiedEvents.length > 0) return;
+                candidates.push({
+                    x: x,
+                    y: y,
+                    distance: Math.abs(actor.x - x) + Math.abs(actor.y - y),
+                    edgeBias: Math.max(Math.abs(actor.x - x), Math.abs(actor.y - y))
+                });
+            };
+
+            for (let x = actor.x - scanRadius; x <= actor.x + scanRadius; x++) {
+                tryAdd(x, actor.y - scanRadius);
+                tryAdd(x, actor.y + scanRadius);
+            }
+            for (let y = actor.y - scanRadius + 1; y <= actor.y + scanRadius - 1; y++) {
+                tryAdd(actor.x - scanRadius, y);
+                tryAdd(actor.x + scanRadius, y);
+            }
+
+            return candidates.sort((a, b) => {
+                if (a.edgeBias !== b.edgeBias) return b.edgeBias - a.edgeBias;
+                return a.distance - b.distance;
+            }).slice(0, 8);
+        },
+
+        getLocalGrid(radius) {
+            if (!this._mapReady() || !$gamePlayer) return null;
+            const scanRadius = radius === undefined ? this.LOCAL_GRID_RADIUS : Number(radius) || this.LOCAL_GRID_RADIUS;
+            const nearby = this.scan();
+            const eventsByKey = {};
+            nearby.forEach(entry => { eventsByKey[entry.x + ',' + entry.y] = entry; });
+
+            const rows = [];
+            for (let y = $gamePlayer.y - scanRadius; y <= $gamePlayer.y + scanRadius; y++) {
+                let text = '';
+                for (let x = $gamePlayer.x - scanRadius; x <= $gamePlayer.x + scanRadius; x++) {
+                    const key = x + ',' + y;
+                    if (!$gameMap.isValid(x, y)) {
+                        text += ' ';
+                    } else if ($gamePlayer.x === x && $gamePlayer.y === y) {
+                        text += '@';
+                    } else if (eventsByKey[key]) {
+                        text += this._symbolForEventType(eventsByKey[key].type);
+                    } else {
+                        text += this._tileStandable(x, y) ? '.' : '#';
+                    }
+                }
+                rows.push({ y: y, text: text });
+            }
+
+            return {
+                radius: scanRadius,
+                origin: { x: $gamePlayer.x, y: $gamePlayer.y },
+                rows: rows
+            };
+        },
+
+        observe() {
+            return {
+                map: {
+                    id: $gameMap ? $gameMap.mapId() : null,
+                    name: $gameMap && $gameMap.displayName ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null
+                },
+                nearbyEvents: this.scan(),
+                pointsOfInterest: this.getPointsOfInterest(),
+                frontiers: this.getFrontierTargets($gamePlayer, this.SCAN_RADIUS),
+                localGrid: this.getLocalGrid()
+            };
+        },
+
         /**
          * Get a human-readable summary for prompt injection.
          * Returns empty string if nothing notable nearby.
          */
         getSummary() {
-            const nearby = this.scan();
+            const nearby = this.getPointsOfInterest();
             if (nearby.length === 0) return '';
 
             const lines = [];
-            const dangerItems = nearby.filter(n => n.danger === 'high');
-            const otherItems = nearby.filter(n => n.danger !== 'high');
+            const dangerItems = nearby.filter(n => n.danger === 'high' || n.type === 'trap');
+            const otherItems = nearby.filter(n => !(n.danger === 'high' || n.type === 'trap'));
 
             for (const item of dangerItems) {
                 lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
@@ -1516,7 +1959,11 @@ Reply with ONLY the category name, nothing else.`;
          */
         getImmediateThreats() {
             const nearby = this.scan();
-            return nearby.filter(n => n.danger === 'high' && n.distance <= 2);
+            return nearby.filter(n =>
+                (n.type === 'enemy' || n.type === 'trap' || n.type === 'hazard') &&
+                (n.danger === 'high' || n.danger === 'medium') &&
+                n.distance <= 2
+            );
         }
     };
 
@@ -1978,6 +2425,113 @@ Reply with ONLY the category name, nothing else.`;
             return key === 'piernas' ? 'legs' : key;
         }
 
+        static _findBattleEnemyByName(battleState, targetName) {
+            const enemies = (battleState && battleState.enemies) ? battleState.enemies.filter(e => e && e.alive) : [];
+            if (!targetName) return enemies[0] || null;
+            const normalizedTarget = String(targetName).toLowerCase().trim();
+            let exact = enemies.find(enemy => String(enemy.name).toLowerCase() === normalizedTarget);
+            if (exact) return exact;
+            return enemies.find(enemy =>
+                String(enemy.name).toLowerCase().includes(normalizedTarget) ||
+                normalizedTarget.includes(String(enemy.name).toLowerCase())
+            ) || (enemies[0] || null);
+        }
+
+        static _expandPriorityToken(token, enemy) {
+            const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
+            const alive = enemy && enemy.limbs ? enemy.limbs : {};
+            if (normalized === 'arms') return ['left arm', 'right arm'].filter(key => alive[key] && alive[key].alive);
+            if (normalized === 'legs') return ['left leg', 'right leg'].filter(key => alive[key] && alive[key].alive);
+            if (normalized === 'weapon arm' || normalized === 'sword arm') {
+                return ['left arm', 'right arm'].filter(key => alive[key] && alive[key].alive);
+            }
+            if (normalized === 'body') return alive.torso && alive.torso.alive ? ['torso'] : [];
+            return [normalized];
+        }
+
+        static _pickBestAliveLimb(enemy) {
+            if (!enemy || !enemy.limbs) return null;
+            const preferredOrder = ['torso', 'head', 'left arm', 'right arm', 'left leg', 'right leg'];
+            for (let i = 0; i < preferredOrder.length; i++) {
+                const key = preferredOrder[i];
+                if (enemy.limbs[key] && enemy.limbs[key].alive) return key;
+            }
+            const aliveKeys = Object.keys(enemy.limbs).filter(key => enemy.limbs[key] && enemy.limbs[key].alive);
+            return aliveKeys.length > 0 ? aliveKeys[0] : null;
+        }
+
+        static _dialogLooksEnglish(text) {
+            return /going for|aim for|holding position|bracing|staying defensive|watch my flank|keep your guard up|no mercy|stay focused|together now|take away its weapon|crippling its reach|slow it down|it won't run|this ends it|disabling/i.test(String(text || ''));
+        }
+
+        static _dialogConflictsWithLimb(text, limb) {
+            const msg = String(text || '').toLowerCase();
+            const normalizedLimb = this._normalizeLimbName(limb);
+            if (!msg || !normalizedLimb) return false;
+
+            if (normalizedLimb === 'head') return /(brazo|arm|pierna|leg|arma|weapon|inmoviliz)/i.test(msg);
+            if (normalizedLimb.indexOf('arm') >= 0) return /(pierna|leg|cabeza|head|inmoviliz)/i.test(msg);
+            if (normalizedLimb.indexOf('leg') >= 0) return /(brazo|arm|arma|weapon|cabeza|head|torso)/i.test(msg);
+            if (normalizedLimb === 'torso') return /(pierna|leg|brazo|arm|arma|weapon|cabeza|head|inmoviliz)/i.test(msg);
+            return false;
+        }
+
+        static normalizeDecisionForBattle(decision, battleState) {
+            if (!decision || !battleState) return decision;
+            const normalized = Object.assign({}, decision);
+            const enemy = this._findBattleEnemyByName(battleState, normalized.target);
+            if (!enemy) return normalized;
+
+            normalized.target = enemy.name;
+
+            if (this._normalizeActionName(normalized.action) !== 'attack') {
+                return normalized;
+            }
+
+            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? FearHungerKB.getEnemy(enemy.name) : null;
+            const requestedLimb = this._normalizeLimbName(normalized.limb).replace(/_/g, ' ');
+            let chosenLimb = null;
+            const preferredAliveLimbs = [];
+
+            if (kbEnemy && kbEnemy.limbPriority) {
+                for (let i = 0; i < kbEnemy.limbPriority.length; i++) {
+                    const expanded = this._expandPriorityToken(kbEnemy.limbPriority[i], enemy);
+                    for (let j = 0; j < expanded.length; j++) {
+                        const limbKey = expanded[j];
+                        if (enemy.limbs[limbKey] && enemy.limbs[limbKey].alive && preferredAliveLimbs.indexOf(limbKey) === -1) {
+                            preferredAliveLimbs.push(limbKey);
+                        }
+                    }
+                }
+            }
+
+            if (requestedLimb && enemy.limbs[requestedLimb] && enemy.limbs[requestedLimb].alive) {
+                chosenLimb = requestedLimb;
+            } else if (requestedLimb) {
+                const expandedRequested = this._expandPriorityToken(requestedLimb, enemy);
+                chosenLimb = expandedRequested.find(key => enemy.limbs[key] && enemy.limbs[key].alive) || null;
+            }
+
+            if (preferredAliveLimbs.length > 0) {
+                const requestedIsPreferred = chosenLimb && preferredAliveLimbs.indexOf(chosenLimb) !== -1;
+                if (!requestedIsPreferred) {
+                    chosenLimb = preferredAliveLimbs[0];
+                }
+            }
+
+            if (!chosenLimb) {
+                chosenLimb = this._pickBestAliveLimb(enemy);
+            }
+
+            normalized.limb = chosenLimb || null;
+
+            if (!normalized.dialog || this._dialogLooksEnglish(normalized.dialog) || this._dialogConflictsWithLimb(normalized.dialog, normalized.limb) || requestedLimb !== normalized.limb) {
+                normalized.dialog = this._generateQuickDialog(normalized);
+            }
+
+            return normalized;
+        }
+
         static _resolveTarget(decision) {
             if (!decision.target) return 0;
 
@@ -2015,6 +2569,15 @@ Reply with ONLY the category name, nothing else.`;
                             Debug.log(`Resolved limb target: ${decision.target} [${decision.limb}] -> troop index ${limb.troop_index}`);
                             return limb.troop_index;
                         } else {
+                            const availableLimbKeys = Object.keys(enemy.limbs || {});
+                            // Some enemies expose a main body target but no explicit torso limb.
+                            // In that case, "torso" should resolve to the enemy body directly.
+                            if (limbKey === 'torso' && enemy.troop_index != null && availableLimbKeys.length === 0) {
+                                decision.target = enemy.name;
+                                decision.limb = null;
+                                Debug.log(`Resolved torso fallback to main body: ${enemy.name} -> troop index ${enemy.troop_index}`);
+                                return enemy.troop_index;
+                            }
                             Debug.warn(`Limb not found or dead: ${decision.limb}. Available limbs:`, Object.keys(enemy.limbs));
                             // Fallback: find ANY alive limb to avoid wasting turn
                             for (const [key, value] of Object.entries(enemy.limbs)) {
@@ -2189,10 +2752,14 @@ Reply with ONLY the category name, nothing else.`;
 
             // Get enemy-specific knowledge from KB
             let knowledgeHints = '';
+            const seenKnowledge = {};
             if (typeof FearHungerKB !== 'undefined') {
                 for (const enemy of battleState.enemies) {
                     const kb = FearHungerKB.getEnemyHints(enemy.name);
                     if (kb) {
+                        const kbKey = (kb.name || enemy.name || '').toLowerCase();
+                        if (seenKnowledge[kbKey]) continue;
+                        seenKnowledge[kbKey] = true;
                         const prefix = kb.dangerLevel >= 4 ? 'DANGEROUS: ' : (kb.dangerLevel === 0 ? 'HARMLESS: ' : '');
                         knowledgeHints += `\n${prefix}${kb.name || enemy.name}:\n`;
                         if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
@@ -2312,8 +2879,8 @@ IMPORTANT TARGETING RULES:
 Do NOT spam Defend. Attack even at low HP - offense wins in Fear & Hunger.
 
 COORDINATION WITH ${playerName.toUpperCase()}:
-- You can see the player's actions above. If they made a suboptimal choice (e.g., targeting head while weapon arm is still alive), weave a brief correction INTO your dialog naturally. Example: "¡El brazo del arma primero!" or "Head's too tough, go for the arms!"
-- If you're planning a multi-limb strategy, briefly coordinate in dialog. Example: "Yo al cuchillo, tú al aguijón."
+- You can see the player's actions above. If they made a suboptimal choice, weave a brief correction INTO your dialog naturally using the EXACT live limb names from BATTLE STATE or COMBAT KNOWLEDGE.
+- If you're planning a multi-limb strategy, coordinate briefly in Spanish using only limbs that are still alive.
 - If the player is making good choices, no need to mention strategy — just fight.
 - Your dialog should feel like a real combat partner, not a tutorial.
 
@@ -2463,21 +3030,44 @@ Respond ONLY with this JSON:
 
         static _parseResponse(response) {
             try {
+                const _extractJsonText = (value) => {
+                    if (!value) return '';
+                    if (typeof value === 'string') return value;
+                    if (Array.isArray(value)) {
+                        return value.map(part => {
+                            if (typeof part === 'string') return part;
+                            if (part && typeof part.text === 'string') return part.text;
+                            if (part && part.type === 'text' && typeof part.content === 'string') return part.content;
+                            return '';
+                        }).join('\n');
+                    }
+                    if (typeof value === 'object') {
+                        if (typeof value.arguments === 'string') return value.arguments;
+                        if (typeof value.content === 'string') return value.content;
+                        if (typeof value.text === 'string') return value.text;
+                    }
+                    return '';
+                };
+
                 // Robust content extraction for multiple API formats
                 let text = '';
                 if (response.choices && response.choices[0]) {
                     const choice = response.choices[0];
-                    if (choice.message && choice.message.content) {
-                        text = choice.message.content;
-                    } else if (choice.message && choice.message.reasoning_content) {
-                        text = _extractFromReasoning(choice.message.reasoning_content) || choice.message.reasoning_content;
-                    } else if (choice.text) {
-                        text = choice.text;
-                    } else if (choice.delta && choice.delta.content) {
-                        text = choice.delta.content;
+                    const message = choice.message || {};
+                    text =
+                        _extractJsonText(message.content) ||
+                        _extractJsonText(choice.text) ||
+                        _extractJsonText(choice.delta && choice.delta.content) ||
+                        _extractJsonText(message.reasoning_content) ||
+                        _extractJsonText(message.function_call) ||
+                        _extractJsonText(message.tool_calls && message.tool_calls[0] && message.tool_calls[0].function) ||
+                        '';
+                    if ((!text || !/\{[\s\S]*\}/.test(text)) && message.reasoning_content) {
+                        const extractedFromReasoning = _extractFromReasoning(message.reasoning_content);
+                        if (extractedFromReasoning) text = extractedFromReasoning;
                     }
                 } else if (response.response) {
-                    text = response.response; // Ollama format
+                    text = _extractJsonText(response.response); // Ollama format
                 }
                 if (!text) {
                     Debug.error('No content in API response:', JSON.stringify(response).substring(0, 300));
@@ -2509,7 +3099,7 @@ Respond ONLY with this JSON:
             // Telemetry helper for combat logging
             const _logCombatDecision = (decision, modelUsed, source) => {
                 const latency = Math.round(performance.now() - startTime);
-                ThesisLogger.log('combat_decision', {
+                const snapshot = {
                     battle_turn: battleState.turn_number,
                     enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
                     companion_battle_hp: battleState.companion ? battleState.companion.hp : null,
@@ -2523,7 +3113,9 @@ Respond ONLY with this JSON:
                     response_source: source,
                     model_used: modelUsed,
                     latency_ms: latency
-                });
+                };
+                ThesisLogger.log('combat_decision', snapshot);
+                DebugState.captureCombat(snapshot);
             };
 
             // Helper: try a single sync request
@@ -2551,7 +3143,10 @@ Respond ONLY with this JSON:
                         return null;
                     }
                     const response = JSON.parse(xhr.responseText);
-                    const decision = this._parseResponse(response);
+                    let decision = this._parseResponse(response);
+                    if (decision) {
+                        decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
+                    }
                     if (decision && this._validateDecision(decision, battleState)) {
                         // Branch 3: Extract and store multi-turn strategy
                         if (decision.strategy && decision.strategy.length > 0) {
@@ -2584,6 +3179,9 @@ Respond ONLY with this JSON:
                     return null;
                 } catch (error) {
                     Debug.warn(`[Combat] ${model} error:`, error.message, error.name);
+                    if (error && error.stack) {
+                        Debug.warn('[Combat] Stack:', String(error.stack).substring(0, 400));
+                    }
                     return null;
                 }
             };
@@ -2646,49 +3244,54 @@ Respond ONLY with this JSON:
             const targetName = decision.target || 'enemy';
 
             if (actionLower === 'attack') {
-                const generalLines = [
-                    "Striking now!",
-                    "I'll handle this one!",
-                    "Watch my flank!",
-                    "Keep your guard up!",
-                    "No mercy!",
-                    "Stay focused!",
-                    "Together now!"
-                ];
+                const generalLines = Config.language === 'es'
+                    ? [
+                        "¡Voy!",
+                        "¡Lo tengo!",
+                        "¡Cúbreme!",
+                        "¡No bajes la guardia!",
+                        "¡Ahora!",
+                        "¡Sigue!",
+                        "¡Juntos!"
+                    ]
+                    : [
+                        "Striking now!",
+                        "I'll handle this one!",
+                        "Watch my flank!",
+                        "Keep your guard up!",
+                        "No mercy!",
+                        "Stay focused!",
+                        "Together now!"
+                    ];
 
                 // Limb-specific lines
                 if (limbTarget === 'head') {
-                    const headLines = [
-                        "Going for the head!",
-                        "Aim for the skull!",
-                        "One clean strike!",
-                        "This ends it!"
-                    ];
+                    const headLines = Config.language === 'es'
+                        ? ["¡A la cabeza!", "¡Al cráneo!", "¡Una buena ahí!", "¡Remátalo!"]
+                        : ["Going for the head!", "Aim for the skull!", "One clean strike!", "This ends it!"];
                     return headLines[Math.floor(Math.random() * headLines.length)];
                 } else if (limbTarget && limbTarget.includes('arm')) {
-                    const armLines = [
-                        "Disabling its arm!",
-                        "Take away its weapon!",
-                        "Crippling its reach!"
-                    ];
+                    const armLines = Config.language === 'es'
+                        ? ["¡Al brazo!", "¡Quítale el alcance!", "¡Córtale ese brazo!"]
+                        : ["Disabling its arm!", "Take away its weapon!", "Crippling its reach!"];
                     return armLines[Math.floor(Math.random() * armLines.length)];
                 } else if (limbTarget && limbTarget.includes('leg')) {
-                    const legLines = [
-                        "Slow it down!",
-                        "Going for the legs!",
-                        "It won't run!"
-                    ];
+                    const legLines = Config.language === 'es'
+                        ? ["¡A la pierna!", "¡Bájalo!", "¡Que no avance!"]
+                        : ["Slow it down!", "Going for the legs!", "It won't run!"];
                     return legLines[Math.floor(Math.random() * legLines.length)];
+                } else if (limbTarget === 'torso') {
+                    const torsoLines = Config.language === 'es'
+                        ? ["¡Al torso!", "¡Ahora al cuerpo!", "¡Remátalo al centro!"]
+                        : ["Go for the torso!", "Center mass!", "Finish it through the body!"];
+                    return torsoLines[Math.floor(Math.random() * torsoLines.length)];
                 }
 
                 return generalLines[Math.floor(Math.random() * generalLines.length)];
             } else if (actionLower === 'defend' || actionLower === 'guard') {
-                const defendLines = [
-                    "Holding position!",
-                    "Bracing myself!",
-                    "I need a moment!",
-                    "Staying defensive!"
-                ];
+                const defendLines = Config.language === 'es'
+                    ? ["¡Aguanto!", "¡Me cubro!", "¡Un momento!", "¡Defensa!"]
+                    : ["Holding position!", "Bracing myself!", "I need a moment!", "Staying defensive!"];
                 return defendLines[Math.floor(Math.random() * defendLines.length)];
             }
             return null; // No dialog for unknown actions
@@ -2747,7 +3350,7 @@ Respond ONLY with this JSON:
             try {
                 const enemies = $gameTroop.members().filter(e => e.isAlive());
                 if (enemies.length > 0) {
-                    targetName = enemies[0].name();
+                    targetName = enemies[0].name().replace(/\s*\[.*?\]\s*$/, '').trim();
                 }
             } catch (e) { /* troop may not be ready */ }
             const es = Config.language === 'es';
@@ -2881,6 +3484,130 @@ Respond ONLY with this JSON:
             memory.relationship = description;
         }
     }
+
+    //=========================================================================
+    // DialogueMemory - persistent anti-repetition memory shared by chat/ambient
+    //=========================================================================
+    const DialogueMemory = {
+        LINE_TTL_MS: 10 * 60 * 1000,
+        FACT_TTL_MS: 15 * 60 * 1000,
+        MAX_LINES: 40,
+        MAX_FACTS: 60,
+
+        _normalize(text) {
+            if (typeof FearHungerKB !== 'undefined' && FearHungerKB._normalizeLookup) {
+                return FearHungerKB._normalizeLookup(text);
+            }
+            return String(text || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .replace(/_+/g, '_');
+        },
+
+        _getMemoryObject() {
+            if (!$gameSystem._aiCompanionDialogueMemory) {
+                $gameSystem._aiCompanionDialogueMemory = {
+                    recent_lines: [],
+                    recent_facts: []
+                };
+            }
+            this._prune();
+            return $gameSystem._aiCompanionDialogueMemory;
+        },
+
+        _prune() {
+            if (!$gameSystem || !$gameSystem._aiCompanionDialogueMemory) return;
+            const now = Date.now();
+            const memory = $gameSystem._aiCompanionDialogueMemory;
+            memory.recent_lines = (memory.recent_lines || []).filter(entry => now - entry.time < this.LINE_TTL_MS);
+            memory.recent_facts = (memory.recent_facts || []).filter(entry => now - entry.time < this.FACT_TTL_MS);
+        },
+
+        clear() {
+            if ($gameSystem) {
+                $gameSystem._aiCompanionDialogueMemory = {
+                    recent_lines: [],
+                    recent_facts: []
+                };
+            }
+        },
+
+        rememberLine(text, topic, meta) {
+            const normalized = this._normalize(text);
+            if (!normalized) return;
+            const memory = this._getMemoryObject();
+            memory.recent_lines.push({
+                text: String(text || ''),
+                normalized: normalized,
+                topic: topic || 'unknown',
+                map_id: meta && meta.mapId != null ? meta.mapId : ($gameMap ? $gameMap.mapId() : null),
+                time: Date.now()
+            });
+            while (memory.recent_lines.length > this.MAX_LINES) memory.recent_lines.shift();
+        },
+
+        wasLineRecent(text, topic, withinMs) {
+            const normalized = this._normalize(text);
+            if (!normalized) return false;
+            const cutoff = Date.now() - (withinMs || this.LINE_TTL_MS);
+            const lines = this._getMemoryObject().recent_lines || [];
+            return lines.some(entry =>
+                entry.time >= cutoff &&
+                (!topic || entry.topic === topic) &&
+                entry.normalized === normalized
+            );
+        },
+
+        rememberFact(key, label, topic, meta) {
+            const normalizedKey = this._normalize(key);
+            if (!normalizedKey) return;
+            const memory = this._getMemoryObject();
+            const mapId = meta && meta.mapId != null ? meta.mapId : ($gameMap ? $gameMap.mapId() : null);
+            const now = Date.now();
+            memory.recent_facts = (memory.recent_facts || []).filter(entry =>
+                !(entry.key === normalizedKey && entry.topic === (topic || 'unknown') && entry.map_id === mapId)
+            );
+            memory.recent_facts.push({
+                key: normalizedKey,
+                label: label || normalizedKey,
+                topic: topic || 'unknown',
+                map_id: mapId,
+                time: now
+            });
+            while (memory.recent_facts.length > this.MAX_FACTS) memory.recent_facts.shift();
+        },
+
+        hasRecentFact(key, topic, withinMs, mapId) {
+            const normalizedKey = this._normalize(key);
+            if (!normalizedKey) return false;
+            const cutoff = Date.now() - (withinMs || this.FACT_TTL_MS);
+            const facts = this._getMemoryObject().recent_facts || [];
+            return facts.some(entry =>
+                entry.time >= cutoff &&
+                entry.key === normalizedKey &&
+                (!topic || entry.topic === topic) &&
+                (mapId == null || entry.map_id === mapId)
+            );
+        },
+
+        getPromptFacts(mapId) {
+            const facts = this._getMemoryObject().recent_facts || [];
+            const cutoff = Date.now() - this.FACT_TTL_MS;
+            const labels = [];
+            const seen = {};
+            facts
+                .filter(entry => entry.time >= cutoff && (mapId == null || entry.map_id === mapId))
+                .sort((a, b) => b.time - a.time)
+                .forEach(entry => {
+                    const norm = this._normalize(entry.label);
+                    if (!norm || seen[norm]) return;
+                    seen[norm] = true;
+                    labels.push(entry.label);
+                });
+            return labels.slice(0, 6);
+        }
+    };
 
     //=========================================================================
     // Hook: BattleManager.selectNextCommand - PROPER INPUT PHASE HOOK
@@ -3510,6 +4237,9 @@ Respond ONLY with this JSON:
             ShortTermMemory._events = [];
             ShortTermMemory._lastBattle = null;
         }
+        if (typeof DialogueMemory !== 'undefined') {
+            DialogueMemory.clear();
+        }
         if (typeof AIState !== 'undefined') {
             AIState.lastBattleStateCache = null;
             AIState.recentDialogs = [];
@@ -3975,6 +4705,7 @@ Respond ONLY with this JSON:
             lastInteractAt: 0,
             mode: 'follow',
             targetEventId: null,
+            targetPoint: null,
             targetLabel: '',
             reason: '',
             lastSnapshot: null,
@@ -3982,7 +4713,7 @@ Respond ONLY with this JSON:
             lastSnapshotHash: null
         },
 
-        ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT'],
+        ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT'],
 
         getFollower() {
             if (!$gamePlayer || !$gamePlayer._followers || !$gamePlayer._followers.forEach) return null;
@@ -4004,7 +4735,7 @@ Respond ONLY with this JSON:
         shouldSuppressDefaultChase(follower) {
             if (!this.isControlledFollower(follower)) return false;
             if (!Config.autonomyEnabled) return false;
-            return this._state.mode === 'target_event' || this._state.mode === 'hold';
+            return this._state.mode === 'target_event' || this._state.mode === 'target_point' || this._state.mode === 'hold';
         },
 
         canRun() {
@@ -4039,6 +4770,7 @@ Respond ONLY with this JSON:
             this._state.pending = false;
             this._state.mode = 'follow';
             this._state.targetEventId = null;
+            this._state.targetPoint = null;
             this._state.targetLabel = '';
             this._state.reason = '';
         },
@@ -4052,9 +4784,11 @@ Respond ONLY with this JSON:
             const follower = this.getFollower();
             const player = $gamePlayer;
             const nearby = EnvironmentScanner.scanAround(follower, Math.max(6, Config.autonomyMaxScoutDistance + 2));
+            const pointsOfInterest = EnvironmentScanner.getPointsOfInterestAround(follower, Math.max(6, Config.autonomyMaxScoutDistance + 2));
+            const frontiers = EnvironmentScanner.getFrontierTargets(follower, Config.autonomyMaxScoutDistance);
             const world = WorldStateEngine.getSnapshot();
             const threatNearby = nearby.filter(n => n.danger === 'high');
-            const interesting = nearby.filter(n => n.type === 'container' || n.type === 'door' || n.type === 'loot' || n.type === 'npc');
+            const interesting = pointsOfInterest.filter(n => n.type === 'container' || n.type === 'door' || n.type === 'loot' || n.type === 'npc');
 
             const snapshot = {
                 mapName: $gameMap.displayName() || ('Map ' + $gameMap.mapId()),
@@ -4076,6 +4810,12 @@ Respond ONLY with this JSON:
                 })),
                 threatNearby: threatNearby.length,
                 interestingNearby: interesting.length,
+                frontiers: frontiers.slice(0, 4).map((point, index) => ({
+                    index: index,
+                    x: point.x,
+                    y: point.y,
+                    distance: point.distance
+                })),
                 hpPct: world.party.avg_hp_pct,
                 lootRadius: Config.autonomyLootRadius,
                 scoutLimit: Config.autonomyMaxScoutDistance,
@@ -4119,6 +4859,10 @@ Respond ONLY with this JSON:
                 return { action: 'INTERACT', eventId: safeDoor.eventId, reason: 'checking nearby door' };
             }
 
+            if (snapshot.frontiers && snapshot.frontiers.length > 0 && snapshot.threatNearby === 0 && snapshot.leashDistance <= 2) {
+                return { action: 'SCOUT', frontierIndex: 0, reason: 'safe area, short scout' };
+            }
+
             return { action: 'FOLLOW', reason: 'stay with player' };
         },
 
@@ -4135,6 +4879,7 @@ Respond ONLY with this JSON:
                     reason: decision ? decision.reason : null,
                     action: decision ? decision.action : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
+                    frontier_index: decision && decision.frontierIndex != null ? decision.frontierIndex : null,
                     error: errorMessage || null,
                     snapshot: snapshot ? {
                         leashDistance: snapshot.leashDistance,
@@ -4163,6 +4908,7 @@ Respond ONLY with this JSON:
                 snapshot.situation,
                 snapshot.threatNearby,
                 snapshot.interestingNearby,
+                (snapshot.frontiers || []).map(point => point.x + ',' + point.y).join('|'),
                 snapshot.hpPct,
                 snapshot.profile,
                 nearby
@@ -4211,12 +4957,13 @@ Respond ONLY with this JSON:
             const prompt = [
                 'You control a cautious RPG companion in Fear & Hunger.',
                 'Return ONLY JSON.',
-                'Use one action: FOLLOW, HOLD, RETURN, LOOT, INTERACT.',
+                'Use one action: FOLLOW, HOLD, RETURN, LOOT, INTERACT, SCOUT.',
                 'Prefer FOLLOW unless a safe nearby opportunity exists.',
                 'Never choose enemies as targets. Never start fights.',
                 'Only choose LOOT or INTERACT for nearby containers/doors/NPCs that are actually listed.',
+                'If the area is safe and there are frontiers listed, SCOUT is allowed for short exploration.',
                 'If threat is high or distance from player is too large, choose RETURN.',
-                'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
+                'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT|SCOUT","eventId":number|null,"frontierIndex":number|null,"reason":"short reason"}',
                 '',
                 'STATE:',
                 JSON.stringify(snapshot)
@@ -4265,7 +5012,16 @@ Respond ONLY with this JSON:
                 decision.eventId = Number(decision.eventId);
             }
 
+            if (decision.action === 'SCOUT') {
+                const frontierIndex = Number(decision.frontierIndex);
+                if (!isFinite(frontierIndex) || frontierIndex < 0 || frontierIndex >= (snapshot.frontiers || []).length) {
+                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                }
+                decision.frontierIndex = frontierIndex;
+            }
+
             if (decision.action === 'LOOT' || decision.action === 'INTERACT') return Object.assign({ _autonomySource: 'local' }, decision);
+            if (decision.action === 'SCOUT') return Object.assign({ _autonomySource: 'local' }, decision);
             if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return Object.assign({ _autonomySource: 'local' }, decision);
             return Object.assign({ _autonomySource: 'fallback' }, fallback);
         },
@@ -4279,6 +5035,7 @@ Respond ONLY with this JSON:
             if (action === 'RETURN' || action === 'FOLLOW') {
                 this._state.mode = action === 'RETURN' ? 'return' : 'follow';
                 this._state.targetEventId = null;
+                this._state.targetPoint = null;
                 this._state.targetLabel = '';
                 return;
             }
@@ -4286,7 +5043,22 @@ Respond ONLY with this JSON:
             if (action === 'HOLD') {
                 this._state.mode = 'hold';
                 this._state.targetEventId = null;
+                this._state.targetPoint = null;
                 this._state.targetLabel = '';
+                return;
+            }
+
+            if (action === 'SCOUT') {
+                const frontier = snapshot.frontiers && snapshot.frontiers[Number(decision.frontierIndex)];
+                if (!frontier) {
+                    this._state.mode = 'follow';
+                    this._state.targetPoint = null;
+                    return;
+                }
+                this._state.mode = 'target_point';
+                this._state.targetEventId = null;
+                this._state.targetPoint = { x: frontier.x, y: frontier.y };
+                this._state.targetLabel = 'Frontier';
                 return;
             }
 
@@ -4294,12 +5066,14 @@ Respond ONLY with this JSON:
             if (!target) {
                 this._state.mode = 'follow';
                 this._state.targetEventId = null;
+                this._state.targetPoint = null;
                 this._state.targetLabel = '';
                 return;
             }
 
             this._state.mode = 'target_event';
             this._state.targetEventId = target.eventId;
+            this._state.targetPoint = null;
             this._state.targetLabel = target.label;
             this._state.targetAction = action;
         },
@@ -4315,17 +5089,37 @@ Respond ONLY with this JSON:
 
             if (this._state.mode === 'hold') return;
 
+            if (this._state.mode === 'target_point' && this._state.targetPoint) {
+                const targetPoint = this._state.targetPoint;
+                const distToPoint = this._distance(follower, targetPoint);
+                if (distToPoint <= 0) {
+                    this._state.mode = 'return';
+                    this._state.targetPoint = null;
+                    return;
+                }
+                if (Config.autonomyAutoReturnOnDanger && this._hasImmediateThreat(follower)) {
+                    this._state.mode = 'return';
+                    this._state.targetPoint = null;
+                    return;
+                }
+                const dirToPoint = follower.findDirectionTo(targetPoint.x, targetPoint.y);
+                if (dirToPoint > 0) follower.moveStraight(dirToPoint);
+                return;
+            }
+
             if (this._state.mode === 'target_event' && this._state.targetEventId) {
                 const event = $gameMap.event(this._state.targetEventId);
                 if (!event || (event.isErased && event.isErased())) {
                     this._state.mode = 'follow';
                     this._state.targetEventId = null;
+                    this._state.targetPoint = null;
                     return;
                 }
 
                 if (Config.autonomyAutoReturnOnDanger && this._hasImmediateThreat(follower)) {
                     this._state.mode = 'return';
                     this._state.targetEventId = null;
+                    this._state.targetPoint = null;
                     return;
                 }
 
@@ -4334,6 +5128,7 @@ Respond ONLY with this JSON:
                     this._interactWithEvent(follower, event);
                     this._state.mode = 'return';
                     this._state.targetEventId = null;
+                    this._state.targetPoint = null;
                     return;
                 }
 
@@ -4389,6 +5184,7 @@ Respond ONLY with this JSON:
                 enabled: Config.autonomyEnabled,
                 mode: this._state.mode,
                 targetEventId: this._state.targetEventId,
+                targetPoint: this._state.targetPoint,
                 targetLabel: this._state.targetLabel,
                 reason: this._state.reason,
                 pending: this._state.pending,
@@ -4426,6 +5222,22 @@ Respond ONLY with this JSON:
         _encounters: new Map(), // npcName → { count, lastSeen, lastMap }
         _lastSpeaker: null,
         _lastSpeakerTime: 0,
+
+        _cleanDialogueText(speakerName, text) {
+            let cleaned = String(text || '')
+                .replace(/\\c\[\d+\]/gi, '')
+                .replace(/\\[a-zA-Z]+\[[^\]]*\]/g, '')
+                .replace(/\\/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            if (speakerName) {
+                const escaped = speakerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                cleaned = cleaned.replace(new RegExp('^' + escaped + '\\s*[:"]?\\s*', 'i'), '').trim();
+            }
+            cleaned = cleaned.replace(/^["'\u201c\u201d]+|["'\u201c\u201d]+$/g, '').trim();
+            return cleaned;
+        },
 
         /**
          * Identify who is speaking based on face sprite and event context.
@@ -4511,34 +5323,46 @@ Respond ONLY with this JSON:
             if (!speakerName || speakerName === 'Narrator') return;
 
             const now = Date.now();
+            const cleanedText = this._cleanDialogueText(speakerName, text);
+            if (!cleanedText || cleanedText.length < 2) return;
 
             // Deduplicate (same speaker within 200ms is likely multi-line continuation)
             if (this._lastSpeaker === speakerName && now - this._lastSpeakerTime < 200) return;
             this._lastSpeaker = speakerName;
             this._lastSpeakerTime = now;
 
-            // Add to dialogue buffer
-            this._recentDialogue.push({
-                speaker: speakerName,
-                text: text.substring(0, 200), // Truncate long text
-                map: mapName,
-                time: now
-            });
-            if (this._recentDialogue.length > this.MAX_DIALOGUE_BUFFER) {
-                this._recentDialogue.shift();
+            const lastEntry = this._recentDialogue.length > 0 ? this._recentDialogue[this._recentDialogue.length - 1] : null;
+            if (lastEntry && lastEntry.speaker === speakerName && lastEntry.map === mapName && now - lastEntry.time < 5000) {
+                if (lastEntry.text.indexOf(cleanedText) === -1) {
+                    lastEntry.text = (lastEntry.text + ' ' + cleanedText).trim().substring(0, 200);
+                }
+                lastEntry.time = now;
+            } else {
+                this._recentDialogue.push({
+                    speaker: speakerName,
+                    text: cleanedText.substring(0, 200),
+                    map: mapName,
+                    time: now
+                });
+                if (this._recentDialogue.length > this.MAX_DIALOGUE_BUFFER) {
+                    this._recentDialogue.shift();
+                }
             }
 
             // Update encounter tracking
             const encounter = this._encounters.get(speakerName) || { count: 0, lastSeen: 0, lastMap: '' };
+            const shouldAddConversationEvent = !encounter.lastSeen || encounter.lastMap !== mapName || (now - encounter.lastSeen > 15000);
             encounter.count++;
             encounter.lastSeen = now;
             encounter.lastMap = mapName;
             this._encounters.set(speakerName, encounter);
 
             // Add to ShortTermMemory so the AI knows the player talked to someone
-            ShortTermMemory.addEvent(`${speakerName} spoke to the party.`);
+            if (shouldAddConversationEvent) {
+                ShortTermMemory.addEvent(`${speakerName} spoke to the party.`);
+            }
 
-            Debug.log(`[NPCIntelligence] ${speakerName} spoke: "${text.substring(0, 60)}..."`);
+            Debug.log(`[NPCIntelligence] ${speakerName} spoke: "${cleanedText.substring(0, 60)}..."`);
         },
 
         /**
@@ -4555,6 +5379,18 @@ Respond ONLY with this JSON:
             const header = es ? 'DIÁLOGOS RECIENTES DE NPCs:' : 'RECENT NPC DIALOGUE:';
             const lines = recent.map(d => `${d.speaker}: "${d.text.substring(0, 80)}"`);
             return `${header}\n${lines.join('\n')}`;
+        },
+
+        getRecentDialogueEntries() {
+            const now = Date.now();
+            return this._recentDialogue
+                .filter(d => now - d.time < 180000)
+                .map(d => ({
+                    speaker: d.speaker,
+                    text: d.text,
+                    map: d.map,
+                    time: d.time
+                }));
         },
 
         /**
@@ -4638,6 +5474,37 @@ Respond ONLY with this JSON:
         KBFallback,
         MapContextHelper,
         EquipmentHelper
+    };
+
+    const DebugState = {
+        lastChat: null,
+        lastCombat: null,
+        lastNearbyObservation: null,
+
+        _clone(value) {
+            try { return JSON.parse(JSON.stringify(value)); }
+            catch (e) { return value; }
+        },
+
+        captureChat(snapshot) {
+            this.lastChat = this._clone(snapshot);
+        },
+
+        captureCombat(snapshot) {
+            this.lastCombat = this._clone(snapshot);
+        },
+
+        captureNearby(snapshot) {
+            this.lastNearbyObservation = this._clone(snapshot);
+        },
+
+        getSnapshot() {
+            return {
+                lastChat: this._clone(this.lastChat),
+                lastCombat: this._clone(this.lastCombat),
+                lastNearbyObservation: this._clone(this.lastNearbyObservation)
+            };
+        }
     };
 
     //=========================================================================
@@ -4908,6 +5775,371 @@ Respond ONLY with this JSON:
             return /(?:que ves|qué ves|ves algo|que hay alrededor|qué hay alrededor|que tienes delante|qué tienes delante|what do you see|what's around|what is around|what can you see|look around)/i.test(message || '');
         },
 
+        _isNpcRecallQuery(message) {
+            return /(?:con quien acabamos de hablar|con quién acabamos de hablar|con quien hablamos|con quién hablamos|con quien hable|con quién hablé|quien era ese npc|quién era ese npc|quien nos hablo|quién nos habló|que dijo ese npc|qué dijo ese npc|who did we just talk to|who was that npc|what did that npc say)/i.test(message || '');
+        },
+
+        _getNearbyContainers(context) {
+            if (!context || !context.nearby_observation || !context.nearby_observation.nearbyEvents) return [];
+            return context.nearby_observation.nearbyEvents.filter(entry => entry && entry.type === 'container');
+        },
+
+        _getNearbyEnemyKnowledge(context) {
+            if (!context || !context.nearby_observation || !context.nearby_observation.nearbyEvents || typeof FearHungerKB === 'undefined' || !FearHungerKB.getEnemy) {
+                return [];
+            }
+
+            const resolved = [];
+            const seenKeys = {};
+            context.nearby_observation.nearbyEvents
+                .filter(entry => entry && entry.type === 'enemy')
+                .forEach(entry => {
+                    const enemy = FearHungerKB.getEnemy(entry.label);
+                    if (!enemy || seenKeys[enemy.key]) return;
+                    seenKeys[enemy.key] = true;
+                    resolved.push({ snapshot: entry, enemy: enemy });
+                });
+
+            return resolved;
+        },
+
+        _isContainerContentsQuery(message, context) {
+            const msg = String(message || '').toLowerCase().trim();
+            if (!msg) return false;
+
+            const explicitContainerRef = /(?:cofre|cofres|baul|baúl|caja|cajas|chest|chests|crate|crates|barrel|barrels)/i.test(msg);
+            const implicitContainerRef = /(?:que|qué)\s+podr(?:ia|ía)\s+haber\s+(?:en|dentro|adentro)|(?:que|qué)\s+habra?\s+(?:en|dentro|adentro)|what could be (?:inside|in them|in those)|what might be (?:inside|in them|in those)|inside them|inside those|en ellos|en esos|dentro de ellos|adentro de ellos/i.test(msg);
+            const nearbyContainers = this._getNearbyContainers(context);
+            if (nearbyContainers.length === 0) return false;
+
+            if (explicitContainerRef && /(?:que|qué|what|inside|dentro|adentro|haber|habra|habrá|podria|podría)/i.test(msg)) {
+                return true;
+            }
+
+            if (!implicitContainerRef) return false;
+
+            const recentContainerMention = (context && context.recent_exchanges ? context.recent_exchanges : [])
+                .slice(-4)
+                .some(entry => entry && entry.role === 'companion' &&
+                    /(?:cofre|cofres|baul|baúl|caja|cajas|chest|chests|crate|crates|barrel|barrels)/i.test(String(entry.message || '')));
+
+            return recentContainerMention;
+        },
+
+        _normalizeIntentForContainerQuery(playerMessage, context, intent) {
+            if (!intent || !this._isContainerContentsQuery(playerMessage, context)) return intent;
+
+            const filteredTypes = intent.types.filter(type => type !== 'item_info' && type !== 'generic_query');
+            intent.types = ['generic_query'].concat(filteredTypes);
+            intent.primary = 'generic_query';
+            intent.confidence = Math.max(intent.confidence || 0, 0.9);
+            intent.containerQuery = true;
+            intent.containerTargets = this._getNearbyContainers(context).slice(0, 4).map(entry => ({
+                label: entry.label,
+                distance: entry.distance,
+                direction: entry.direction
+            }));
+            return intent;
+        },
+
+        _renderPromptSection(title, body) {
+            const text = Array.isArray(body) ? body.join('\n') : String(body || '');
+            const trimmed = text.trim();
+            if (!trimmed) return '';
+            return `\n=== ${title} ===\n${trimmed}\n`;
+        },
+
+        _formatConversationEntries(entries) {
+            if (!entries || entries.length === 0) return '';
+            return entries.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n');
+        },
+
+        _getRecentPickupLines(context) {
+            if (!context || !context.recent_events) return [];
+            return context.recent_events
+                .filter(e => e && /picked up|recogi|obtuvo/i.test(e.desc))
+                .map(e => `- ${e.desc}`);
+        },
+
+        _normalizeLookupText(text) {
+            if (typeof FearHungerKB !== 'undefined' && FearHungerKB._normalizeLookup) {
+                return FearHungerKB._normalizeLookup(text);
+            }
+            return String(text || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .replace(/_+/g, '_');
+        },
+
+        _getNearbyEnemyLabels(context) {
+            return this._getNearbyEnemyKnowledge(context).map(entry =>
+                entry.enemy.displayNameEs || entry.enemy.displayName || entry.snapshot.label
+            );
+        },
+
+        _getMentionedEnemyNames(text) {
+            if (!text || typeof FearHungerKB === 'undefined') return [];
+            const collections = [FearHungerKB.enemies || {}, FearHungerKB.bosses || {}];
+            const normalizedText = this._normalizeLookupText(text);
+            const matches = [];
+            const seen = {};
+
+            collections.forEach(collection => {
+                for (const key in collection) {
+                    const data = collection[key];
+                    const names = [data.displayName, data.displayNameEs]
+                        .concat(data.altNames || [])
+                        .filter(Boolean);
+                    for (const name of names) {
+                        const normalizedName = this._normalizeLookupText(name);
+                        if (!normalizedName || normalizedName.length < 3) continue;
+                        if (normalizedText.includes(normalizedName) && !seen[key]) {
+                            seen[key] = true;
+                            matches.push(data.displayNameEs || data.displayName || name);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            return matches;
+        },
+
+        _buildVisionFallback(context) {
+            if (context && context.nearby_objects) {
+                return `Solo veo esto cerca, David: ${context.nearby_objects}.`;
+            }
+            return 'No veo nada destacable ahora mismo, David.';
+        },
+
+        _buildTacticalFallback(context) {
+            const nearbyEnemies = this._getNearbyEnemyKnowledge(context);
+            if (nearbyEnemies.length === 0) {
+                return 'No veo enemigos cerca, David. Mantente alerta por si aparece algo.';
+            }
+
+            const firstEnemy = nearbyEnemies[0].enemy;
+            const name = firstEnemy.displayNameEs || firstEnemy.displayName || 'enemigo';
+            if (firstEnemy.coinFlipTurn) {
+                return `${name} está cerca, David. Cuidado con su turno de moneda; hay que matarlo antes de eso.`;
+            }
+            return `${name} está cerca, David. Parece manejable, pero no bajemos la guardia.`;
+        },
+
+        _buildRecentBattleFallback(context) {
+            if (!context || !context.last_battle || !context.last_battle.enemies || context.last_battle.enemies.length === 0) {
+                return 'No recuerdo bien el último combate, David.';
+            }
+            const names = context.last_battle.enemies.join(', ');
+            if (context.last_battle.victory) {
+                return `Nos fue bien, David. Acabamos de vencer a ${names}.`;
+            }
+            return `El último combate fue contra ${names}, David.`;
+        },
+
+        _buildNpcRecallFallback(context) {
+            const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
+            if (!entries || entries.length === 0) {
+                return 'No estoy seguro de con quién hablamos recién, David.';
+            }
+            const latest = entries[entries.length - 1];
+            if (!latest || !latest.speaker) {
+                return 'No estoy seguro de con quién hablamos recién, David.';
+            }
+            if (latest.text) {
+                return `Era ${latest.speaker}, David. Nos habló de esto: "${latest.text.substring(0, 90)}"`;
+            }
+            return `Era ${latest.speaker}, David.`;
+        },
+
+        _buildEmotionalFallback(playerMessage) {
+            const msg = String(playerMessage || '').toLowerCase();
+            if (/lo hice bien|did i do well|did i do good/.test(msg)) {
+                return 'Sí. Lo hiciste bien, David.';
+            }
+            if (/como te sientes|cómo te sientes|how do you feel/.test(msg)) {
+                return 'Sigo entero. Un poco tenso, pero bien.';
+            }
+            return 'Estoy contigo, David. Seguimos adelante.';
+        },
+
+        _validateChatResponse(response, playerMessage, context, intent) {
+            const text = String(response || '').trim();
+            if (!text) return { text: text, changed: false, reason: null };
+            const normalizedText = this._normalizeLookupText(text);
+
+            const mentionedEnemies = this._getMentionedEnemyNames(text);
+            const nearbyEnemyLabels = this._getNearbyEnemyLabels(context);
+            const allowedNearby = {};
+            nearbyEnemyLabels.forEach(name => { allowedNearby[this._normalizeLookupText(name)] = true; });
+
+            if (this._isVisionQuery(playerMessage)) {
+                const invalidEnemyMention = mentionedEnemies.some(name => !allowedNearby[this._normalizeLookupText(name)]);
+                if (invalidEnemyMention) {
+                    return { text: this._buildVisionFallback(context), changed: true, reason: 'vision_ungrounded_enemy' };
+                }
+            }
+
+            if (intent && intent.primary === 'tactical' && !context.in_battle) {
+                const nearbyEnemies = this._getNearbyEnemyKnowledge(context);
+                const hasCoinFlipWarning = /coin flip|turno de moneda|moneda/i.test(text);
+                const mentionsUnknownEnemy = mentionedEnemies.some(name => !allowedNearby[this._normalizeLookupText(name)]);
+                const driftsIntoContainers = /cofre|cofres|abrir|abramos|contenedor|contenedores/i.test(text);
+                if (nearbyEnemies.length === 0 && (hasCoinFlipWarning || mentionedEnemies.length > 0)) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_no_grounded_enemy' };
+                }
+                if (nearbyEnemies.length === 0 && driftsIntoContainers) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_topic_drift' };
+                }
+                if (mentionsUnknownEnemy) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_wrong_enemy' };
+                }
+                if (hasCoinFlipWarning && nearbyEnemies.every(entry => !entry.enemy.coinFlipTurn)) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_fake_coin_flip' };
+                }
+            }
+
+            if (intent && intent.primary === 'recent_battle') {
+                const lastBattleEnemies = (context.last_battle && context.last_battle.enemies) || [];
+                const allowedBattle = {};
+                lastBattleEnemies.forEach(name => { allowedBattle[this._normalizeLookupText(name)] = true; });
+                const mentionsWrongEnemy = mentionedEnemies.some(name => !allowedBattle[this._normalizeLookupText(name)]);
+                const mentionsExpectedEnemy = lastBattleEnemies.some(name => normalizedText.includes(this._normalizeLookupText(name)));
+                if (lastBattleEnemies.length > 0 && (mentionsWrongEnemy || !mentionsExpectedEnemy)) {
+                    return { text: this._buildRecentBattleFallback(context), changed: true, reason: 'recent_battle_mismatch' };
+                }
+            }
+
+            if (intent && intent.primary === 'npc_recall') {
+                const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
+                const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+                if (!latest || !latest.speaker) {
+                    return { text: this._buildNpcRecallFallback(context), changed: true, reason: 'npc_recall_no_dialogue' };
+                }
+                const speakerToken = this._normalizeLookupText(latest.speaker);
+                if (!speakerToken || normalizedText.indexOf(speakerToken) === -1) {
+                    return { text: this._buildNpcRecallFallback(context), changed: true, reason: 'npc_recall_missing_speaker' };
+                }
+            }
+
+            if (intent && intent.primary === 'emotional') {
+                if (/a \d+ pasos al|enemig|coin flip|turno de moneda/i.test(text)) {
+                    return { text: this._buildEmotionalFallback(playerMessage), changed: true, reason: 'emotional_tactical_drift' };
+                }
+            }
+
+            return { text: text, changed: false, reason: null };
+        },
+
+        _buildNearbyFactEntries(context) {
+            const observation = context && context.nearby_observation;
+            const points = observation && observation.pointsOfInterest ? observation.pointsOfInterest : [];
+            return points.slice(0, 6).map(point => {
+                const label = `${point.label} al ${point.direction}`;
+                const key = `nearby:${point.type}:${point.label}:${point.direction}:${point.distance}`;
+                return { key: key, label: label, point: point };
+            });
+        },
+
+        _rememberChatFacts(text, intent, context) {
+            if (!text) return;
+            const normalizedText = this._normalizeLookupText(text);
+            const mapId = $gameMap ? $gameMap.mapId() : null;
+
+            if (intent && ['location', 'generic_query', 'tactical'].includes(intent.primary)) {
+                this._buildNearbyFactEntries(context).forEach(entry => {
+                    const normalizedLabel = this._normalizeLookupText(entry.point.label);
+                    if (normalizedLabel && normalizedText.includes(normalizedLabel)) {
+                        DialogueMemory.rememberFact(entry.key, entry.label, 'chat_fact', { mapId: mapId });
+                    }
+                });
+            }
+
+            if (intent && intent.primary === 'recent_battle' && context && context.last_battle && context.last_battle.enemies) {
+                context.last_battle.enemies.forEach(name => {
+                    if (normalizedText.includes(this._normalizeLookupText(name))) {
+                        DialogueMemory.rememberFact(`battle:${name}`, `Combate reciente: ${name}`, 'chat_fact', { mapId: mapId });
+                    }
+                });
+            }
+        },
+
+        _buildPromptSections(playerMessage, context, intent) {
+            const sections = [];
+            const pushSection = (title, body) => {
+                const rendered = this._renderPromptSection(title, body);
+                if (!rendered) return;
+                sections.push({ title: title, body: String(Array.isArray(body) ? body.join('\n') : body || '').trim(), rendered: rendered });
+            };
+
+            for (const type of intent.types) {
+                pushSection(`INTENT CONTEXT · ${type.toUpperCase()}`, this._getContextBlock(type, intent, context));
+            }
+
+            pushSection('EVENT MEMORY', this._buildEventContext(context, intent));
+
+            const pickupLines = this._getRecentPickupLines(context);
+            if (pickupLines.length > 0) pushSection('RECENT PICKUPS', pickupLines);
+
+            if (context.older_chat_memory && context.older_chat_memory.length > 0) {
+                pushSection('EARLIER CHAT MEMORY', this._formatConversationEntries(context.older_chat_memory));
+            }
+            pushSection('RECENT CONVERSATION', this._formatConversationEntries(context.recent_exchanges));
+            if (context.recently_mentioned_facts && context.recently_mentioned_facts.length > 0) {
+                pushSection('RECENTLY MENTIONED FACTS', context.recently_mentioned_facts.map(f => `- ${f}`));
+            }
+            pushSection('MODE INSTRUCTIONS', this._buildInstructions(intent));
+
+            if (context.party_members && context.party_members.length > 0) {
+                pushSection('PARTY MEMBERS', context.party_members.map(m => {
+                    const statesStr = m.states.length > 0 ? m.states.join(', ') : 'ninguno';
+                    return `- ${m.name}: HP ${m.hp}/${m.max_hp}, Estados: ${statesStr}`;
+                }));
+            }
+
+            if (context.status_effects_summary) {
+                pushSection('STATUS EFFECTS INFO', context.status_effects_summary);
+            }
+
+            if (context.nearby_objects && context.nearby_objects.length > 0) {
+                const spatialIntents = new Set(['tactical', 'location', 'generic_query']);
+                if (spatialIntents.has(intent.primary)) {
+                    pushSection('LIVE NEARBY DETECTION', context.nearby_objects);
+                } else if (!new Set(['emotional', 'recent_battle', 'social']).has(intent.primary) &&
+                    /⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
+                    pushSection('LIVE NEARBY THREAT', context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /[12] pasos/.test(s)).join(';').trim());
+                }
+            }
+
+            if (context.world_state && context.world_state.length > 0) {
+                pushSection('WORLD SITUATION', context.world_state);
+            }
+
+            if (context.npc_dialogue && context.npc_dialogue.length > 0) {
+                pushSection('RECENT NPC DIALOGUE', `${context.npc_dialogue}\nYou may comment on what NPCs said, react to their words, or warn the player about untrustworthy characters.`);
+            }
+
+            let playerSection = `The player says: "${playerMessage}"\n`;
+            if (this._isVisionQuery(playerMessage)) {
+                playerSection += `VISION QUERY RULE: Answer ONLY from LIVE NEARBY DETECTION above. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
+            }
+            if (this._isNpcRecallQuery(playerMessage)) {
+                playerSection += `NPC RECALL RULE: Use RECENT NPC DIALOGUE and RECENT NPC CONTACT to name who just spoke to us. Mention the speaker explicitly by name.\n`;
+            }
+            const recentCompanionMsgs = context.recent_exchanges
+                .filter(e => e.role === 'companion')
+                .slice(-2)
+                .map(e => e.message);
+            if (recentCompanionMsgs.length > 0) {
+                playerSection += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
+            }
+            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            pushSection('RESPONSE CONTRACT', playerSection);
+
+            return sections;
+        },
+
         open() {
             if ($gameMessage.isBusy()) return; // Allow in battle now
 
@@ -5084,11 +6316,15 @@ Respond ONLY with this JSON:
                 })),
                 // NEW: spatial awareness — nearby objects from EnvironmentScanner
                 nearby_objects: EnvironmentScanner.getSummary(),
+                nearby_observation: EnvironmentScanner.observe(),
                 // Branch 6: World State Engine — aggregated situational summary
                 world_state: WorldStateEngine.getWorldSummary(),
                 // Branch 7: NPC Intelligence — recent NPC dialogue
                 npc_dialogue: NPCIntelligence.getRecentDialogueSummary(),
+                npc_dialogue_entries: NPCIntelligence.getRecentDialogueEntries(),
+                recently_mentioned_facts: DialogueMemory.getPromptFacts($gameMap ? $gameMap.mapId() : null),
             };
+            DebugState.captureNearby(ctx.nearby_observation);
             if (Config.debugMode) {
                 Debug.log('[Chat] getContext:', JSON.stringify(ctx, null, 2));
             }
@@ -5097,12 +6333,14 @@ Respond ONLY with this JSON:
 
         async sendMessage(playerMessage) {
             const exchangeContext = this._ensureContextSeparator();
+            const dialogueMeta = { mapId: $gameMap ? $gameMap.mapId() : null };
             this.addToHistory('player', playerMessage, exchangeContext);
             this.addTranscriptMessage('player', playerMessage, exchangeContext);
             RelationshipTracker.onConversation();
 
             const context = this.getContext();
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
+            this._normalizeIntentForContainerQuery(playerMessage, context, intent);
 
             if (Config.debugMode) {
                 Debug.log('[Chat] Intent:', JSON.stringify({ types: intent.types, primary: intent.primary, entities: intent.entities.map(e => e.name + ':' + e.status), confidence: intent.confidence }));
@@ -5140,10 +6378,23 @@ Respond ONLY with this JSON:
                     const fallback = KBFallback.respond(intent);
                     this.addToHistory('companion', fallback, exchangeContext);
                     this.addTranscriptMessage('companion', fallback, exchangeContext);
+                    DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
+                    this._rememberChatFacts(fallback, intent, context);
                     ThesisLogger.log('chat', {
                         player_message: playerMessage,
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                         prompt_length: prompt.length,
+                        prompt_sections: this._lastPromptSections || null,
+                        response_text: fallback,
+                        response_source: 'kb_fallback',
+                        latency_ms: chatLatency,
+                        model_used: null
+                    });
+                    DebugState.captureChat({
+                        player_message: playerMessage,
+                        intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                        prompt_length: prompt.length,
+                        prompt_sections: this._lastPromptSections || null,
                         response_text: fallback,
                         response_source: 'kb_fallback',
                         latency_ms: chatLatency,
@@ -5151,19 +6402,48 @@ Respond ONLY with this JSON:
                     });
                     return fallback;
                 }
-                this.addToHistory('companion', response, exchangeContext);
-                this.addTranscriptMessage('companion', response, exchangeContext);
+                const validation = this._validateChatResponse(response, playerMessage, context, intent);
+                const finalResponse = validation.text;
+                this.addToHistory('companion', finalResponse, exchangeContext);
+                this.addTranscriptMessage('companion', finalResponse, exchangeContext);
+                DialogueMemory.rememberLine(finalResponse, 'chat', dialogueMeta);
+                this._rememberChatFacts(finalResponse, intent, context);
+                if (validation.changed && Config.debugMode) {
+                    Debug.log('[Chat] validator corrected response:', validation.reason, {
+                        original: response,
+                        final: finalResponse
+                    });
+                }
                 ThesisLogger.log('chat', {
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
                     prompt_text: prompt,
-                    response_text: response,
-                    response_source: 'llm',
+                    prompt_sections: this._lastPromptSections || null,
+                    response_text: finalResponse,
+                    raw_response_text: response,
+                    response_source: validation.changed ? 'llm_validated' : 'llm',
+                    response_validated: validation.changed,
+                    validator_reason: validation.reason,
                     latency_ms: chatLatency,
                     model_used: this._lastModelUsed || null
                 });
-                return response;
+                DebugState.captureChat({
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    prompt_sections: this._lastPromptSections || null,
+                    response_text: finalResponse,
+                    raw_response_text: response,
+                    response_source: validation.changed ? 'llm_validated' : 'llm',
+                    response_validated: validation.changed,
+                    validator_reason: validation.reason,
+                    latency_ms: chatLatency,
+                    model_used: this._lastModelUsed || null,
+                    context_map: context.current_map,
+                    nearby_objects: context.nearby_objects
+                });
+                return finalResponse;
             } catch (error) {
                 const chatLatency = Math.round(performance.now() - chatStartTime);
                 Debug.error('[Chat] error:', error);
@@ -5171,14 +6451,29 @@ Respond ONLY with this JSON:
                 const fallback = KBFallback.respond(intent);
                 this.addToHistory('companion', fallback, exchangeContext);
                 this.addTranscriptMessage('companion', fallback, exchangeContext);
+                DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
+                this._rememberChatFacts(fallback, intent, context);
                 ThesisLogger.log('chat', {
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
+                    prompt_sections: this._lastPromptSections || null,
                     response_text: fallback,
                     response_source: 'kb_fallback_error',
                     latency_ms: chatLatency,
                     error: error.message
+                });
+                DebugState.captureChat({
+                    player_message: playerMessage,
+                    intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
+                    prompt_length: prompt.length,
+                    prompt_sections: this._lastPromptSections || null,
+                    response_text: fallback,
+                    response_source: 'kb_fallback_error',
+                    latency_ms: chatLatency,
+                    error: error.message,
+                    context_map: context.current_map,
+                    nearby_objects: context.nearby_objects
                 });
                 return fallback;
             }
@@ -5205,70 +6500,12 @@ CRITICAL GAME RULES (NEVER violate these):
 - Never invent visual details such as age, scars, clothing, beard, gender, count, or exact position unless those details are explicitly present in the provided context.
 `;
 
-            // Modular context injection based on intent types
-            for (const type of intent.types) {
-                prompt += this._getContextBlock(type, intent, context);
-            }
-
-            // Filtered events (only relevant ones)
-            prompt += this._buildEventContext(context, intent);
-
-            // Recent conversation (always)
-            if (context.older_chat_memory && context.older_chat_memory.length > 0) {
-                prompt += `\nEARLIER CHAT MEMORY:\n${context.older_chat_memory.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n')}\n`;
-            }
-            prompt += `\nRECENT CONVERSATION:\n${context.recent_exchanges.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n')}\n`;
-
-            // Answer mode instructions
-            prompt += this._buildInstructions(intent);
-
-            // Inject party members and their states
-            if (context.party_members && context.party_members.length > 0) {
-                prompt += `\nPARTY MEMBERS:\n`;
-                for (const m of context.party_members) {
-                    const statesStr = m.states.length > 0 ? m.states.join(', ') : 'ninguno';
-                    prompt += `- ${m.name}: HP ${m.hp}/${m.max_hp}, Estados: ${statesStr}\n`;
-                }
-            }
-
-            // Inject active status effects with KB descriptions
-            if (context.status_effects_summary) {
-                prompt += `\nSTATUS EFFECTS INFO:\n${context.status_effects_summary}\n`;
-            }
-
-            // Inject spatial awareness — gated by intent to prevent "guard obsession"
-            if (context.nearby_objects && context.nearby_objects.length > 0) {
-                const spatialIntents = new Set(['tactical', 'location', 'generic_query']);
-                if (spatialIntents.has(intent.primary)) {
-                    prompt += `\nLIVE NEARBY DETECTION (objects/events actually near you right now): ${context.nearby_objects}\n`;
-                } else if (/⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
-                    prompt += `\n(LIVE NEARBY THREAT: ${context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /[12] pasos/.test(s)).join(';').trim()})\n`;
-                }
-            }
-
-
-            // Branch 6: World State summary — overall situation awareness
-            if (context.world_state && context.world_state.length > 0) {
-                prompt += `\nSITUATION: ${context.world_state}\n`;
-            }
-
-            // Branch 7: NPC Intelligence — recent NPC dialogue context
-            if (context.npc_dialogue && context.npc_dialogue.length > 0) {
-                prompt += `\n${context.npc_dialogue}\nYou may comment on what NPCs said, react to their words, or warn the player about untrustworthy characters.\n`;
-            }
-
-            prompt += `\nThe player says: "${playerMessage}"\n`;
-            if (this._isVisionQuery(playerMessage)) {
-                prompt += `VISION QUERY RULE: Answer ONLY from LIVE NEARBY DETECTION above. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
-            }
-            const recentCompanionMsgs = context.recent_exchanges
-                .filter(e => e.role === 'companion')
-                .slice(-2)
-                .map(e => e.message);
-            if (recentCompanionMsgs.length > 0) {
-                prompt += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
-            }
-            prompt += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            const sections = this._buildPromptSections(playerMessage, context, intent);
+            this._lastPromptSections = sections.map(section => ({
+                title: section.title,
+                body: section.body
+            }));
+            prompt += sections.map(section => section.rendered).join('');
 
             return prompt;
         },
@@ -5318,7 +6555,7 @@ CRITICAL GAME RULES (NEVER violate these):
                     }
 
                     if (itemEntities.length > 0) {
-                        block += '\n=== ITEM DATA (answer ONLY from this) ===\n';
+                        block += '\nITEM DATA (answer ONLY from this):\n';
                         for (const entity of itemEntities) {
                             const item = entity.match;
                             block += `${entity.name}: ${item.description || 'Unknown'}${item.effect ? ' | Effect: ' + item.effect : ''}${item.tips ? ' | Tip: ' + item.tips : ''}${item.source ? ' | Found: ' + item.source.join(', ') : ''}\n`;
@@ -5372,15 +6609,35 @@ CRITICAL GAME RULES (NEVER violate these):
                                 block += `\n[No data on "${enemy.name}" — be cautious]\n`;
                             }
                         }
+                    } else if (typeof FearHungerKB !== 'undefined') {
+                        const nearbyKnowledge = this._getNearbyEnemyKnowledge(context);
+                        for (const entry of nearbyKnowledge) {
+                            const data = entry.enemy;
+                            block += `\n=== ${(data.displayNameEs || data.displayName || entry.snapshot.label).toUpperCase()} ===\n`;
+                            if (data.danger !== undefined) block += `Danger: ${data.danger}/5\n`;
+                            if (data.tactics) block += `Tactics: ${data.tactics}\n`;
+                            if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
+                            if (data.hints && data.hints.length) block += `Tips: ${data.hints.join('; ')}\n`;
+                            if (data.coinFlipTurn) block += `⚠ COIN FLIP on turn ${data.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
+                            if (data.mistakes && data.mistakes.length) block += `AVOID: ${data.mistakes.join('; ')}\n`;
+                            if (data.special) block += `Special: ${data.special}\n`;
+                        }
                     }
                     return block;
                 }
                 case 'recent_battle': {
                     let block = '';
+                    if (context.last_battle && context.last_battle.enemies && context.last_battle.enemies.length > 0) {
+                        block += '\nLAST BATTLE DATA:\n';
+                        block += `Enemies: ${context.last_battle.enemies.join(', ')}\n`;
+                        block += `Result: ${context.last_battle.victory ? 'Victory' : 'Defeat'}\n`;
+                    }
                     // Inject last battle cache if available
                     if (AIState.lastBattleStateCache) {
                         const lb = AIState.lastBattleStateCache;
-                        block += '\n=== LAST BATTLE DATA ===\n';
+                        if (!/LAST BATTLE DATA:/.test(block)) {
+                            block += '\nLAST BATTLE DATA:\n';
+                        }
                         if (lb.enemies) block += `Enemies: ${lb.enemies.filter(e => e.name).map(e => e.name).join(', ')}\n`;
                         if (lb.turn_number) block += `Lasted ${lb.turn_number} turns\n`;
                     }
@@ -5392,6 +6649,16 @@ CRITICAL GAME RULES (NEVER violate these):
                         if (combatEvents.length > 0) {
                             block += `Combat events: ${combatEvents.map(e => e.desc).join('; ')}\n`;
                         }
+                    }
+                    return block;
+                }
+                case 'npc_recall': {
+                    let block = '';
+                    if (context.npc_dialogue_entries && context.npc_dialogue_entries.length > 0) {
+                        const latest = context.npc_dialogue_entries[context.npc_dialogue_entries.length - 1];
+                        block += `\nRECENT NPC CONTACT:\n`;
+                        block += `- Most recent speaker: ${latest.speaker}\n`;
+                        if (latest.text) block += `- Most recent line: ${latest.text}\n`;
                     }
                     return block;
                 }
@@ -5414,7 +6681,7 @@ CRITICAL GAME RULES (NEVER violate these):
                     let block = `\nRelationship level: ${RelationshipTracker.getLevel()} (Trust ${RelationshipTracker.trust}, Affinity ${RelationshipTracker.affinity})\n`;
                     const personality = CharacterPresets.getCurrentPersonality();
                     if (personality && personality.backstory) {
-                        block += `\nIMPORTANT: Answer from your CHARACTER'S emotional perspective. You are ${personality.backstory.substring(0, 250)}\n`;
+                        block += `\nIMPORTANT: Answer from your CHARACTER'S emotional perspective. Your backstory: ${personality.backstory.substring(0, 250)}\n`;
                         block += `Do NOT give tactical advice or mention nearby threats. Focus on how YOU feel, your fears, your past, your connection to the player.\n`;
                     }
                     return block;
@@ -5447,6 +6714,12 @@ CRITICAL GAME RULES (NEVER violate these):
                     let block = `\nSTATIC LOCATION KNOWLEDGE:\n- Location: ${context.current_map}\n`;
                     if (context.in_battle && context.battle_state) {
                         block += `IN BATTLE — Enemies: ${context.battle_state.enemies.map(e => e.name).join(', ')}\n`;
+                    }
+                    if (intent.containerQuery && intent.containerTargets && intent.containerTargets.length > 0) {
+                        block += `NEARBY CONTAINERS:\n`;
+                        for (const container of intent.containerTargets) {
+                            block += `- ${container.label} a ${container.distance} pasos al ${container.direction}\n`;
+                        }
                     }
                     return block;
                 }
@@ -5481,6 +6754,10 @@ CRITICAL GAME RULES (NEVER violate these):
         _buildInstructions(intent) {
             const anchors = `\nHARD ANCHORS (NEVER violate):\n- Never betray the player\n- Never sacrifice allies without consent\n- Never break immersion\n- Always maintain core loyalty\n- NEVER mention "database", "base de datos", "KB", "data", or any technical/meta terms. You are a CHARACTER IN THE GAME, not an AI.\n- If you don't have information, say it naturally in character (e.g. "No lo reconozco..." or "No sé qué es...") — NEVER reference data sources.\n`;
 
+            if (intent && intent.containerQuery) {
+                return anchors + 'MODE: CONTAINER JUDGMENT — The player is asking what might be inside nearby containers. You do NOT have exact loot data unless it is explicitly shown above. Do NOT invent specific item names, rare artifacts, enemies, rituals, or stat gains. Speak only in broad terms like supplies, scraps, something useful, or say we need to open the container to know for sure.\n';
+            }
+
             switch (intent.primary) {
                 case 'item_info':
                     return anchors + 'MODE: ITEM KNOWLEDGE — You MUST answer ONLY from the ITEM DATA section above. State each item\'s effect exactly as described in the data. Do NOT invent, guess, or assume any item effects. If an item is NOT listed in ITEM DATA above, say you don\'t recognize it. NEVER claim an item heals, cures, or does something that is not explicitly stated in the provided data. This is a horror game — items have SPECIFIC effects that differ from typical RPGs.\n';
@@ -5488,6 +6765,8 @@ CRITICAL GAME RULES (NEVER violate these):
                     return anchors + 'MODE: TACTICAL — Give combat advice ONLY from the KNOWLEDGE section above. If enemy data is provided, mention ONLY the limb priorities, coin flip turns, and tactics listed in that data. Do NOT invent weaknesses, resistances, attack patterns, or abilities. Do NOT claim enemies use "sorcery" or any attack type not explicitly listed. Refer to the player\'s ACTUAL equipped weapon (shown in equipment data). If no enemy data is provided, give only generic survival advice like "be careful" or "guard when unsure". NEVER make up game mechanics.\n';
                 case 'recent_battle':
                     return anchors + 'MODE: RECALL — The player asks about a recent battle. Answer ONLY from the LAST BATTLE DATA above. Name the enemies you fought. Do NOT invent details not present in the data.\n';
+                case 'npc_recall':
+                    return anchors + 'MODE: NPC RECALL — The player is asking who just spoke to us or what that NPC said. Answer from RECENT NPC DIALOGUE and RECENT NPC CONTACT only. Name the speaker explicitly. Do NOT answer from combat memory unless the NPC dialogue itself mentions combat.\n';
                 case 'lore':
                     return anchors + 'MODE: LORE — Be atmospheric and descriptive about the location/character. Draw ONLY from provided data. If no lore data is provided, respond atmospherically without inventing specific game facts. STATIC LOCATION KNOWLEDGE describes the area in general; do NOT claim you currently see an NPC, enemy, or object unless LIVE NEARBY DETECTION or RECENT NPC DIALOGUE explicitly shows it.\n';
                 case 'status_help':
@@ -5827,6 +7106,8 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             for (const threat of threats) {
                 const posKey = `${$gameMap.mapId()}_${threat.x}_${threat.y}`;
                 if (this._warnedPositions.has(posKey)) continue;
+                const factKey = `threat:${threat.subtype || threat.type}:${threat.label || threat.type}:${threat.direction}`;
+                if (DialogueMemory.hasRecentFact(factKey, 'ambient_warning', 90000, $gameMap.mapId())) continue;
 
                 // Mark as warned
                 this._warnedPositions.add(posKey);
@@ -5859,6 +7140,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
 
                 const pick = warning[Math.floor(Math.random() * warning.length)]
                     .replace('${DIR}', threat.direction);
+                DialogueMemory.rememberFact(factKey, `${threat.label || 'Peligro'} al ${threat.direction}`, 'ambient_warning', { mapId: $gameMap.mapId() });
                 this._speak(pick, 'threat_warning');
                 return; // One warning at a time
             }
@@ -6041,6 +7323,9 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
                 return;
             }
             this._markVisited(mapKey);
+            DialogueMemory.rememberFact(`area:${mapKey}`, locationEntry.displayNameEs || locationEntry.displayName || mapName, 'ambient_lore', {
+                mapId: $gameMap ? $gameMap.mapId() : null
+            });
 
             Debug.log('[Ambient] First visit to:', mapName, '- generating AI comment');
 
@@ -6098,9 +7383,16 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         },
 
         _speak(text, topic) {
+            const meta = { mapId: $gameMap ? $gameMap.mapId() : null };
+            if (DialogueMemory.wasLineRecent(text, topic, 180000)) {
+                Debug.log('[Ambient] Suppressed repeated line:', topic, text);
+                return;
+            }
+
             this._lastTime = Date.now();
             this._lastTopic = topic;
             DialogueGovernor.recordDialogue();
+            DialogueMemory.rememberLine(text, topic, meta);
 
             // Telemetry: log all ambient dialogue
             ThesisLogger.log('ambient', {
@@ -6294,6 +7586,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         this._pendingReplyTimestamp = null;
         this._layoutBlocks = [];
         this._contentHeight = 0;
+        this._filterMode = 'all';
         this._syncTranscript();
         this._scrollToBottom();
         this._refreshChat();
@@ -6315,14 +7608,26 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         this._helpHint.backOpacity = 100;
         this._helpHint.contents.fontSize = 14;
         this._helpHint.contents.textColor = '#888888';
-        const helpText = Config.language === 'es' ? 'ESC: cerrar chat  |  ↑↓ / rueda: scroll  |  Enter: enviar' : 'ESC: close chat  |  ↑↓ / wheel: scroll  |  Enter: send';
-        this._helpHint.contents.drawText(helpText, 8, 0, this._helpHint.contentsWidth() - 16, 24, 'center');
+        this._refreshHelpHint();
         this.addWindow(this._helpHint);
+    };
+
+    Scene_AIChat.prototype._refreshHelpHint = function () {
+        if (!this._helpHint) return;
+        this._helpHint.contents.clear();
+        this._helpHint.contents.fontSize = 14;
+        this._helpHint.contents.textColor = '#888888';
+        const filterText = this._getFilterLabel();
+        const helpText = Config.language === 'es'
+            ? `ESC: cerrar  |  ↑↓ / rueda: scroll  |  ←→: filtro (${filterText})  |  PgUp/PgDn: salto  |  Enter: enviar`
+            : `ESC: close  |  ↑↓ / wheel: scroll  |  ←→: filter (${filterText})  |  PgUp/PgDn: jump  |  Enter: send`;
+        this._helpHint.contents.drawText(helpText, 8, 0, this._helpHint.contentsWidth() - 16, 24, 'center');
     };
 
     Scene_AIChat.prototype.update = function () {
         Scene_MenuBase.prototype.update.call(this);
         const scrollStep = this._lineHeight * 2;
+        const pageStep = Math.max(this._lineHeight * 6, this._getChatContentHeight() - this._lineHeight * 2);
         // Scrolling with arrow keys
         if (Input.isRepeated('up')) {
             this._scrollY = Math.max(0, this._scrollY - scrollStep);
@@ -6331,6 +7636,20 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         if (Input.isRepeated('down')) {
             const maxScroll = this._getMaxScroll();
             this._scrollY = Math.min(maxScroll, this._scrollY + scrollStep);
+            this._refreshChat();
+        }
+        if (Input.isTriggered('left')) {
+            this._cycleFilter(-1);
+        }
+        if (Input.isTriggered('right')) {
+            this._cycleFilter(1);
+        }
+        if (Input.isTriggered('pageup')) {
+            this._scrollY = Math.max(0, this._scrollY - pageStep);
+            this._refreshChat();
+        }
+        if (Input.isTriggered('pagedown')) {
+            this._scrollY = Math.min(this._getMaxScroll(), this._scrollY + pageStep);
             this._refreshChat();
         }
         if (TouchInput.wheelY <= -20) {
@@ -6342,6 +7661,51 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             this._scrollY = Math.min(maxScroll, this._scrollY + scrollStep);
             this._refreshChat();
         }
+    };
+
+    Scene_AIChat.prototype._getFilterModes = function () {
+        return ['all', 'field', 'battle'];
+    };
+
+    Scene_AIChat.prototype._getFilterLabel = function () {
+        const labels = Config.language === 'es'
+            ? { all: 'todo', field: 'exploración', battle: 'combate' }
+            : { all: 'all', field: 'exploration', battle: 'battle' };
+        return labels[this._filterMode] || labels.all;
+    };
+
+    Scene_AIChat.prototype._cycleFilter = function (direction) {
+        const modes = this._getFilterModes();
+        const index = Math.max(0, modes.indexOf(this._filterMode));
+        const next = (index + direction + modes.length) % modes.length;
+        this._filterMode = modes[next];
+        this._refreshHelpHint();
+        this._rebuildTranscriptView(true);
+    };
+
+    Scene_AIChat.prototype._getFilteredEntries = function (entries) {
+        if (this._filterMode === 'all') return entries;
+
+        const filtered = [];
+        let lastIncludedTag = null;
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (entry.type === 'separator') {
+                if (entry.contextTag === this._filterMode) {
+                    filtered.push(entry);
+                    lastIncludedTag = entry.contextTag;
+                } else {
+                    lastIncludedTag = null;
+                }
+                continue;
+            }
+
+            if (entry.contextTag === this._filterMode && lastIncludedTag === this._filterMode) {
+                filtered.push(entry);
+            }
+        }
+
+        return filtered;
     };
 
     Scene_AIChat.prototype._getChatContentHeight = function () {
@@ -6374,8 +7738,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 pending: true
             });
         }
-        this._chatEntries = entries;
-        this._layoutBlocks = this._buildLayoutBlocks(entries);
+        const filteredEntries = this._getFilteredEntries(entries);
+        this._chatEntries = filteredEntries;
+        this._layoutBlocks = this._buildLayoutBlocks(filteredEntries);
         this._contentHeight = this._layoutBlocks.reduce((sum, block, index) => {
             return sum + block.height + (index > 0 ? this._blockGap : 0);
         }, 8);
@@ -6476,15 +7841,22 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const maxContentHeight = this._getChatContentHeight();
 
         if (!this._layoutBlocks || this._layoutBlocks.length === 0) {
-            const hint = Config.language === 'es'
-                ? 'Escribe y pulsa Enter. El historial queda guardado en esta partida.'
-                : 'Type and press Enter. Chat history is saved with this playthrough.';
+            const hint = this._filterMode !== 'all'
+                ? (Config.language === 'es'
+                    ? `No hay mensajes para el filtro "${this._getFilterLabel()}".`
+                    : `No messages match the "${this._getFilterLabel()}" filter.`)
+                : (Config.language === 'es'
+                    ? 'Escribe y pulsa Enter. El historial queda guardado en esta partida.'
+                    : 'Type and press Enter. Chat history is saved with this playthrough.');
             this._chatWindow.drawTextEx(hint, 10, 10);
             return;
         }
 
         let drawY = 4 - this._scrollY;
         const separatorText = Config.language === 'es' ? { up: '▲ historial', down: '▼ más' } : { up: '▲ history', down: '▼ more' };
+        const filterBadge = Config.language === 'es'
+            ? `Filtro: ${this._getFilterLabel()}`
+            : `Filter: ${this._getFilterLabel()}`;
 
         for (let i = 0; i < this._layoutBlocks.length; i++) {
             const block = this._layoutBlocks[i];
@@ -6542,12 +7914,26 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         const cw = this._chatWindow.contentsWidth();
         this._chatWindow.contents.fontSize = 14;
         this._chatWindow.contents.textColor = '#aaaaaa';
+        this._chatWindow.contents.drawText(filterBadge, 8, 0, 180, 16, 'left');
         if (this._scrollY > 0) {
             this._chatWindow.contents.drawText(separatorText.up, cw - 100, 0, 96, 16, 'right');
         }
         const maxScroll = this._getMaxScroll();
         if (this._scrollY < maxScroll) {
             this._chatWindow.contents.drawText(separatorText.down, cw - 100, maxContentHeight - 14, 96, 16, 'right');
+        }
+
+        if (this._contentHeight > maxContentHeight) {
+            const trackX = cw - 8;
+            const trackY = 20;
+            const trackHeight = Math.max(24, maxContentHeight - 40);
+            const visibleRatio = Math.min(1, maxContentHeight / Math.max(this._contentHeight, 1));
+            const thumbHeight = Math.max(28, Math.floor(trackHeight * visibleRatio));
+            const scrollRatio = maxScroll > 0 ? (this._scrollY / maxScroll) : 0;
+            const thumbY = trackY + Math.floor((trackHeight - thumbHeight) * scrollRatio);
+
+            this._chatWindow.contents.fillRect(trackX, trackY, 2, trackHeight, 'rgba(120,120,120,0.35)');
+            this._chatWindow.contents.fillRect(trackX - 1, thumbY, 4, thumbHeight, 'rgba(220,220,220,0.65)');
         }
         this._chatWindow.contents.fontSize = 20;
         this._chatWindow.contents.textColor = '#ffffff';
@@ -6928,7 +8314,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         if (!wasInParty && this._actors.includes(actorId) && typeof ShortTermMemory !== 'undefined') {
             const actor = $gameActors.actor(actorId);
             if (actor) {
-                const actorName = actor.name() || 'Unknown';
+                const actorName = actor.name() || (actorId === Config.companionActorId ? Config.companionName : 'Unknown');
                 ShortTermMemory.addEvent(`${actorName} joined the party.`, 'map');
                 // AI comments on new party members
                 if (actorId !== Config.companionActorId) {
@@ -7037,7 +8423,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     const _BattleManager_processVictory = BattleManager.processVictory;
     BattleManager.processVictory = function () {
         const rawNames = $gameTroop.members().map(m => m.name());
-        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '')))];
+        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '').replace(/\s+[A-Z]$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, true);
         AmbientDialogue.onBattleEnd(true);
         ThesisLogger.log('game_event', { event: 'battle_victory', enemies: enemyNames });
@@ -7055,7 +8441,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     const _BattleManager_processEscape = BattleManager.processEscape;
     BattleManager.processEscape = function () {
         const rawNames = $gameTroop.members().map(m => m.name());
-        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '')))];
+        const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '').replace(/\s+[A-Z]$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, false);
         AmbientDialogue.onBattleEnd(false);
         ThesisLogger.log('game_event', { event: 'battle_escape', enemies: enemyNames });
@@ -7131,6 +8517,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     window.AI_Companion.WorldStateEngine = WorldStateEngine;
     window.AI_Companion.NPCIntelligence = NPCIntelligence;
     window.AI_Companion.AutonomySystem = AutonomySystem;
+    window.AI_Companion.DebugState = DebugState;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)

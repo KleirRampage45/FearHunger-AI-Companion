@@ -272,6 +272,8 @@ FearHungerKB.enemies = {
     },
     "miner_spectre": {
         displayName: "Miner Spectre",
+        displayNameEs: "Espectro minero",
+        altNames: ["Espectro minero", "Miner Spectre"],
         danger: 3,
         confidence: 0.8,
         location: ["Mines"],
@@ -636,14 +638,15 @@ FearHungerKB.bosses = {
     },
     "trortur": {
         displayName: "Trortur",
+        displayNameEs: "Trortur",
         danger: 5,
         confidence: 0.75,
         location: ["Inner Hall - Secret Chamber"],
-        limbPriority: ["arms", "torso"],
+        limbPriority: ["left arm", "right arm", "torso", "head"],
         coinFlipTurn: null,
-        tactics: "The torturer. Can be pickpocketed for vault key. Dangerous in direct combat.",
-        hints: ["Pickpocket for vault key!", "Vault contains Penance armor", "Can give Light blue vial as gift"],
-        mistakes: ["Don't fight if you can steal instead"],
+        tactics: "Si no puedes robarle la llave antes, pelea de frente. Primero el brazo izquierdo, luego el derecho. Con ambos brazos fuera, remátalo por el torso. No pierdas turnos en las piernas.",
+        hints: ["Se le puede robar la llave del vault antes del combate", "Si ya empezó la pelea, corta primero el brazo armado", "El vault contiene la armadura Penance"],
+        mistakes: ["No gastes turnos en las piernas", "No ignores el brazo armado"],
         drops: ["Vault key (steal)"],
         boss: true
     },
@@ -662,6 +665,8 @@ FearHungerKB.bosses = {
     },
     "assassin_spectre": {
         displayName: "Assassin Spectre",
+        displayNameEs: "Espectro asesino",
+        altNames: ["Espectro asesino", "Assassin Spectre"],
         danger: 5,
         confidence: 0.65,
         location: ["Various"],
@@ -2749,93 +2754,130 @@ FearHungerKB.getStatusEffectsForPrompt = function () {
 // HELPER FUNCTIONS
 // ============================================================================
 
+FearHungerKB._stripDiacritics = function (value) {
+    if (value === null || value === undefined) return '';
+    const text = String(value);
+    if (!text.normalize) return text;
+    return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+};
+
+FearHungerKB._normalizeLookup = function (value) {
+    return this._stripDiacritics(value)
+        .toLowerCase()
+        .replace(/['’]/g, '')
+        .replace(/&/g, ' and ')
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .replace(/_+/g, '_');
+};
+
+FearHungerKB._collectLookupNames = function (key, data, extraNames) {
+    const names = [key, String(key || '').replace(/_/g, ' ')];
+    if (data) {
+        if (data.displayName) names.push(data.displayName);
+        if (data.displayNameEs) names.push(data.displayNameEs);
+        if (data.altNames) names.push.apply(names, data.altNames);
+        if (data.aliases) names.push.apply(names, data.aliases);
+    }
+    if (extraNames && extraNames.length > 0) {
+        names.push.apply(names, extraNames);
+    }
+    return names.filter(Boolean);
+};
+
+FearHungerKB._makeLookupEntry = function (data, key, isBoss) {
+    const result = { ...data, key: key };
+    if (isBoss !== undefined) result.isBoss = !!isBoss;
+    return result;
+};
+
+FearHungerKB._findInCollection = function (collection, name, options) {
+    if (!collection || !name) return null;
+
+    const queryNorm = this._normalizeLookup(name);
+    if (!queryNorm) return null;
+
+    const exactExtras = options && options.exactExtras ? options.exactExtras : [];
+    const fuzzyExtras = options && options.fuzzyExtras ? options.fuzzyExtras : [];
+    const isBoss = options && Object.prototype.hasOwnProperty.call(options, 'isBoss') ? options.isBoss : undefined;
+
+    for (const key in collection) {
+        const data = collection[key];
+        const candidates = this._collectLookupNames(key, data, exactExtras);
+        for (const candidate of candidates) {
+            if (this._normalizeLookup(candidate) === queryNorm) {
+                return this._makeLookupEntry(data, key, isBoss);
+            }
+        }
+    }
+
+    for (const key in collection) {
+        const data = collection[key];
+        const candidates = this._collectLookupNames(key, data, fuzzyExtras);
+        for (const candidate of candidates) {
+            const candidateNorm = this._normalizeLookup(candidate);
+            if (!candidateNorm) continue;
+            if (candidateNorm.includes(queryNorm) || queryNorm.includes(candidateNorm)) {
+                return this._makeLookupEntry(data, key, isBoss);
+            }
+        }
+    }
+
+    return null;
+};
+
 /**
  * Get enemy data by name (fuzzy matching)
  */
 FearHungerKB.getEnemy = function (name) {
     if (!name) return null;
-    const nameLower = name.toLowerCase();
-    const normalized = nameLower.replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
+    const normalized = this._normalizeLookup(name);
 
     // Spanish → English enemy name translation for game compatibility
     const esTranslations = {
-        'guardia': 'guard', 'guardia de élite': 'elite_guard',
+        'guardia': 'guard', 'guardia_de_elite': 'elite_guard',
         'sacerdote': 'priest', 'esqueleto': 'skeleton',
-        'maneba': 'maneba', 'mandíbula dentada': 'jaggedjaw',
-        'gnomo de las cavernas': 'cavegnome', 'araña de las cuevas': 'cave_spider',
-        'hombre lagarto': 'lizardman', 'mago lagarto amarillo': 'lizardmage',
-        'acechador nocturno': 'night_lurch', 'habitante de las cavernas': 'cavedweller',
-        'mago amarillo': 'yellow_mage', 'espectro minero': 'miner_spectre',
-        'murmurador': 'mumbler', 'murmurador mayor': 'greater_mumbler',
-        'escarabajo': 'scarab', 'guardián moonless': 'moonless_guard',
-        'ghoul sangriento': 'bloody_man', 'ladrón de cuerpos': 'body_snatcher',
-        'señor de las moscas': 'lord_of_flies', 'útero': 'uterus',
-        'embrión': 'embryo', 'hombre rojo': 'red_man', 'cosechador': 'harvestman',
+        'maneba': 'maneba', 'mandibula_dentada': 'jaggedjaw',
+        'gnomo_de_las_cavernas': 'cavegnome', 'arana_de_las_cuevas': 'cave_spider',
+        'hombre_lagarto': 'lizardman', 'mago_lagarto_amarillo': 'lizardmage',
+        'acechador_nocturno': 'night_lurch', 'habitante_de_las_cavernas': 'cavedweller',
+        'mago_amarillo': 'yellow_mage', 'espectro_minero': 'miner_spectre',
+        'murmurador': 'mumbler', 'murmurador_mayor': 'greater_mumbler',
+        'escarabajo': 'scarab', 'guardian_moonless': 'moonless_guard',
+        'ghoul_sangriento': 'bloody_man', 'ladron_de_cuerpos': 'body_snatcher',
+        'senor_de_las_moscas': 'lord_of_flies', 'utero': 'uterus',
+        'embrion': 'embryo', 'hombre_rojo': 'red_man', 'cosechador': 'harvestman',
         'moldeado': 'male_molded', 'moldeada': 'female_molded',
         'plaga': 'blight', 'prisionero': 'prisoner', 'moonless': 'moonless',
-        'devorador de cuervos': 'crow_mauler', 'hidra': 'human_hydra',
-        'hidra humana': 'human_hydra', 'lobo solitario': 'moonless',
-        'barras de hierro': 'iron_bars', 'puerta de metal': 'iron_bars',
-        'puerta de madera': 'iron_bars',
-        'mariposa': 'butterfly', 'bruja negra': 'black_witch',
-        'shakespeare de hierro': 'iron_shakespeare', 'trortur': 'trortur',
-        'caballero antiguo': 'old_knight', 'espectro asesino': 'assassin_spectre',
-        'madre de las cavernas': 'cavemother', 'ser seymor': 'ser_seymor',
-        'caballero demacrado': 'gaunt_knight', 'isayah': 'isayah',
-        'salmonsnake': 'salmonsnake', 'abuela piel': 'skin_granny',
-        'sin nombre': 'nameless', 'viejo guardián': 'old_guardian',
-        'ángel blanco': 'white_angel', 'dama lunar': 'lady_of_moon',
+        'devorador_de_cuervos': 'crow_mauler', 'hidra': 'human_hydra',
+        'hidra_humana': 'human_hydra', 'lobo_solitario': 'moonless',
+        'barras_de_hierro': 'iron_bars', 'puerta_de_metal': 'iron_bars',
+        'puerta_de_madera': 'iron_bars',
+        'mariposa': 'butterfly', 'bruja_negra': 'black_witch',
+        'shakespeare_de_hierro': 'iron_shakespeare', 'trortur': 'trortur',
+        'caballero_antiguo': 'old_knight', 'espectro_asesino': 'assassin_spectre',
+        'madre_de_las_cavernas': 'cavemother', 'ser_seymor': 'ser_seymor',
+        'caballero_demacrado': 'gaunt_knight', 'isayah': 'isayah',
+        'salmonsnake': 'salmonsnake', 'abuela_piel': 'skin_granny',
+        'sin_nombre': 'nameless', 'viejo_guardian': 'old_guardian',
+        'angel_blanco': 'white_angel', 'dama_lunar': 'lady_of_moon',
         'valteil': 'valteil', 'atormentado': 'tormented_one',
-        'francóis': 'francois', 'gran plaga': 'greater_blight',
-        'huellas de sylvian': 'traces_sylvian', 'huellas de gro-goroth': 'traces_grogoroth',
-        'dios del miedo y el hambre': 'god_of_fear_and_hunger',
-        'caballero espectro': 'assassin_spectre',
-        'rey amarillo': 'yellow_king'
+        'francois': 'francois', 'gran_plaga': 'greater_blight',
+        'huellas_de_sylvian': 'traces_sylvian', 'huellas_de_gro_goroth': 'traces_grogoroth',
+        'dios_del_miedo_y_el_hambre': 'god_of_fear_and_hunger',
+        'caballero_espectro': 'assassin_spectre',
+        'rey_amarillo': 'yellow_king'
     };
 
     // Try Spanish translation first
-    const esKey = esTranslations[nameLower];
+    const esKey = esTranslations[normalized];
     if (esKey) {
-        if (this.enemies[esKey]) return { ...this.enemies[esKey], key: esKey, isBoss: false };
-        if (this.bosses[esKey]) return { ...this.bosses[esKey], key: esKey, isBoss: true };
+        if (this.enemies[esKey]) return this._makeLookupEntry(this.enemies[esKey], esKey, false);
+        if (this.bosses[esKey]) return this._makeLookupEntry(this.bosses[esKey], esKey, true);
     }
 
-    // Check regular enemies (exact key, displayName, displayNameEs, altNames)
-    for (const key in this.enemies) {
-        const enemy = this.enemies[key];
-        if (key === normalized ||
-            enemy.displayName.toLowerCase() === nameLower ||
-            (enemy.displayNameEs && enemy.displayNameEs.toLowerCase() === nameLower) ||
-            (enemy.altNames && enemy.altNames.some(alt => alt.toLowerCase() === nameLower))) {
-            return { ...enemy, key: key, isBoss: false };
-        }
-    }
-
-    // Check bosses (exact key, displayName, displayNameEs, altNames)
-    for (const key in this.bosses) {
-        const boss = this.bosses[key];
-        if (key === normalized ||
-            boss.displayName.toLowerCase() === nameLower ||
-            (boss.displayNameEs && boss.displayNameEs.toLowerCase() === nameLower) ||
-            (boss.altNames && boss.altNames.some(alt => alt.toLowerCase() === nameLower))) {
-            return { ...boss, key: key, isBoss: true };
-        }
-    }
-
-    // Fuzzy match (includes check on both EN and ES names)
-    const allEnemies = { ...this.enemies, ...this.bosses };
-    for (const key in allEnemies) {
-        const e = allEnemies[key];
-        if (key.includes(normalized) || normalized.includes(key) ||
-            e.displayName.toLowerCase().includes(nameLower) ||
-            nameLower.includes(e.displayName.toLowerCase()) ||
-            (e.displayNameEs && (e.displayNameEs.toLowerCase().includes(nameLower) ||
-                nameLower.includes(e.displayNameEs.toLowerCase())))) {
-            return { ...e, key: key, isBoss: !!e.boss };
-        }
-    }
-
-    return null;
+    return this._findInCollection(this.enemies, name, { isBoss: false }) ||
+        this._findInCollection(this.bosses, name, { isBoss: true });
 };
 
 /**
@@ -2852,61 +2894,16 @@ FearHungerKB.getItem = function (name) {
         'antidoto': 'vial blanco', 'monoculo': 'monocle',
         'monóculo': 'monocle'
     };
-    let expandedName = name;
-    const words = name.toLowerCase().split(/\s+/);
+    let expandedName = this._stripDiacritics(name).toLowerCase();
+    const words = expandedName.split(/\s+/);
     for (const word of words) {
         if (ITEM_SYNONYMS[word]) {
-            expandedName = name.toLowerCase().replace(word, ITEM_SYNONYMS[word]);
+            expandedName = expandedName.replace(word, ITEM_SYNONYMS[word]);
             break;
         }
     }
-    const normalized = expandedName.toLowerCase().replace(/[^a-záéíóúñü0-9]/g, '_').replace(/_+/g, '_');
-    const nameLower = expandedName.toLowerCase();
 
-    // Exact match: key, displayName, displayNameEs, or key-as-words
-    for (const key in this.items) {
-        const item = this.items[key];
-        if (key === normalized ||
-            item.displayName?.toLowerCase() === nameLower ||
-            item.displayNameEs?.toLowerCase() === nameLower ||
-            key.replace(/_/g, ' ') === nameLower) {
-            return { ...item, key: key };
-        }
-        // Check aliases
-        if (item.aliases) {
-            for (const alias of item.aliases) {
-                if (alias.toLowerCase() === nameLower) {
-                    return { ...item, key: key };
-                }
-            }
-        }
-    }
-
-    // Fuzzy match
-    for (const key in this.items) {
-        const item = this.items[key];
-        if (key.includes(normalized) || normalized.includes(key)) {
-            return { ...item, key: key };
-        }
-        // Fuzzy alias match
-        if (item.aliases) {
-            for (const alias of item.aliases) {
-                const aliasNorm = alias.toLowerCase().replace(/[^a-záéíóúñü0-9]/g, '_').replace(/_+/g, '_');
-                if (aliasNorm.includes(normalized) || normalized.includes(aliasNorm)) {
-                    return { ...item, key: key };
-                }
-            }
-        }
-        // Fuzzy displayNameEs match
-        if (item.displayNameEs) {
-            const esNorm = item.displayNameEs.toLowerCase().replace(/[^a-záéíóúñü0-9]/g, '_').replace(/_+/g, '_');
-            if (esNorm.includes(normalized) || normalized.includes(esNorm)) {
-                return { ...item, key: key };
-            }
-        }
-    }
-
-    return null;
+    return this._findInCollection(this.items, expandedName);
 };
 
 /**
@@ -2914,16 +2911,7 @@ FearHungerKB.getItem = function (name) {
  */
 FearHungerKB.getLocation = function (name) {
     if (!name) return null;
-    const normalized = name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
-
-    for (const key in this.locations) {
-        if (key === normalized ||
-            this.locations[key].displayName.toLowerCase().includes(name.toLowerCase())) {
-            return { ...this.locations[key], key: key };
-        }
-    }
-
-    return null;
+    return this._findInCollection(this.locations, name);
 };
 
 /**
@@ -2931,16 +2919,7 @@ FearHungerKB.getLocation = function (name) {
  */
 FearHungerKB.getCharacter = function (name) {
     if (!name) return null;
-    const normalized = name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
-
-    for (const key in this.characters) {
-        if (key === normalized ||
-            this.characters[key].displayName.toLowerCase() === name.toLowerCase()) {
-            return { ...this.characters[key], key: key };
-        }
-    }
-
-    return null;
+    return this._findInCollection(this.characters, name);
 };
 
 /**
