@@ -2208,6 +2208,101 @@ Reply with ONLY the category name, nothing else.`;
             return key === 'piernas' ? 'legs' : key;
         }
 
+        static _findBattleEnemyByName(battleState, targetName) {
+            const enemies = (battleState && battleState.enemies) ? battleState.enemies.filter(e => e && e.alive) : [];
+            if (!targetName) return enemies[0] || null;
+            const normalizedTarget = String(targetName).toLowerCase().trim();
+            let exact = enemies.find(enemy => String(enemy.name).toLowerCase() === normalizedTarget);
+            if (exact) return exact;
+            return enemies.find(enemy =>
+                String(enemy.name).toLowerCase().includes(normalizedTarget) ||
+                normalizedTarget.includes(String(enemy.name).toLowerCase())
+            ) || (enemies[0] || null);
+        }
+
+        static _expandPriorityToken(token, enemy) {
+            const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
+            const alive = enemy && enemy.limbs ? enemy.limbs : {};
+            if (normalized === 'arms') return ['left arm', 'right arm'].filter(key => alive[key] && alive[key].alive);
+            if (normalized === 'legs') return ['left leg', 'right leg'].filter(key => alive[key] && alive[key].alive);
+            if (normalized === 'weapon arm' || normalized === 'sword arm') {
+                return ['left arm', 'right arm'].filter(key => alive[key] && alive[key].alive);
+            }
+            if (normalized === 'body') return alive.torso && alive.torso.alive ? ['torso'] : [];
+            return [normalized];
+        }
+
+        static _pickBestAliveLimb(enemy) {
+            if (!enemy || !enemy.limbs) return null;
+            const preferredOrder = ['torso', 'head', 'left arm', 'right arm', 'left leg', 'right leg'];
+            for (let i = 0; i < preferredOrder.length; i++) {
+                const key = preferredOrder[i];
+                if (enemy.limbs[key] && enemy.limbs[key].alive) return key;
+            }
+            const aliveKeys = Object.keys(enemy.limbs).filter(key => enemy.limbs[key] && enemy.limbs[key].alive);
+            return aliveKeys.length > 0 ? aliveKeys[0] : null;
+        }
+
+        static _dialogLooksEnglish(text) {
+            return /going for|aim for|holding position|bracing|staying defensive|watch my flank|keep your guard up|no mercy|stay focused|together now|take away its weapon|crippling its reach|slow it down|it won't run|this ends it|disabling/i.test(String(text || ''));
+        }
+
+        static _dialogConflictsWithLimb(text, limb) {
+            const msg = String(text || '').toLowerCase();
+            const normalizedLimb = this._normalizeLimbName(limb);
+            if (!msg || !normalizedLimb) return false;
+
+            if (normalizedLimb === 'head') return /(brazo|arm|pierna|leg|arma|weapon|inmoviliz)/i.test(msg);
+            if (normalizedLimb.indexOf('arm') >= 0) return /(pierna|leg|cabeza|head|inmoviliz)/i.test(msg);
+            if (normalizedLimb.indexOf('leg') >= 0) return /(brazo|arm|arma|weapon|cabeza|head|torso)/i.test(msg);
+            if (normalizedLimb === 'torso') return /(pierna|leg|brazo|arm|arma|weapon|cabeza|head|inmoviliz)/i.test(msg);
+            return false;
+        }
+
+        static normalizeDecisionForBattle(decision, battleState) {
+            if (!decision || !battleState) return decision;
+            const normalized = Object.assign({}, decision);
+            const enemy = this._findBattleEnemyByName(battleState, normalized.target);
+            if (!enemy) return normalized;
+
+            normalized.target = enemy.name;
+
+            if (this._normalizeActionName(normalized.action) !== 'attack') {
+                return normalized;
+            }
+
+            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? FearHungerKB.getEnemy(enemy.name) : null;
+            const requestedLimb = this._normalizeLimbName(normalized.limb).replace(/_/g, ' ');
+            let chosenLimb = null;
+
+            if (requestedLimb && enemy.limbs[requestedLimb] && enemy.limbs[requestedLimb].alive) {
+                chosenLimb = requestedLimb;
+            } else if (requestedLimb) {
+                const expandedRequested = this._expandPriorityToken(requestedLimb, enemy);
+                chosenLimb = expandedRequested.find(key => enemy.limbs[key] && enemy.limbs[key].alive) || null;
+            }
+
+            if (!chosenLimb && kbEnemy && kbEnemy.limbPriority) {
+                for (let i = 0; i < kbEnemy.limbPriority.length; i++) {
+                    const expanded = this._expandPriorityToken(kbEnemy.limbPriority[i], enemy);
+                    chosenLimb = expanded.find(key => enemy.limbs[key] && enemy.limbs[key].alive) || null;
+                    if (chosenLimb) break;
+                }
+            }
+
+            if (!chosenLimb) {
+                chosenLimb = this._pickBestAliveLimb(enemy);
+            }
+
+            normalized.limb = chosenLimb || null;
+
+            if (!normalized.dialog || this._dialogLooksEnglish(normalized.dialog) || this._dialogConflictsWithLimb(normalized.dialog, normalized.limb) || requestedLimb !== normalized.limb) {
+                normalized.dialog = this._generateQuickDialog(normalized);
+            }
+
+            return normalized;
+        }
+
         static _resolveTarget(decision) {
             if (!decision.target) return 0;
 
@@ -2555,8 +2650,8 @@ IMPORTANT TARGETING RULES:
 Do NOT spam Defend. Attack even at low HP - offense wins in Fear & Hunger.
 
 COORDINATION WITH ${playerName.toUpperCase()}:
-- You can see the player's actions above. If they made a suboptimal choice (e.g., targeting head while weapon arm is still alive), weave a brief correction INTO your dialog naturally. Example: "¡El brazo del arma primero!" or "Head's too tough, go for the arms!"
-- If you're planning a multi-limb strategy, briefly coordinate in dialog. Example: "Yo al cuchillo, tú al aguijón."
+- You can see the player's actions above. If they made a suboptimal choice, weave a brief correction INTO your dialog naturally using the EXACT live limb names from BATTLE STATE or COMBAT KNOWLEDGE.
+- If you're planning a multi-limb strategy, coordinate briefly in Spanish using only limbs that are still alive.
 - If the player is making good choices, no need to mention strategy — just fight.
 - Your dialog should feel like a real combat partner, not a tutorial.
 
@@ -2788,6 +2883,9 @@ Respond ONLY with this JSON:
                     }
                     const response = JSON.parse(xhr.responseText);
                     const decision = this._parseResponse(response);
+                    if (decision) {
+                        decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
+                    }
                     if (decision && this._validateDecision(decision, battleState)) {
                         // Branch 3: Extract and store multi-turn strategy
                         if (decision.strategy && decision.strategy.length > 0) {
@@ -2882,49 +2980,54 @@ Respond ONLY with this JSON:
             const targetName = decision.target || 'enemy';
 
             if (actionLower === 'attack') {
-                const generalLines = [
-                    "Striking now!",
-                    "I'll handle this one!",
-                    "Watch my flank!",
-                    "Keep your guard up!",
-                    "No mercy!",
-                    "Stay focused!",
-                    "Together now!"
-                ];
+                const generalLines = Config.language === 'es'
+                    ? [
+                        "¡Voy!",
+                        "¡Lo tengo!",
+                        "¡Cúbreme!",
+                        "¡No bajes la guardia!",
+                        "¡Ahora!",
+                        "¡Sigue!",
+                        "¡Juntos!"
+                    ]
+                    : [
+                        "Striking now!",
+                        "I'll handle this one!",
+                        "Watch my flank!",
+                        "Keep your guard up!",
+                        "No mercy!",
+                        "Stay focused!",
+                        "Together now!"
+                    ];
 
                 // Limb-specific lines
                 if (limbTarget === 'head') {
-                    const headLines = [
-                        "Going for the head!",
-                        "Aim for the skull!",
-                        "One clean strike!",
-                        "This ends it!"
-                    ];
+                    const headLines = Config.language === 'es'
+                        ? ["¡A la cabeza!", "¡Al cráneo!", "¡Una buena ahí!", "¡Remátalo!"]
+                        : ["Going for the head!", "Aim for the skull!", "One clean strike!", "This ends it!"];
                     return headLines[Math.floor(Math.random() * headLines.length)];
                 } else if (limbTarget && limbTarget.includes('arm')) {
-                    const armLines = [
-                        "Disabling its arm!",
-                        "Take away its weapon!",
-                        "Crippling its reach!"
-                    ];
+                    const armLines = Config.language === 'es'
+                        ? ["¡Al brazo!", "¡Quítale el alcance!", "¡Córtale ese brazo!"]
+                        : ["Disabling its arm!", "Take away its weapon!", "Crippling its reach!"];
                     return armLines[Math.floor(Math.random() * armLines.length)];
                 } else if (limbTarget && limbTarget.includes('leg')) {
-                    const legLines = [
-                        "Slow it down!",
-                        "Going for the legs!",
-                        "It won't run!"
-                    ];
+                    const legLines = Config.language === 'es'
+                        ? ["¡A la pierna!", "¡Bájalo!", "¡Que no avance!"]
+                        : ["Slow it down!", "Going for the legs!", "It won't run!"];
                     return legLines[Math.floor(Math.random() * legLines.length)];
+                } else if (limbTarget === 'torso') {
+                    const torsoLines = Config.language === 'es'
+                        ? ["¡Al torso!", "¡Ahora al cuerpo!", "¡Remátalo al centro!"]
+                        : ["Go for the torso!", "Center mass!", "Finish it through the body!"];
+                    return torsoLines[Math.floor(Math.random() * torsoLines.length)];
                 }
 
                 return generalLines[Math.floor(Math.random() * generalLines.length)];
             } else if (actionLower === 'defend' || actionLower === 'guard') {
-                const defendLines = [
-                    "Holding position!",
-                    "Bracing myself!",
-                    "I need a moment!",
-                    "Staying defensive!"
-                ];
+                const defendLines = Config.language === 'es'
+                    ? ["¡Aguanto!", "¡Me cubro!", "¡Un momento!", "¡Defensa!"]
+                    : ["Holding position!", "Bracing myself!", "I need a moment!", "Staying defensive!"];
                 return defendLines[Math.floor(Math.random() * defendLines.length)];
             }
             return null; // No dialog for unknown actions
