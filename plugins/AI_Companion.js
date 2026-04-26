@@ -182,6 +182,13 @@
             return headers;
         },
 
+        getLocalHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer lm-studio'
+            };
+        },
+
         // Get the model to use for chat/RP
         getChatModel() {
             if (this.apiProvider === 'local') return this.localModel;
@@ -1388,22 +1395,23 @@ Reply with ONLY the category name, nothing else.`;
          * Scan the current map for notable objects near the player.
          * Returns array of { type, subtype, label, danger, distance, direction, x, y }
          */
-        scan() {
-            if (!$gameMap || !$gamePlayer) return [];
+        _scanAround(origin, radius) {
+            if (!$gameMap || !origin) return [];
 
-            // Cache check: reuse result if player hasn't moved and TTL not expired
-            const posKey = `${$gamePlayer.x},${$gamePlayer.y}`;
+            const px = origin.x;
+            const py = origin.y;
+            if (typeof px !== 'number' || typeof py !== 'number') return [];
+
             this._cacheTick++;
-            if (this._cacheMapId === $gameMap.mapId() &&
+            const posKey = `${px},${py},${radius}`;
+            if (origin === $gamePlayer &&
+                this._cacheMapId === $gameMap.mapId() &&
                 this._cachePlayerPos === posKey &&
                 this._cacheTick < this.CACHE_TTL &&
                 this._cache) {
                 return this._cache;
             }
 
-            const px = $gamePlayer.x;
-            const py = $gamePlayer.y;
-            const radius = this.SCAN_RADIUS;
             const results = [];
 
             const events = $gameMap.events();
@@ -1421,6 +1429,7 @@ Reply with ONLY the category name, nothing else.`;
 
                 results.push({
                     ...classification,
+                    eventId: event.eventId ? event.eventId() : null,
                     distance: dist,
                     direction: this._getDirection(dx, dy),
                     x: event.x,
@@ -1438,11 +1447,23 @@ Reply with ONLY the category name, nothing else.`;
             });
 
             // Cache and return (limit to 8 most relevant)
-            this._cache = results.slice(0, 8);
-            this._cacheMapId = $gameMap.mapId();
-            this._cachePlayerPos = posKey;
-            this._cacheTick = 0;
-            return this._cache;
+            const finalResults = results.slice(0, 8);
+            if (origin === $gamePlayer) {
+                this._cache = finalResults;
+                this._cacheMapId = $gameMap.mapId();
+                this._cachePlayerPos = posKey;
+                this._cacheTick = 0;
+            }
+            return finalResults;
+        },
+
+        scan() {
+            if (!$gameMap || !$gamePlayer) return [];
+            return this._scanAround($gamePlayer, this.SCAN_RADIUS);
+        },
+
+        scanAround(origin, radius) {
+            return this._scanAround(origin, radius || this.SCAN_RADIUS);
         },
 
         /**
@@ -3427,7 +3448,7 @@ Respond ONLY with this JSON:
     Window_TitleCommand.prototype.makeCommandList = function () {
         _Window_TitleCommand_makeCommandList.call(this);
         // Always add our command — base makeCommandList clears the list each time
-        this.addCommand(Config.language === 'es' ? 'Config. IA' : 'AI Config', 'aiConfig');
+        this.addCommand(Config.language === 'es' ? 'Compañero IA' : 'AI Companion', 'aiConfig');
     };
 
     const _Scene_Title_createCommandWindow = Scene_Title.prototype.createCommandWindow;
@@ -3909,6 +3930,362 @@ Respond ONLY with this JSON:
                 map: s.environment.map_name,
                 in_battle: s.environment.in_battle,
                 maps_visited: this._visitedMaps.size
+            };
+        }
+    };
+
+    //=========================================================================
+    // Autonomy System — Local-only overworld heartbeat controller (Branch 9)
+    // Conservative beta: follower detours, rejoin logic, nearby interaction
+    //=========================================================================
+    const AutonomySystem = {
+        _state: {
+            pending: false,
+            lastTickAt: 0,
+            lastMoveAt: 0,
+            lastInteractAt: 0,
+            mode: 'follow',
+            targetEventId: null,
+            targetLabel: '',
+            reason: '',
+            lastSnapshot: null,
+            lastDecision: null
+        },
+
+        ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT'],
+
+        getFollower() {
+            if (!$gamePlayer || !$gamePlayer._followers || !$gamePlayer._followers.forEach) return null;
+            let found = null;
+            $gamePlayer._followers.forEach(function(follower) {
+                if (found || !follower || !follower.actor || !follower.actor()) return;
+                if (follower.actor().actorId && follower.actor().actorId() === Config.companionActorId) {
+                    found = follower;
+                }
+            });
+            return found;
+        },
+
+        isControlledFollower(follower) {
+            const current = this.getFollower();
+            return !!follower && !!current && follower === current;
+        },
+
+        shouldSuppressDefaultChase(follower) {
+            if (!this.isControlledFollower(follower)) return false;
+            if (!Config.autonomyEnabled) return false;
+            return this._state.mode === 'target_event' || this._state.mode === 'hold';
+        },
+
+        canRun() {
+            if (!Config.autonomyEnabled) return false;
+            if (!$gameParty || !$gameParty.members || !$gameParty.members().some(m => m && m.actorId && m.actorId() === Config.companionActorId)) return false;
+            if (!$gameMap || !$gamePlayer || $gameParty.inBattle()) return false;
+            if (!SceneManager._scene || SceneManager._scene.constructor.name !== 'Scene_Map') return false;
+            if ($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
+            if (ChatSystem && ChatSystem.isActive && ChatSystem.isActive()) return false;
+            if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
+            if (!this.getFollower()) return false;
+            return true;
+        },
+
+        update() {
+            if (!this.canRun()) {
+                this._softReset();
+                return;
+            }
+
+            this._maintainMovement();
+
+            const now = Date.now();
+            const tickMs = Math.max(2000, Config.autonomyTickSeconds * 1000);
+            if (this._state.pending || now - this._state.lastTickAt < tickMs) return;
+
+            this._state.lastTickAt = now;
+            this._heartbeat();
+        },
+
+        _softReset() {
+            this._state.pending = false;
+            this._state.mode = 'follow';
+            this._state.targetEventId = null;
+            this._state.targetLabel = '';
+            this._state.reason = '';
+        },
+
+        _distance(a, b) {
+            if (!a || !b) return 999;
+            return Math.abs((a.x || 0) - (b.x || 0)) + Math.abs((a.y || 0) - (b.y || 0));
+        },
+
+        _buildSnapshot() {
+            const follower = this.getFollower();
+            const player = $gamePlayer;
+            const nearby = EnvironmentScanner.scanAround(follower, Math.max(6, Config.autonomyMaxScoutDistance + 2));
+            const world = WorldStateEngine.getSnapshot();
+            const threatNearby = nearby.filter(n => n.danger === 'high');
+            const interesting = nearby.filter(n => n.type === 'container' || n.type === 'door' || n.type === 'loot' || n.type === 'npc');
+
+            const snapshot = {
+                mapName: $gameMap.displayName() || ('Map ' + $gameMap.mapId()),
+                player: { x: player.x, y: player.y },
+                companion: { x: follower.x, y: follower.y },
+                leashDistance: this._distance(player, follower),
+                threatLevel: world.threats.level,
+                situation: world.situation,
+                nearby: nearby.map(item => ({
+                    eventId: item.eventId,
+                    label: item.label,
+                    type: item.type,
+                    subtype: item.subtype,
+                    danger: item.danger,
+                    distance: item.distance,
+                    direction: item.direction,
+                    x: item.x,
+                    y: item.y
+                })),
+                threatNearby: threatNearby.length,
+                interestingNearby: interesting.length,
+                hpPct: world.party.avg_hp_pct,
+                lootRadius: Config.autonomyLootRadius,
+                scoutLimit: Config.autonomyMaxScoutDistance,
+                detourLimit: Config.autonomyMaxDetourDistance,
+                profile: Config.autonomyBehaviorProfile,
+                allowNpc: Config.autonomyAllowNpcInteraction,
+                allowDoors: Config.autonomyAllowDoorTesting,
+                allowSolo: Config.autonomyAllowSoloEngagement,
+                autoReturn: Config.autonomyAutoReturnOnDanger
+            };
+            this._state.lastSnapshot = snapshot;
+            return snapshot;
+        },
+
+        _fallbackDecision(snapshot) {
+            const immediateThreat = snapshot.nearby.find(item => item.danger === 'high' && item.distance <= 2);
+            if (immediateThreat && snapshot.autoReturn) {
+                return { action: 'RETURN', reason: 'high threat nearby' };
+            }
+
+            if (snapshot.leashDistance > snapshot.scoutLimit) {
+                return { action: 'RETURN', reason: 'too far from player' };
+            }
+
+            const safeLoot = snapshot.nearby.find(item =>
+                (item.type === 'container' || item.type === 'loot') &&
+                item.distance <= snapshot.detourLimit &&
+                snapshot.threatNearby === 0
+            );
+            if (safeLoot) {
+                return { action: 'LOOT', eventId: safeLoot.eventId, reason: 'safe nearby supplies' };
+            }
+
+            const safeDoor = snapshot.nearby.find(item =>
+                item.type === 'door' &&
+                snapshot.allowDoors &&
+                item.distance <= Math.max(1, snapshot.detourLimit - 1) &&
+                snapshot.threatNearby === 0
+            );
+            if (safeDoor) {
+                return { action: 'INTERACT', eventId: safeDoor.eventId, reason: 'checking nearby door' };
+            }
+
+            return { action: 'FOLLOW', reason: 'stay with player' };
+        },
+
+        async _heartbeat() {
+            const snapshot = this._buildSnapshot();
+            this._state.pending = true;
+
+            try {
+                const decision = await this._requestDecision(snapshot);
+                this._applyDecision(decision || this._fallbackDecision(snapshot), snapshot);
+            } catch (error) {
+                Debug.warn('[Autonomy] heartbeat failed:', error.message);
+                this._applyDecision(this._fallbackDecision(snapshot), snapshot);
+            } finally {
+                this._state.pending = false;
+            }
+        },
+
+        async _requestDecision(snapshot) {
+            const fallback = this._fallbackDecision(snapshot);
+            if (!Config.localEndpoint || !Config.getAutonomyModel()) return fallback;
+
+            const prompt = [
+                'You control a cautious RPG companion in Fear & Hunger.',
+                'Return ONLY JSON.',
+                'Use one action: FOLLOW, HOLD, RETURN, LOOT, INTERACT.',
+                'Prefer FOLLOW unless a safe nearby opportunity exists.',
+                'Never choose enemies as targets. Never start fights.',
+                'Only choose LOOT or INTERACT for nearby containers/doors/NPCs that are actually listed.',
+                'If threat is high or distance from player is too large, choose RETURN.',
+                'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
+                '',
+                'STATE:',
+                JSON.stringify(snapshot)
+            ].join('\n');
+
+            const response = await fetch(Config.localEndpoint, {
+                method: 'POST',
+                headers: Config.getLocalHeaders(),
+                body: JSON.stringify({
+                    model: Config.getAutonomyModel(),
+                    messages: [
+                        { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+                        { role: 'user', content: prompt }
+                    ],
+                    temperature: 0.2,
+                    max_tokens: 160,
+                    enable_thinking: false
+                })
+            });
+            if (!response.ok) {
+                Debug.warn('[Autonomy] Local HTTP error:', response.status);
+                return fallback;
+            }
+
+            const data = await response.json();
+            let decision = GeminiAPIHandler._parseResponse(data);
+            if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
+                return fallback;
+            }
+            decision.action = String(decision.action).toUpperCase();
+
+            if ((decision.action === 'LOOT' || decision.action === 'INTERACT') && decision.eventId != null) {
+                const exists = snapshot.nearby.some(item => item.eventId === Number(decision.eventId));
+                if (!exists) return fallback;
+                decision.eventId = Number(decision.eventId);
+            }
+
+            if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
+            if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return decision;
+            return fallback;
+        },
+
+        _applyDecision(decision, snapshot) {
+            const action = String((decision && decision.action) || 'FOLLOW').toUpperCase();
+            const reason = String((decision && decision.reason) || '');
+            this._state.lastDecision = decision;
+            this._state.reason = reason;
+
+            if (action === 'RETURN' || action === 'FOLLOW') {
+                this._state.mode = action === 'RETURN' ? 'return' : 'follow';
+                this._state.targetEventId = null;
+                this._state.targetLabel = '';
+                return;
+            }
+
+            if (action === 'HOLD') {
+                this._state.mode = 'hold';
+                this._state.targetEventId = null;
+                this._state.targetLabel = '';
+                return;
+            }
+
+            const target = snapshot.nearby.find(item => item.eventId === Number(decision.eventId));
+            if (!target) {
+                this._state.mode = 'follow';
+                this._state.targetEventId = null;
+                this._state.targetLabel = '';
+                return;
+            }
+
+            this._state.mode = 'target_event';
+            this._state.targetEventId = target.eventId;
+            this._state.targetLabel = target.label;
+            this._state.targetAction = action;
+        },
+
+        _maintainMovement() {
+            const follower = this.getFollower();
+            const player = $gamePlayer;
+            if (!follower || !player || (follower.isMoving && follower.isMoving())) return;
+
+            const now = Date.now();
+            if (now - this._state.lastMoveAt < 120) return;
+            this._state.lastMoveAt = now;
+
+            if (this._state.mode === 'hold') return;
+
+            if (this._state.mode === 'target_event' && this._state.targetEventId) {
+                const event = $gameMap.event(this._state.targetEventId);
+                if (!event || (event.isErased && event.isErased())) {
+                    this._state.mode = 'follow';
+                    this._state.targetEventId = null;
+                    return;
+                }
+
+                if (Config.autonomyAutoReturnOnDanger && this._hasImmediateThreat(follower)) {
+                    this._state.mode = 'return';
+                    this._state.targetEventId = null;
+                    return;
+                }
+
+                const dist = this._distance(follower, event);
+                if (dist <= 1) {
+                    this._interactWithEvent(follower, event);
+                    this._state.mode = 'return';
+                    this._state.targetEventId = null;
+                    return;
+                }
+
+                const dirToEvent = follower.findDirectionTo(event.x, event.y);
+                if (dirToEvent > 0) follower.moveStraight(dirToEvent);
+                return;
+            }
+
+            const leashLimit = Math.max(1, this._state.mode === 'return' ? 0 : Config.autonomyMaxDetourDistance);
+            const distToPlayer = this._distance(follower, player);
+            if (distToPlayer > leashLimit + 1) {
+                const dir = follower.findDirectionTo(player.x, player.y);
+                if (dir > 0) follower.moveStraight(dir);
+            }
+        },
+
+        _hasImmediateThreat(origin) {
+            const nearby = EnvironmentScanner.scanAround(origin, 3);
+            return nearby.some(item => item.danger === 'high' && item.distance <= 2);
+        },
+
+        _faceTarget(follower, target) {
+            if (!follower || !target || !follower.setDirection) return;
+            const dx = target.x - follower.x;
+            const dy = target.y - follower.y;
+            if (Math.abs(dx) > Math.abs(dy)) {
+                follower.setDirection(dx > 0 ? 6 : 4);
+            } else if (dy !== 0) {
+                follower.setDirection(dy > 0 ? 2 : 8);
+            }
+        },
+
+        _interactWithEvent(follower, event) {
+            const now = Date.now();
+            if (now - this._state.lastInteractAt < 1000) return false;
+            this._state.lastInteractAt = now;
+            this._faceTarget(follower, event);
+
+            try {
+                if (event.start) {
+                    event.start();
+                    Debug.log('[Autonomy] Interacted with event:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
+                    return true;
+                }
+            } catch (error) {
+                Debug.warn('[Autonomy] Failed event interaction:', error.message);
+            }
+            return false;
+        },
+
+        getSnapshot() {
+            return {
+                enabled: Config.autonomyEnabled,
+                mode: this._state.mode,
+                targetEventId: this._state.targetEventId,
+                targetLabel: this._state.targetLabel,
+                reason: this._state.reason,
+                pending: this._state.pending,
+                lastDecision: this._state.lastDecision,
+                lastSnapshot: this._state.lastSnapshot
             };
         }
     };
@@ -6257,6 +6634,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         // Proactive trap/threat warning from EnvironmentScanner
         AmbientDialogue.checkNearbyThreats();
 
+        // Optional local-only companion autonomy heartbeat
+        AutonomySystem.update();
+
         // C key to chat (key code 67) - T is reserved for torch
         if (Input.isTriggered('c') || (TouchInput.isTriggered() && false)) {
             if (!$gameMessage.isBusy() && !$gameTemp._chatLocked) {
@@ -6280,6 +6660,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
     // Register C key for chat
     Input.keyMapper[67] = 'c';
+
+    const _Game_Follower_chaseCharacter = Game_Follower.prototype.chaseCharacter;
+    Game_Follower.prototype.chaseCharacter = function(character) {
+        if (AutonomySystem.shouldSuppressDefaultChase(this)) {
+            return;
+        }
+        _Game_Follower_chaseCharacter.call(this, character);
+    };
 
     // F7 = Reload AI companion appearance mid-game (no restart needed)
     document.addEventListener('keydown', function (e) {
@@ -6634,6 +7022,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
     window.AI_Companion.WorldStateEngine = WorldStateEngine;
     window.AI_Companion.NPCIntelligence = NPCIntelligence;
+    window.AI_Companion.AutonomySystem = AutonomySystem;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)
@@ -6873,7 +7262,7 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
         this._itemWindow.activate();
     };
 
-    console.log('[AI_Companion] Plugin cargado. Para ver logs de depuración: menú título → Config. IA → Consola debug: SÍ');
+    console.log('[AI_Companion] Plugin cargado. Para ver logs de depuración: menú título → Compañero IA → Consola debug: SÍ');
     if (Config.debugMode) {
         Debug.log('AI_Companion plugin loaded');
         Debug.log('Config:', { apiKey: !!Config.apiKey, useMockAI: Config.useMockAI, language: Config.language });
