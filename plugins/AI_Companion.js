@@ -4579,6 +4579,150 @@ Respond ONLY with this JSON:
                 .map(e => `- ${e.desc}`);
         },
 
+        _normalizeLookupText(text) {
+            if (typeof FearHungerKB !== 'undefined' && FearHungerKB._normalizeLookup) {
+                return FearHungerKB._normalizeLookup(text);
+            }
+            return String(text || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .replace(/_+/g, '_');
+        },
+
+        _getNearbyEnemyLabels(context) {
+            return this._getNearbyEnemyKnowledge(context).map(entry =>
+                entry.enemy.displayNameEs || entry.enemy.displayName || entry.snapshot.label
+            );
+        },
+
+        _getMentionedEnemyNames(text) {
+            if (!text || typeof FearHungerKB === 'undefined') return [];
+            const collections = [FearHungerKB.enemies || {}, FearHungerKB.bosses || {}];
+            const normalizedText = this._normalizeLookupText(text);
+            const matches = [];
+            const seen = {};
+
+            collections.forEach(collection => {
+                for (const key in collection) {
+                    const data = collection[key];
+                    const names = [data.displayName, data.displayNameEs]
+                        .concat(data.altNames || [])
+                        .filter(Boolean);
+                    for (const name of names) {
+                        const normalizedName = this._normalizeLookupText(name);
+                        if (!normalizedName || normalizedName.length < 3) continue;
+                        if (normalizedText.includes(normalizedName) && !seen[key]) {
+                            seen[key] = true;
+                            matches.push(data.displayNameEs || data.displayName || name);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            return matches;
+        },
+
+        _buildVisionFallback(context) {
+            if (context && context.nearby_objects) {
+                return `Solo veo esto cerca, David: ${context.nearby_objects}.`;
+            }
+            return 'No veo nada destacable ahora mismo, David.';
+        },
+
+        _buildTacticalFallback(context) {
+            const nearbyEnemies = this._getNearbyEnemyKnowledge(context);
+            if (nearbyEnemies.length === 0) {
+                return 'No veo enemigos cerca, David. Mantente alerta por si aparece algo.';
+            }
+
+            const firstEnemy = nearbyEnemies[0].enemy;
+            const name = firstEnemy.displayNameEs || firstEnemy.displayName || 'enemigo';
+            if (firstEnemy.coinFlipTurn) {
+                return `${name} está cerca, David. Cuidado con su turno de moneda; hay que matarlo antes de eso.`;
+            }
+            return `${name} está cerca, David. Parece manejable, pero no bajemos la guardia.`;
+        },
+
+        _buildRecentBattleFallback(context) {
+            if (!context || !context.last_battle || !context.last_battle.enemies || context.last_battle.enemies.length === 0) {
+                return 'No recuerdo bien el último combate, David.';
+            }
+            const names = context.last_battle.enemies.join(', ');
+            if (context.last_battle.victory) {
+                return `Nos fue bien, David. Acabamos de vencer a ${names}.`;
+            }
+            return `El último combate fue contra ${names}, David.`;
+        },
+
+        _buildEmotionalFallback(playerMessage) {
+            const msg = String(playerMessage || '').toLowerCase();
+            if (/lo hice bien|did i do well|did i do good/.test(msg)) {
+                return 'Sí. Lo hiciste bien, David.';
+            }
+            if (/como te sientes|cómo te sientes|how do you feel/.test(msg)) {
+                return 'Sigo entero. Un poco tenso, pero bien.';
+            }
+            return 'Estoy contigo, David. Seguimos adelante.';
+        },
+
+        _validateChatResponse(response, playerMessage, context, intent) {
+            const text = String(response || '').trim();
+            if (!text) return { text: text, changed: false, reason: null };
+            const normalizedText = this._normalizeLookupText(text);
+
+            const mentionedEnemies = this._getMentionedEnemyNames(text);
+            const nearbyEnemyLabels = this._getNearbyEnemyLabels(context);
+            const allowedNearby = {};
+            nearbyEnemyLabels.forEach(name => { allowedNearby[this._normalizeLookupText(name)] = true; });
+
+            if (this._isVisionQuery(playerMessage)) {
+                const invalidEnemyMention = mentionedEnemies.some(name => !allowedNearby[this._normalizeLookupText(name)]);
+                if (invalidEnemyMention) {
+                    return { text: this._buildVisionFallback(context), changed: true, reason: 'vision_ungrounded_enemy' };
+                }
+            }
+
+            if (intent && intent.primary === 'tactical' && !context.in_battle) {
+                const nearbyEnemies = this._getNearbyEnemyKnowledge(context);
+                const hasCoinFlipWarning = /coin flip|turno de moneda|moneda/i.test(text);
+                const mentionsUnknownEnemy = mentionedEnemies.some(name => !allowedNearby[this._normalizeLookupText(name)]);
+                const driftsIntoContainers = /cofre|cofres|abrir|abramos|contenedor|contenedores/i.test(text);
+                if (nearbyEnemies.length === 0 && (hasCoinFlipWarning || mentionedEnemies.length > 0)) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_no_grounded_enemy' };
+                }
+                if (nearbyEnemies.length === 0 && driftsIntoContainers) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_topic_drift' };
+                }
+                if (mentionsUnknownEnemy) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_wrong_enemy' };
+                }
+                if (hasCoinFlipWarning && nearbyEnemies.every(entry => !entry.enemy.coinFlipTurn)) {
+                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_fake_coin_flip' };
+                }
+            }
+
+            if (intent && intent.primary === 'recent_battle') {
+                const lastBattleEnemies = (context.last_battle && context.last_battle.enemies) || [];
+                const allowedBattle = {};
+                lastBattleEnemies.forEach(name => { allowedBattle[this._normalizeLookupText(name)] = true; });
+                const mentionsWrongEnemy = mentionedEnemies.some(name => !allowedBattle[this._normalizeLookupText(name)]);
+                const mentionsExpectedEnemy = lastBattleEnemies.some(name => normalizedText.includes(this._normalizeLookupText(name)));
+                if (lastBattleEnemies.length > 0 && (mentionsWrongEnemy || !mentionsExpectedEnemy)) {
+                    return { text: this._buildRecentBattleFallback(context), changed: true, reason: 'recent_battle_mismatch' };
+                }
+            }
+
+            if (intent && intent.primary === 'emotional') {
+                if (/a \d+ pasos al|enemig|coin flip|turno de moneda/i.test(text)) {
+                    return { text: this._buildEmotionalFallback(playerMessage), changed: true, reason: 'emotional_tactical_drift' };
+                }
+            }
+
+            return { text: text, changed: false, reason: null };
+        },
+
         _buildPromptSections(playerMessage, context, intent) {
             const sections = [];
             const pushSection = (title, body) => {
@@ -4894,20 +5038,31 @@ Respond ONLY with this JSON:
                     });
                     return fallback;
                 }
-                this.addToHistory('companion', response, exchangeContext);
-                this.addTranscriptMessage('companion', response, exchangeContext);
+                const validation = this._validateChatResponse(response, playerMessage, context, intent);
+                const finalResponse = validation.text;
+                this.addToHistory('companion', finalResponse, exchangeContext);
+                this.addTranscriptMessage('companion', finalResponse, exchangeContext);
+                if (validation.changed && Config.debugMode) {
+                    Debug.log('[Chat] validator corrected response:', validation.reason, {
+                        original: response,
+                        final: finalResponse
+                    });
+                }
                 ThesisLogger.log('chat', {
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
                     prompt_text: prompt,
                     prompt_sections: this._lastPromptSections || null,
-                    response_text: response,
-                    response_source: 'llm',
+                    response_text: finalResponse,
+                    raw_response_text: response,
+                    response_source: validation.changed ? 'llm_validated' : 'llm',
+                    response_validated: validation.changed,
+                    validator_reason: validation.reason,
                     latency_ms: chatLatency,
                     model_used: this._lastModelUsed || null
                 });
-                return response;
+                return finalResponse;
             } catch (error) {
                 const chatLatency = Math.round(performance.now() - chatStartTime);
                 Debug.error('[Chat] error:', error);
