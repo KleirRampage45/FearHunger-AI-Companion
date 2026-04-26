@@ -5005,7 +5005,7 @@ CRITICAL GAME RULES (NEVER violate these):
                     }
 
                     if (itemEntities.length > 0) {
-                        block += '\n=== ITEM DATA (answer ONLY from this) ===\n';
+                        block += '\nITEM DATA (answer ONLY from this):\n';
                         for (const entity of itemEntities) {
                             const item = entity.match;
                             block += `${entity.name}: ${item.description || 'Unknown'}${item.effect ? ' | Effect: ' + item.effect : ''}${item.tips ? ' | Tip: ' + item.tips : ''}${item.source ? ' | Found: ' + item.source.join(', ') : ''}\n`;
@@ -5078,15 +5078,15 @@ CRITICAL GAME RULES (NEVER violate these):
                 case 'recent_battle': {
                     let block = '';
                     if (context.last_battle && context.last_battle.enemies && context.last_battle.enemies.length > 0) {
-                        block += '\n=== LAST BATTLE DATA ===\n';
+                        block += '\nLAST BATTLE DATA:\n';
                         block += `Enemies: ${context.last_battle.enemies.join(', ')}\n`;
                         block += `Result: ${context.last_battle.victory ? 'Victory' : 'Defeat'}\n`;
                     }
                     // Inject last battle cache if available
                     if (AIState.lastBattleStateCache) {
                         const lb = AIState.lastBattleStateCache;
-                        if (!/=== LAST BATTLE DATA ===/.test(block)) {
-                            block += '\n=== LAST BATTLE DATA ===\n';
+                        if (!/LAST BATTLE DATA:/.test(block)) {
+                            block += '\nLAST BATTLE DATA:\n';
                         }
                         if (lb.enemies) block += `Enemies: ${lb.enemies.filter(e => e.name).map(e => e.name).join(', ')}\n`;
                         if (lb.turn_number) block += `Lasted ${lb.turn_number} turns\n`;
