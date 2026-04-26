@@ -165,8 +165,18 @@
 
         // Returns the active API endpoint
         getEndpoint() {
-            if (this.apiProvider === 'local') return this.localEndpoint;
+            if (this.apiProvider === 'local') return this.getLocalEndpoint();
             return this.getProvider().endpoint;
+        },
+
+        getLocalEndpoint() {
+            let url = String(this.localEndpoint || '').trim();
+            if (!url) return '';
+            url = url.replace(/\/+$/, '');
+            if (/\/v1\/chat\/completions$/i.test(url)) return url;
+            if (/\/v1$/i.test(url)) return url + '/chat/completions';
+            if (/\/chat\/completions$/i.test(url)) return url;
+            return url + '/v1/chat/completions';
         },
 
         // Returns headers appropriate for the provider
@@ -248,8 +258,8 @@
         },
 
         setLocalEndpoint(url) {
-            this.localEndpoint = url;
-            localStorage.setItem('AI_Companion_LocalEndpoint', url);
+            this.localEndpoint = String(url || '').trim();
+            localStorage.setItem('AI_Companion_LocalEndpoint', this.localEndpoint);
         },
 
         setLocalModel(model) {
@@ -2394,7 +2404,7 @@ Respond ONLY with this JSON:
             if (Config.apiProvider === 'local') {
                 try {
                     Debug.log('[Combat Async] Trying local AI...');
-                    return await _tryFetch(Config.localEndpoint, Config.getHeaders(), Config.localModel, 512, true);
+                    return await _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true);
                 } catch (error) {
                     Debug.warn('[Combat Async] Local failed:', error.message);
                 }
@@ -2447,6 +2457,8 @@ Respond ONLY with this JSON:
                     const choice = response.choices[0];
                     if (choice.message && choice.message.content) {
                         text = choice.message.content;
+                    } else if (choice.message && choice.message.reasoning_content) {
+                        text = _extractFromReasoning(choice.message.reasoning_content) || choice.message.reasoning_content;
                     } else if (choice.text) {
                         text = choice.text;
                     } else if (choice.delta && choice.delta.content) {
@@ -2463,6 +2475,11 @@ Respond ONLY with this JSON:
                 const jsonMatch = text.match(/\{[\s\S]*\}/);
                 if (jsonMatch) {
                     return JSON.parse(jsonMatch[0]);
+                }
+                const extracted = _extractFromReasoning(text);
+                if (extracted) {
+                    const extractedJson = extracted.match(/\{[\s\S]*\}/);
+                    if (extractedJson) return JSON.parse(extractedJson[0]);
                 }
                 return JSON.parse(text);
             } catch (error) {
@@ -2563,7 +2580,7 @@ Respond ONLY with this JSON:
             if (Config.apiProvider === 'local') {
                 Debug.log('[Combat] Trying local AI...');
                 const localResult = _trySyncRequest(
-                    Config.localEndpoint, Config.getHeaders(), Config.localModel, 512, true
+                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true
                 );
                 if (localResult) { _logCombatDecision(localResult, Config.localModel, 'local'); return localResult; }
 
@@ -4109,7 +4126,7 @@ Respond ONLY with this JSON:
 
         async _requestDecision(snapshot) {
             const fallback = this._fallbackDecision(snapshot);
-            if (!Config.localEndpoint || !Config.getAutonomyModel()) return fallback;
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return fallback;
 
             const prompt = [
                 'You control a cautious RPG companion in Fear & Hunger.',
@@ -4125,7 +4142,7 @@ Respond ONLY with this JSON:
                 JSON.stringify(snapshot)
             ].join('\n');
 
-            const response = await fetch(Config.localEndpoint, {
+            const response = await fetch(Config.getLocalEndpoint(), {
                 method: 'POST',
                 headers: Config.getLocalHeaders(),
                 body: JSON.stringify({
