@@ -149,8 +149,8 @@
         autonomyMaxScoutDistance: Number(localStorage.getItem('AI_Companion_AutonomyScoutDistance') || '6'),
         autonomyMaxDetourDistance: Number(localStorage.getItem('AI_Companion_AutonomyDetourDistance') || '3'),
         autonomyLootRadius: Number(localStorage.getItem('AI_Companion_AutonomyLootRadius') || '2'),
-        autonomyAllowNpcInteraction: localStorage.getItem('AI_Companion_AutonomyNpcInteraction') === 'true',
-        autonomyAllowDoorTesting: localStorage.getItem('AI_Companion_AutonomyDoorTesting') === 'true',
+        autonomyAllowNpcInteraction: localStorage.getItem('AI_Companion_AutonomyNpcInteraction') !== 'false',
+        autonomyAllowDoorTesting: localStorage.getItem('AI_Companion_AutonomyDoorTesting') !== 'false',
         autonomyAllowSoloEngagement: localStorage.getItem('AI_Companion_AutonomySoloEngagement') === 'true',
         autonomyAutoReturnOnDanger: localStorage.getItem('AI_Companion_AutonomyAutoReturn') !== 'false',
         debugOverlay: localStorage.getItem('AI_Companion_DebugOverlay') === 'true',
@@ -1411,6 +1411,22 @@ Reply with ONLY the category name, nothing else.`;
             return null;
         },
 
+        _extractTextHints(commands) {
+            const hints = [];
+            for (let i = 0; i < commands.length; i++) {
+                const command = commands[i];
+                if (!command) continue;
+                if ((command.code === 101 || command.code === 401 || command.code === 108 || command.code === 408) &&
+                    command.parameters && command.parameters[0]) {
+                    hints.push(String(command.parameters[0]));
+                } else if (command.code === 102 && command.parameters && Array.isArray(command.parameters[0])) {
+                    hints.push(command.parameters[0].join(' '));
+                }
+                if (hints.join(' ').length > 280) break;
+            }
+            return this._normalize(hints.join(' '));
+        },
+
         _identifyNpcName(eventName, spriteName) {
             const normalized = this._normalize(String(eventName || '') + ' ' + String(spriteName || ''));
             if (!normalized) return null;
@@ -1441,6 +1457,7 @@ Reply with ONLY the category name, nothing else.`;
             let transferMapId = null;
             let battleTroopId = null;
             const speakerName = this._extractSpeakerName(commands);
+            const textHints = this._extractTextHints(commands);
             const page = event && event.page ? event.page() : null;
             const spriteName = page && page.image ? page.image.characterName : '';
             const inferredNpcName = this._identifyNpcName(event && event.event ? event.event().name : '', spriteName);
@@ -1466,6 +1483,7 @@ Reply with ONLY the category name, nothing else.`;
             return {
                 speakerName: speakerName,
                 npcName: speakerName || inferredNpcName,
+                textHints: textHints,
                 loot: loot,
                 transferMapId: transferMapId,
                 transferMapName: transferMapId !== null ? this._mapNameById(transferMapId) : null,
@@ -1536,10 +1554,11 @@ Reply with ONLY the category name, nothing else.`;
             const name = this._normalize(data.name);
             const note = this._normalize(data.note);
             const sprite = this._normalize(page.image ? page.image.characterName : '');
+            const textHints = this._normalize(metadata && metadata.textHints ? metadata.textHints : '');
             const hasVisiblePresentation = this._hasVisiblePresentation(page);
             const tags = [];
 
-            const hasKeyword = pattern => pattern.test(name) || pattern.test(note) || pattern.test(sprite);
+            const hasKeyword = pattern => pattern.test(name) || pattern.test(note) || pattern.test(sprite) || pattern.test(textHints);
             const hasTransfer = metadata.transferMapId !== null;
             const hasBattle = metadata.battleTroopId !== null;
             const hasLoot = metadata.loot.length > 0;
@@ -1548,15 +1567,17 @@ Reply with ONLY the category name, nothing else.`;
             commands.forEach(command => { if (command) commandCodes[command.code] = true; });
             const hasText = !!commandCodes[101] || !!commandCodes[401] || !!commandCodes[102];
             const hasShop = !!commandCodes[302];
+            const bookcaseHint = hasKeyword(/bookshelf|bookcase|book shelf|books|libro|libros|estante|estanteria|estantería|biblioteca|shelf|tome|leer|read/);
+            const pitHint = hasKeyword(/hole|pit|bloodpit|blood pit|agujero|pozo|hoyo|caida|caída|fall|drop/);
 
-            if (hasKeyword(/beartrap/) || hasKeyword(/fear_floor|spike/) || hasKeyword(/arrow_check|arrow/)) tags.push('trap');
+            if (hasKeyword(/beartrap/) || hasKeyword(/fear_floor|spike/) || hasKeyword(/arrow_check|arrow/) || pitHint) tags.push('trap');
             if (hasKeyword(/circle|ritual/) || sprite.includes('portal')) tags.push('save_point');
             if (hasTransfer || hasKeyword(/door|gate|stairs|stair|ladder|warp|exit|entrance|passage/)) tags.push('door');
-            if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/)) tags.push('container');
+            if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/) || bookcaseHint) tags.push('container');
             if (hasBattle && !hasVisiblePresentation) tags.push('combat_trigger');
             else if ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/))) tags.push('enemy');
             if (hasShop) tags.push('shop');
-            if (metadata.npcName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child|buckman|trortur/)))) tags.push('npc');
+            if (metadata.npcName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child|buckman|trortur|enki|cahara|ragnvaldr|darce|legarde|le_garde/)))) tags.push('npc');
             if (hasKeyword(/dead|corpse/) || sprite.includes('dead')) tags.push('corpse');
             if (hasKeyword(/flesh|growth|demonseed|seed/) || sprite.includes('flesh') || sprite.includes('growth')) tags.push('hazard');
 
@@ -1591,6 +1612,7 @@ Reply with ONLY the category name, nothing else.`;
             if (type === 'trap') {
                 if (sprite.includes('beartrap') || name.includes('beartrap')) return 'bear_trap';
                 if (name.includes('arrow_check') || name.includes('arrow')) return 'arrow_trap';
+                if (name.includes('hole') || name.includes('pit') || name.includes('bloodpit') || name.includes('agujero') || name.includes('pozo')) return 'pit_hole';
                 return 'floor_trap';
             }
             if (type === 'enemy') {
@@ -1606,6 +1628,7 @@ Reply with ONLY the category name, nothing else.`;
             }
             if (type === 'container') {
                 if (name.includes('coin')) return 'coin';
+                if (name.includes('book') || name.includes('shelf') || name.includes('libro') || name.includes('estante') || name.includes('biblioteca') || (metadata && metadata.textHints && /book|libro|estante|biblioteca|read|leer/.test(metadata.textHints))) return 'bookshelf';
                 return 'chest';
             }
             if (type === 'save_point') return 'ritual_circle';
@@ -1647,11 +1670,18 @@ Reply with ONLY the category name, nothing else.`;
             }
             if (type === 'door') return 'Puerta';
             if (type === 'save_point') return 'Círculo ritual';
-            if (type === 'container') return lowerRawName.includes('coin') ? 'Moneda' : 'Cofre';
+            if (type === 'container') {
+                if (lowerRawName.includes('coin')) return 'Moneda';
+                if (lowerRawName.includes('book') || lowerRawName.includes('shelf') || lowerRawName.includes('libro') || lowerRawName.includes('estante') || lowerRawName.includes('biblioteca') || (metadata && metadata.textHints && /book|libro|estante|biblioteca|read|leer/.test(metadata.textHints))) {
+                    return 'Estantería';
+                }
+                return 'Cofre';
+            }
             if (type === 'corpse') return 'Cadáver';
             if (type === 'trap') {
                 if (lowerRawName.includes('arrow')) return 'Trampa de flechas';
                 if (sprite.includes('beartrap') || lowerRawName.includes('beartrap')) return 'Trampa de oso';
+                if (lowerRawName.includes('hole') || lowerRawName.includes('pit') || lowerRawName.includes('agujero') || lowerRawName.includes('pozo') || (metadata && metadata.textHints && /hole|pit|agujero|pozo|caida|caída/.test(metadata.textHints))) return 'Agujero peligroso';
                 return 'Suelo peligroso';
             }
             if (type === 'hazard') {
@@ -4866,6 +4896,95 @@ Respond ONLY with this JSON:
             return { action: 'FOLLOW', reason: 'stay with player' };
         },
 
+        _normalizeDecision(snapshot, decision, fallback) {
+            const finalDecision = Object.assign({}, decision || {});
+            const nearby = (snapshot && snapshot.nearby) || [];
+            const frontiers = (snapshot && snapshot.frontiers) || [];
+            const safeToDetour = snapshot &&
+                snapshot.threatNearby === 0 &&
+                snapshot.leashDistance <= Math.max(2, snapshot.detourLimit);
+
+            const nearestNpc = snapshot && snapshot.allowNpc
+                ? nearby.find(item => item.type === 'npc' && item.distance <= Math.max(1, snapshot.detourLimit))
+                : null;
+            const nearestLoot = nearby.find(item =>
+                (item.type === 'container' || item.type === 'loot') &&
+                item.distance <= Math.max(1, (snapshot && snapshot.detourLimit) || 1)
+            );
+            const nearestDoor = snapshot && snapshot.allowDoors
+                ? nearby.find(item => item.type === 'door' && item.distance <= Math.max(1, snapshot.detourLimit))
+                : null;
+
+            if (finalDecision.action === 'FOLLOW' && safeToDetour && finalDecision.frontierIndex != null && frontiers.length > 0) {
+                const idx = Math.max(0, Math.min(frontiers.length - 1, Number(finalDecision.frontierIndex) || 0));
+                return {
+                    action: 'SCOUT',
+                    frontierIndex: idx,
+                    reason: finalDecision.reason || 'frontier selected for short scout',
+                    _autonomySource: finalDecision._autonomySource || 'local'
+                };
+            }
+
+            if (finalDecision.action === 'FOLLOW' && safeToDetour) {
+                if (nearestNpc) {
+                    return {
+                        action: 'INTERACT',
+                        eventId: nearestNpc.eventId,
+                        reason: 'safe nearby npc',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+                if (nearestLoot) {
+                    return {
+                        action: 'LOOT',
+                        eventId: nearestLoot.eventId,
+                        reason: 'safe nearby loot',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+                if (nearestDoor) {
+                    return {
+                        action: 'INTERACT',
+                        eventId: nearestDoor.eventId,
+                        reason: 'safe nearby door',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+                if (frontiers.length > 0 && snapshot.leashDistance <= 2) {
+                    return {
+                        action: 'SCOUT',
+                        frontierIndex: 0,
+                        reason: finalDecision.reason || 'safe short scout',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+            }
+
+            if ((finalDecision.action === 'INTERACT' || finalDecision.action === 'LOOT') && finalDecision.eventId != null) {
+                const target = nearby.find(item => item.eventId === Number(finalDecision.eventId));
+                if (!target) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (target.type === 'npc' && !snapshot.allowNpc) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (target.type === 'door' && !snapshot.allowDoors) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (target.type === 'enemy' || target.type === 'trap' || target.type === 'hazard') {
+                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                }
+                finalDecision.eventId = Number(finalDecision.eventId);
+            }
+
+            if (finalDecision.action === 'SCOUT') {
+                const idx = Number(finalDecision.frontierIndex);
+                if (!isFinite(idx) || idx < 0 || idx >= frontiers.length) {
+                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                }
+                if (!safeToDetour && snapshot.leashDistance > 1) {
+                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                }
+                finalDecision.frontierIndex = idx;
+            }
+
+            return finalDecision;
+        },
+
         _logTick(snapshot, decision, source, latencyMs, errorMessage) {
             try {
                 ThesisLogger.log('autonomy_tick', {
@@ -4958,11 +5077,12 @@ Respond ONLY with this JSON:
                 'You control a cautious RPG companion in Fear & Hunger.',
                 'Return ONLY JSON.',
                 'Use one action: FOLLOW, HOLD, RETURN, LOOT, INTERACT, SCOUT.',
-                'Prefer FOLLOW unless a safe nearby opportunity exists.',
+                'Do not default to FOLLOW when a safe nearby event or safe scout frontier exists.',
                 'Never choose enemies as targets. Never start fights.',
-                'Only choose LOOT or INTERACT for nearby containers/doors/NPCs that are actually listed.',
-                'If the area is safe and there are frontiers listed, SCOUT is allowed for short exploration.',
+                'Only choose LOOT or INTERACT for nearby containers, bookshelves, doors, or NPCs that are actually listed.',
+                'If the area is safe and there are frontiers listed, SCOUT should be used for short exploration instead of FOLLOW.',
                 'If threat is high or distance from player is too large, choose RETURN.',
+                'Never output FOLLOW together with a frontierIndex. If you pick a frontier, action must be SCOUT.',
                 'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT|SCOUT","eventId":number|null,"frontierIndex":number|null,"reason":"short reason"}',
                 '',
                 'STATE:',
@@ -5005,24 +5125,11 @@ Respond ONLY with this JSON:
                 return Object.assign({ _autonomySource: 'fallback' }, fallback);
             }
             decision.action = String(decision.action).toUpperCase();
+            decision = this._normalizeDecision(snapshot, Object.assign({ _autonomySource: 'local' }, decision), fallback);
 
-            if ((decision.action === 'LOOT' || decision.action === 'INTERACT') && decision.eventId != null) {
-                const exists = snapshot.nearby.some(item => item.eventId === Number(decision.eventId));
-                if (!exists) return Object.assign({ _autonomySource: 'fallback' }, fallback);
-                decision.eventId = Number(decision.eventId);
-            }
-
-            if (decision.action === 'SCOUT') {
-                const frontierIndex = Number(decision.frontierIndex);
-                if (!isFinite(frontierIndex) || frontierIndex < 0 || frontierIndex >= (snapshot.frontiers || []).length) {
-                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
-                }
-                decision.frontierIndex = frontierIndex;
-            }
-
-            if (decision.action === 'LOOT' || decision.action === 'INTERACT') return Object.assign({ _autonomySource: 'local' }, decision);
-            if (decision.action === 'SCOUT') return Object.assign({ _autonomySource: 'local' }, decision);
-            if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return Object.assign({ _autonomySource: 'local' }, decision);
+            if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
+            if (decision.action === 'SCOUT') return decision;
+            if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return decision;
             return Object.assign({ _autonomySource: 'fallback' }, fallback);
         },
 
