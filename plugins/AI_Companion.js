@@ -4778,7 +4778,8 @@ Respond ONLY with this JSON:
             currentTask: null,
             lingerUntil: 0,
             followAnchor: null,
-            lastRawLocalContent: ''
+            lastRawLocalContent: '',
+            eventCooldowns: {}
         },
 
         ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT'],
@@ -4835,6 +4836,7 @@ Respond ONLY with this JSON:
         },
 
         _softReset() {
+            const follower = this.getFollower();
             this._state.pending = false;
             this._state.mode = 'follow';
             this._state.targetEventId = null;
@@ -4845,6 +4847,7 @@ Respond ONLY with this JSON:
             this._state.currentTask = null;
             this._state.lingerUntil = 0;
             this._state.lastRawLocalContent = '';
+            if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
         },
 
         _distance(a, b) {
@@ -4854,6 +4857,25 @@ Respond ONLY with this JSON:
 
         _clearTask() {
             this._state.currentTask = null;
+        },
+
+        _pruneEventCooldowns() {
+            const now = Date.now();
+            const cooldowns = this._state.eventCooldowns || {};
+            Object.keys(cooldowns).forEach(key => {
+                if (!cooldowns[key] || cooldowns[key] <= now) delete cooldowns[key];
+            });
+        },
+
+        _isEventOnCooldown(eventId) {
+            this._pruneEventCooldowns();
+            return !!(eventId != null && this._state.eventCooldowns && this._state.eventCooldowns[eventId] && this._state.eventCooldowns[eventId] > Date.now());
+        },
+
+        _setEventCooldown(eventId, durationMs) {
+            if (eventId == null) return;
+            if (!this._state.eventCooldowns) this._state.eventCooldowns = {};
+            this._state.eventCooldowns[eventId] = Date.now() + Math.max(1000, durationMs || 12000);
         },
 
         _beginTask(action, payload, snapshot) {
@@ -4886,14 +4908,12 @@ Respond ONLY with this JSON:
             if (snapshot.leashDistance > snapshot.scoutLimit + 2) return false;
 
             let distance = null;
-            if (task.action === 'SCOUT' && task.point) {
-                distance = this._distance(follower, task.point);
-                if (distance <= 0) return false;
-            } else if ((task.action === 'INTERACT' || task.action === 'LOOT') && task.eventId != null) {
+            if ((task.action === 'INTERACT' || task.action === 'LOOT') && task.eventId != null) {
                 const target = snapshot.nearby.find(item => item.eventId === task.eventId);
                 if (!target) return false;
-                distance = target.distance;
-                if (distance <= 1) return false;
+                const approach = task.point || null;
+                distance = approach ? this._distance(follower, approach) : target.distance;
+                if (distance <= 0 || (!approach && target.distance <= 1)) return false;
             } else {
                 return false;
             }
@@ -4933,6 +4953,59 @@ Respond ONLY with this JSON:
                 };
             }
             return { x: player.x, y: player.y, expiresAt: Date.now() + 1500 };
+        },
+
+        _desiredMoveSpeed() {
+            if (this._state.mode === 'return') return 4;
+            if (this._state.mode === 'target_event' || this._state.mode === 'target_point') return 3;
+            return 3;
+        },
+
+        _actionableTargets(snapshot) {
+            const nearby = (snapshot && snapshot.nearby) || [];
+            const maxRange = Math.max(2, (snapshot && snapshot.detourLimit ? snapshot.detourLimit : 2) + 4);
+            return nearby
+                .filter(item => {
+                    if (!item || item.eventId == null) return false;
+                    if (this._isEventOnCooldown(item.eventId)) return false;
+                    if (item.type === 'container') return item.distance <= maxRange;
+                    if (item.type === 'npc') return snapshot.allowNpc && item.distance <= maxRange;
+                    if (item.type === 'door') return snapshot.allowDoors && item.distance <= Math.max(2, maxRange - 1);
+                    return false;
+                })
+                .sort((a, b) => {
+                    const priority = { npc: 0, container: 1, door: 2 };
+                    const pa = priority[a.type] != null ? priority[a.type] : 99;
+                    const pb = priority[b.type] != null ? priority[b.type] : 99;
+                    if (pa !== pb) return pa - pb;
+                    return a.distance - b.distance;
+                });
+        },
+
+        _localPurposeDecision(snapshot) {
+            const immediateThreat = snapshot.nearby.find(item => (item.danger === 'high' || item.danger === 'medium') && item.distance <= 1);
+            if (immediateThreat && snapshot.autoReturn) {
+                return { action: 'RETURN', reason: 'immediate danger nearby', _autonomySource: 'local_purpose' };
+            }
+            if (snapshot.leashDistance > snapshot.scoutLimit + 1) {
+                return { action: 'RETURN', reason: 'too far from player', _autonomySource: 'local_purpose' };
+            }
+            if (snapshot.threatNearby > 0) {
+                return { action: 'FOLLOW', reason: 'stay close under threat', _autonomySource: 'local_purpose' };
+            }
+
+            const targets = this._actionableTargets(snapshot);
+            if (targets.length > 0) {
+                const target = targets[0];
+                return {
+                    action: target.type === 'container' ? 'LOOT' : 'INTERACT',
+                    eventId: target.eventId,
+                    reason: 'purposeful nearby target',
+                    _autonomySource: 'local_purpose'
+                };
+            }
+
+            return { action: 'FOLLOW', reason: 'no nearby task, stay with player', _autonomySource: 'local_purpose' };
         },
 
         _buildSnapshot() {
@@ -5017,17 +5090,12 @@ Respond ONLY with this JSON:
                 return { action: 'INTERACT', eventId: safeDoor.eventId, reason: 'checking nearby door' };
             }
 
-            if (snapshot.frontiers && snapshot.frontiers.length > 0 && snapshot.threatNearby === 0 && snapshot.leashDistance <= 2) {
-                return { action: 'SCOUT', frontierIndex: 0, reason: 'safe area, short scout' };
-            }
-
             return { action: 'FOLLOW', reason: 'stay with player' };
         },
 
         _normalizeDecision(snapshot, decision, fallback) {
             const finalDecision = Object.assign({}, decision || {});
             const nearby = (snapshot && snapshot.nearby) || [];
-            const frontiers = (snapshot && snapshot.frontiers) || [];
             const safeToDetour = snapshot &&
                 snapshot.threatNearby === 0 &&
                 snapshot.leashDistance <= Math.max(2, snapshot.detourLimit);
@@ -5070,25 +5138,12 @@ Respond ONLY with this JSON:
                 }
             }
 
-            if (finalDecision.action === 'FOLLOW' && safeToDetour && finalDecision.frontierIndex != null && frontiers.length > 0) {
-                const idx = Math.max(0, Math.min(frontiers.length - 1, Number(finalDecision.frontierIndex) || 0));
+            if (finalDecision.action === 'SCOUT') {
                 return {
-                    action: 'SCOUT',
-                    frontierIndex: idx,
-                    reason: finalDecision.reason || 'frontier selected for short scout',
+                    action: 'FOLLOW',
+                    reason: finalDecision.reason || 'no purposeful target, follow player',
                     _autonomySource: finalDecision._autonomySource || 'local'
                 };
-            }
-
-            if (finalDecision.action === 'FOLLOW' && safeToDetour) {
-                if (frontiers.length > 0 && snapshot.leashDistance <= 2) {
-                    return {
-                        action: 'SCOUT',
-                        frontierIndex: 0,
-                        reason: finalDecision.reason || 'safe short scout',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
             }
 
             if ((finalDecision.action === 'INTERACT' || finalDecision.action === 'LOOT') && finalDecision.eventId != null) {
@@ -5100,17 +5155,6 @@ Respond ONLY with this JSON:
                     return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 }
                 finalDecision.eventId = Number(finalDecision.eventId);
-            }
-
-            if (finalDecision.action === 'SCOUT') {
-                const idx = Number(finalDecision.frontierIndex);
-                if (!isFinite(idx) || idx < 0 || idx >= frontiers.length) {
-                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
-                }
-                if (!safeToDetour && snapshot.leashDistance > 1) {
-                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
-                }
-                finalDecision.frontierIndex = idx;
             }
 
             return finalDecision;
@@ -5177,6 +5221,13 @@ Respond ONLY with this JSON:
                     return;
                 }
                 if (this._state.currentTask) this._clearTask();
+                const localPurpose = this._localPurposeDecision(snapshot);
+                if (localPurpose && (localPurpose.action === 'LOOT' || localPurpose.action === 'INTERACT' || localPurpose.action === 'FOLLOW' || localPurpose.action === 'RETURN')) {
+                    this._applyDecision(localPurpose, snapshot);
+                    this._state.lastSnapshotHash = this._hashSnapshot(snapshot);
+                    this._logTick(snapshot, localPurpose, localPurpose._autonomySource || 'local_purpose', Date.now() - start, null);
+                    return;
+                }
                 const snapshotHash = this._hashSnapshot(snapshot);
                 if (this._state.lastSnapshotHash === snapshotHash && this._state.lastDecision) {
                     this._applyDecision(this._state.lastDecision, snapshot);
@@ -5215,14 +5266,13 @@ Respond ONLY with this JSON:
             const prompt = [
                 'You control a cautious RPG companion in Fear & Hunger.',
                 'Return ONLY JSON.',
-                'Use one action: FOLLOW, HOLD, RETURN, LOOT, INTERACT, SCOUT.',
-                'Do not default to FOLLOW when a safe nearby event or safe scout frontier exists.',
+                'Use one action: FOLLOW, HOLD, RETURN, LOOT, INTERACT.',
+                'Move with purpose. Do not wander or scout empty frontiers.',
                 'Never choose enemies as targets. Never start fights.',
                 'Only choose LOOT or INTERACT for nearby containers, bookshelves, doors, or NPCs that are actually listed.',
-                'If the area is safe and there are frontiers listed, SCOUT should be used for short exploration instead of FOLLOW.',
+                'If there is no clear nearby task, choose FOLLOW.',
                 'If threat is high or distance from player is too large, choose RETURN.',
-                'Never output FOLLOW together with a frontierIndex. If you pick a frontier, action must be SCOUT.',
-                'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT|SCOUT","eventId":number|null,"frontierIndex":number|null,"reason":"short reason"}',
+                'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
                 '',
                 'STATE:',
                 JSON.stringify(snapshot)
@@ -5276,7 +5326,6 @@ Respond ONLY with this JSON:
             decision = this._normalizeDecision(snapshot, Object.assign({ _autonomySource: 'local' }, decision), fallback);
 
             if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
-            if (decision.action === 'SCOUT') return decision;
             if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return decision;
             return Object.assign({ _autonomySource: 'fallback' }, fallback);
         },
@@ -5346,7 +5395,11 @@ Respond ONLY with this JSON:
             this._state.targetLabel = target.label;
             this._state.targetAction = action;
             if (!preserveTask) {
-                this._beginTask(action, { eventId: target.eventId, distance: target.distance }, snapshot);
+                this._beginTask(action, {
+                    eventId: target.eventId,
+                    distance: this._state.targetApproach ? this._distance(this.getFollower(), this._state.targetApproach) : target.distance,
+                    point: this._state.targetApproach ? { x: this._state.targetApproach.x, y: this._state.targetApproach.y } : null
+                }, snapshot);
             }
         },
 
@@ -5354,6 +5407,7 @@ Respond ONLY with this JSON:
             const follower = this.getFollower();
             const player = $gamePlayer;
             if (!follower || !player || (follower.isMoving && follower.isMoving())) return;
+            if (follower.setMoveSpeed) follower.setMoveSpeed(this._desiredMoveSpeed());
 
             const now = Date.now();
             if (now - this._state.lastMoveAt < 120) return;
@@ -5479,10 +5533,12 @@ Respond ONLY with this JSON:
             try {
                 if (event.start) {
                     event.start();
+                    this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
                     Debug.log('[Autonomy] Interacted with event:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                     return true;
                 }
             } catch (error) {
+                this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 5000);
                 Debug.warn('[Autonomy] Failed event interaction:', error.message);
             }
             return false;
@@ -8470,6 +8526,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             return;
         }
         _Game_Follower_chaseCharacter.call(this, character);
+    };
+
+    const _Game_Follower_isDashing = Game_Follower.prototype.isDashing;
+    Game_Follower.prototype.isDashing = function() {
+        if (AutonomySystem.isControlledFollower(this) && Config.autonomyEnabled) {
+            return false;
+        }
+        return _Game_Follower_isDashing.call(this);
     };
 
     // F7 = Reload AI companion appearance mid-game (no restart needed)
