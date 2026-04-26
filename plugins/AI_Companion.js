@@ -3978,7 +3978,8 @@ Respond ONLY with this JSON:
             targetLabel: '',
             reason: '',
             lastSnapshot: null,
-            lastDecision: null
+            lastDecision: null,
+            lastSnapshotHash: null
         },
 
         ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT'],
@@ -4150,14 +4151,39 @@ Respond ONLY with this JSON:
             }
         },
 
+        _hashSnapshot(snapshot) {
+            if (!snapshot) return 'none';
+            const nearby = (snapshot.nearby || []).map(item =>
+                [item.eventId, item.type, item.distance, item.direction].join(':')
+            ).join('|');
+            return [
+                snapshot.mapName,
+                snapshot.leashDistance,
+                snapshot.threatLevel,
+                snapshot.situation,
+                snapshot.threatNearby,
+                snapshot.interestingNearby,
+                snapshot.hpPct,
+                snapshot.profile,
+                nearby
+            ].join('||');
+        },
+
         async _heartbeat() {
             const start = Date.now();
             this._state.pending = true;
             try {
                 const snapshot = this._buildSnapshot();
+                const snapshotHash = this._hashSnapshot(snapshot);
+                if (this._state.lastSnapshotHash === snapshotHash && this._state.lastDecision) {
+                    this._applyDecision(this._state.lastDecision, snapshot);
+                    this._logTick(snapshot, this._state.lastDecision, 'cached', Date.now() - start, null);
+                    return;
+                }
                 const decision = await this._requestDecision(snapshot);
                 const finalDecision = decision || this._fallbackDecision(snapshot);
                 this._applyDecision(finalDecision, snapshot);
+                this._state.lastSnapshotHash = snapshotHash;
                 this._logTick(snapshot, finalDecision, (finalDecision && finalDecision._autonomySource) || 'fallback', Date.now() - start, null);
             } catch (error) {
                 Debug.warn('[Autonomy] heartbeat failed:', error.message);
@@ -4210,9 +4236,12 @@ Respond ONLY with this JSON:
                             { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
                             { role: 'user', content: prompt }
                         ],
-                        temperature: 0.0,
+                        temperature: 1.0,
+                        top_p: 0.95,
+                        top_k: 64,
                         max_tokens: 80,
-                        enable_thinking: false
+                        enable_thinking: false,
+                        stop: ['<turn|>']
                     })
                 });
             } finally {
@@ -4244,7 +4273,7 @@ Respond ONLY with this JSON:
         _applyDecision(decision, snapshot) {
             const action = String((decision && decision.action) || 'FOLLOW').toUpperCase();
             const reason = String((decision && decision.reason) || '');
-            this._state.lastDecision = decision;
+            this._state.lastDecision = Object.assign({}, decision || {});
             this._state.reason = reason;
 
             if (action === 'RETURN' || action === 'FOLLOW') {
