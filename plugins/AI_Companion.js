@@ -5042,7 +5042,7 @@ Respond ONLY with this JSON:
                 threatLevel: world.threats.level,
                 situation: world.situation,
                 nearby: nearby.map(item => ({
-                    eventId: item.eventId,
+                    eventId: item.eventId != null ? item.eventId : item.id,
                     label: item.label,
                     type: item.type,
                     subtype: item.subtype,
