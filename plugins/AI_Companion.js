@@ -5011,7 +5011,7 @@ Respond ONLY with this JSON:
                 const target = targets[0];
                 const keepClose = this._shouldStayTight(snapshot);
                 if (keepClose && target.distance > 1) {
-                    return { action: 'FOLLOW', reason: 'stay close under nearby danger', _autonomySource: 'local_purpose' };
+                    return null;
                 }
                 return {
                     action: target.type === 'container' ? 'LOOT' : 'INTERACT',
@@ -5021,7 +5021,7 @@ Respond ONLY with this JSON:
                 };
             }
 
-            return { action: 'FOLLOW', reason: 'no nearby task, stay with player', _autonomySource: 'local_purpose' };
+            return null;
         },
 
         _buildSnapshot() {
@@ -5236,7 +5236,7 @@ Respond ONLY with this JSON:
                 }
                 if (this._state.currentTask) this._clearTask();
                 const localPurpose = this._localPurposeDecision(snapshot);
-                if (localPurpose && (localPurpose.action === 'LOOT' || localPurpose.action === 'INTERACT' || localPurpose.action === 'FOLLOW' || localPurpose.action === 'RETURN')) {
+                if (localPurpose && (localPurpose.action === 'LOOT' || localPurpose.action === 'INTERACT' || localPurpose.action === 'RETURN')) {
                     this._applyDecision(localPurpose, snapshot);
                     this._state.lastSnapshotHash = this._hashSnapshot(snapshot);
                     this._logTick(snapshot, localPurpose, localPurpose._autonomySource || 'local_purpose', Date.now() - start, null);
