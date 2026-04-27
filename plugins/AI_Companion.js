@@ -4766,6 +4766,7 @@ Respond ONLY with this JSON:
             lastTickAt: 0,
             lastMoveAt: 0,
             lastInteractAt: 0,
+            lastUiAdvanceAt: 0,
             mode: 'follow',
             targetEventId: null,
             targetPoint: null,
@@ -4779,7 +4780,8 @@ Respond ONLY with this JSON:
             lingerUntil: 0,
             followAnchor: null,
             lastRawLocalContent: '',
-            eventCooldowns: {}
+            eventCooldowns: {},
+            searchedEvents: {}
         },
 
         ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT'],
@@ -4812,7 +4814,6 @@ Respond ONLY with this JSON:
             if (!$gameParty || !$gameParty.members || !$gameParty.members().some(m => m && m.actorId && m.actorId() === Config.companionActorId)) return false;
             if (!$gameMap || !$gamePlayer || $gameParty.inBattle()) return false;
             if (!SceneManager._scene || SceneManager._scene.constructor.name !== 'Scene_Map') return false;
-            if ($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
             if (ChatSystem && ChatSystem.isActive && ChatSystem.isActive()) return false;
             if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
             if (!this.getFollower()) return false;
@@ -4822,6 +4823,13 @@ Respond ONLY with this JSON:
         update() {
             if (!this.canRun()) {
                 this._softReset();
+                return;
+            }
+
+            const follower = this.getFollower();
+            if (follower && follower.setThrough) follower.setThrough(false);
+
+            if (this._advanceInteractionUi(follower)) {
                 return;
             }
 
@@ -4848,6 +4856,7 @@ Respond ONLY with this JSON:
             this._state.lingerUntil = 0;
             this._state.lastRawLocalContent = '';
             if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
+            if (follower && follower.setThrough) follower.setThrough(true);
         },
 
         _distance(a, b) {
@@ -4876,6 +4885,26 @@ Respond ONLY with this JSON:
             if (eventId == null) return;
             if (!this._state.eventCooldowns) this._state.eventCooldowns = {};
             this._state.eventCooldowns[eventId] = Date.now() + Math.max(1000, durationMs || 12000);
+        },
+
+        _searchedEventKey(eventId) {
+            if (eventId == null || !$gameMap) return null;
+            return String($gameMap.mapId()) + ':' + String(eventId);
+        },
+
+        _isEventSearched(eventId) {
+            const key = this._searchedEventKey(eventId);
+            return !!(key && this._state.searchedEvents && this._state.searchedEvents[key]);
+        },
+
+        _markEventSearched(eventId) {
+            const key = this._searchedEventKey(eventId);
+            if (!key) return;
+            if (!this._state.searchedEvents) this._state.searchedEvents = {};
+            this._state.searchedEvents[key] = {
+                at: Date.now(),
+                mapId: $gameMap ? $gameMap.mapId() : null
+            };
         },
 
         _beginTask(action, payload, snapshot) {
@@ -4983,6 +5012,7 @@ Respond ONLY with this JSON:
                 .filter(item => {
                     if (!item || item.eventId == null) return false;
                     if (this._isEventOnCooldown(item.eventId)) return false;
+                    if ((item.type === 'container' || item.type === 'loot') && this._isEventSearched(item.eventId)) return false;
                     if (item.type === 'container') return item.distance <= maxRange;
                     if (item.type === 'npc') return snapshot.allowNpc && item.distance <= maxRange;
                     if (item.type === 'door') return snapshot.allowDoors && item.distance <= Math.max(2, maxRange - 1);
@@ -5452,7 +5482,7 @@ Respond ONLY with this JSON:
                     return;
                 }
                 const dirToPoint = follower.findDirectionTo(targetPoint.x, targetPoint.y);
-                if (dirToPoint > 0) follower.moveStraight(dirToPoint);
+                if (dirToPoint > 0) this._tryMoveStraight(follower, dirToPoint);
                 return;
             }
 
@@ -5493,7 +5523,7 @@ Respond ONLY with this JSON:
                 const goalX = approach ? approach.x : event.x;
                 const goalY = approach ? approach.y : event.y;
                 const dirToEvent = follower.findDirectionTo(goalX, goalY);
-                if (dirToEvent > 0) follower.moveStraight(dirToEvent);
+                if (dirToEvent > 0) this._tryMoveStraight(follower, dirToEvent);
                 return;
             }
 
@@ -5506,19 +5536,19 @@ Respond ONLY with this JSON:
                 const anchor = this._state.followAnchor;
                 if (distToPlayer > leashLimit + 1) {
                     const dir = follower.findDirectionTo(player.x, player.y);
-                    if (dir > 0) follower.moveStraight(dir);
+                    if (dir > 0) this._tryMoveStraight(follower, dir);
                     return;
                 }
                 if (anchor && this._distance(follower, anchor) > 0 && distToPlayer >= 1 && distToPlayer <= Math.max(2, leashLimit + 1)) {
                     const dir = follower.findDirectionTo(anchor.x, anchor.y);
-                    if (dir > 0) follower.moveStraight(dir);
+                    if (dir > 0) this._tryMoveStraight(follower, dir);
                 }
                 return;
             }
 
             if (distToPlayer > leashLimit + 1) {
                 const dir = follower.findDirectionTo(player.x, player.y);
-                if (dir > 0) follower.moveStraight(dir);
+                if (dir > 0) this._tryMoveStraight(follower, dir);
             }
         },
 
@@ -5538,6 +5568,50 @@ Respond ONLY with this JSON:
             }
         },
 
+        _tryMoveStraight(follower, direction) {
+            if (!follower || !direction || direction <= 0) return false;
+            if (follower.canPass && !follower.canPass(follower.x, follower.y, direction)) return false;
+            follower.moveStraight(direction);
+            return true;
+        },
+
+        _advanceInteractionUi(follower) {
+            if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
+            const now = Date.now();
+            if (now - this._state.lastUiAdvanceAt < 450) return true;
+            this._state.lastUiAdvanceAt = now;
+
+            const scene = SceneManager._scene;
+            if (!scene) return true;
+
+            const messageWindow = scene._messageWindow;
+            if (messageWindow && messageWindow._textState) {
+                messageWindow._showFast = true;
+                messageWindow._lineShowFast = true;
+                if (messageWindow.pause && messageWindow.terminateMessage) {
+                    messageWindow.terminateMessage();
+                } else if (messageWindow.updateInput) {
+                    messageWindow.updateInput();
+                }
+                return true;
+            }
+
+            const choiceWindow = scene._choiceWindow;
+            if (choiceWindow && choiceWindow.active && choiceWindow.isOpen && choiceWindow.isOpen()) {
+                if (choiceWindow.index && choiceWindow.index() < 0 && choiceWindow.select) choiceWindow.select(0);
+                if (choiceWindow.processOk) choiceWindow.processOk();
+                return true;
+            }
+
+            if (follower) {
+                follower._okIsPressed = true;
+                follower._preventNextOk = false;
+                if (follower.checkEventTriggerHere) follower.checkEventTriggerHere([0, 1, 2]);
+                if ($gameMap.setupStartingEvent) $gameMap.setupStartingEvent();
+            }
+            return true;
+        },
+
         _interactWithEvent(follower, event) {
             const now = Date.now();
             if (now - this._state.lastInteractAt < 1000) return false;
@@ -5553,6 +5627,11 @@ Respond ONLY with this JSON:
                     follower.checkEventTriggerHere([0]);
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
                         this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
+                        const eventData = event.event ? event.event() : null;
+                        if (eventData && EnvironmentScanner && EnvironmentScanner._eventSnapshot) {
+                            const snap = EnvironmentScanner._eventSnapshot(event, follower);
+                            if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
+                        }
                         Debug.log('[Autonomy] Interacted with event via here:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
                     }
@@ -5561,6 +5640,8 @@ Respond ONLY with this JSON:
                     follower.checkEventTriggerThere([0, 1, 2]);
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
                         this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
+                        const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
+                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
                         Debug.log('[Autonomy] Interacted with event via ahead:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
                     }
@@ -5569,6 +5650,8 @@ Respond ONLY with this JSON:
                     follower.checkEventTriggerHere([0, 1, 2]);
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
                         this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
+                        const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
+                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
                         Debug.log('[Autonomy] Interacted with event via here-all:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
                     }
@@ -5576,6 +5659,8 @@ Respond ONLY with this JSON:
                 if (event.start) {
                     event.start();
                     this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
+                    const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
+                    if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
                     Debug.log('[Autonomy] Interacted with event:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                     return true;
                 }
