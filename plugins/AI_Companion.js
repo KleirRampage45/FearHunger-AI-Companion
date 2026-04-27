@@ -1568,12 +1568,13 @@ Reply with ONLY the category name, nothing else.`;
             const hasText = !!commandCodes[101] || !!commandCodes[401] || !!commandCodes[102];
             const hasShop = !!commandCodes[302];
             const bookcaseHint = hasKeyword(/bookshelf|bookcase|book shelf|books|libro|libros|estante|estanteria|estantería|biblioteca|shelf|tome|leer|read/);
+            const furnitureLootHint = hasKeyword(/crate|barrel|box|boxes|caja|cajas|barril|baul|baúl|armario|cabinet|drawer|desk|table|mesa|mapa|bottle|botella|supply|supplies|food|bread|meat|cheese|apple|papers|notes|documents/);
             const pitHint = hasKeyword(/hole|pit|bloodpit|blood pit|agujero|pozo|hoyo|caida|caída|fall|drop/);
 
             if (hasKeyword(/beartrap/) || hasKeyword(/fear_floor|spike/) || hasKeyword(/arrow_check|arrow/) || pitHint) tags.push('trap');
             if (hasKeyword(/circle|ritual/) || sprite.includes('portal')) tags.push('save_point');
             if (hasTransfer || hasKeyword(/door|gate|stairs|stair|ladder|warp|exit|entrance|passage/)) tags.push('door');
-            if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/) || bookcaseHint) tags.push('container');
+            if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/) || bookcaseHint || furnitureLootHint) tags.push('container');
             if (hasBattle && !hasVisiblePresentation) tags.push('combat_trigger');
             else if (!metadata.npcName && ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/)))) tags.push('enemy');
             if (hasShop) tags.push('shop');
@@ -1630,6 +1631,8 @@ Reply with ONLY the category name, nothing else.`;
             if (type === 'container') {
                 if (name.includes('coin')) return 'coin';
                 if (name.includes('book') || name.includes('shelf') || name.includes('libro') || name.includes('estante') || name.includes('biblioteca') || (metadata && metadata.textHints && /book|libro|estante|biblioteca|read|leer/.test(metadata.textHints))) return 'bookshelf';
+                if (name.includes('crate') || name.includes('barrel') || name.includes('caja') || name.includes('barril') || (metadata && metadata.textHints && /crate|barrel|caja|barril|box|boxes/.test(metadata.textHints))) return 'crate';
+                if (name.includes('table') || name.includes('desk') || name.includes('mesa') || name.includes('mapa') || name.includes('cabinet') || name.includes('drawer') || (metadata && metadata.textHints && /table|desk|mesa|mapa|cabinet|drawer|bottle|papers|notes|documents/.test(metadata.textHints))) return 'furniture_loot';
                 return 'chest';
             }
             if (type === 'save_point') return 'ritual_circle';
@@ -1675,6 +1678,12 @@ Reply with ONLY the category name, nothing else.`;
                 if (lowerRawName.includes('coin')) return 'Moneda';
                 if (lowerRawName.includes('book') || lowerRawName.includes('shelf') || lowerRawName.includes('libro') || lowerRawName.includes('estante') || lowerRawName.includes('biblioteca') || (metadata && metadata.textHints && /book|libro|estante|biblioteca|read|leer/.test(metadata.textHints))) {
                     return 'Estantería';
+                }
+                if (lowerRawName.includes('crate') || lowerRawName.includes('barrel') || lowerRawName.includes('caja') || lowerRawName.includes('barril') || (metadata && metadata.textHints && /crate|barrel|caja|barril|box|boxes/.test(metadata.textHints))) {
+                    return 'Caja';
+                }
+                if (lowerRawName.includes('table') || lowerRawName.includes('desk') || lowerRawName.includes('mesa') || lowerRawName.includes('mapa') || lowerRawName.includes('cabinet') || lowerRawName.includes('drawer') || (metadata && metadata.textHints && /table|desk|mesa|mapa|cabinet|drawer|bottle|papers|notes|documents/.test(metadata.textHints))) {
+                    return 'Mesa';
                 }
                 return 'Cofre';
             }
@@ -4887,6 +4896,13 @@ Respond ONLY with this JSON:
             this._state.eventCooldowns[eventId] = Date.now() + Math.max(1000, durationMs || 12000);
         },
 
+        _eventMemoryCooldownMs(type) {
+            if (type === 'container' || type === 'loot') return 300000;
+            if (type === 'npc') return 120000;
+            if (type === 'door') return 30000;
+            return 45000;
+        },
+
         _searchedEventKey(eventId) {
             if (eventId == null || !$gameMap) return null;
             return String($gameMap.mapId()) + ':' + String(eventId);
@@ -4894,17 +4910,24 @@ Respond ONLY with this JSON:
 
         _isEventSearched(eventId) {
             const key = this._searchedEventKey(eventId);
-            return !!(key && this._state.searchedEvents && this._state.searchedEvents[key]);
+            if (!key || !this._state.searchedEvents || !this._state.searchedEvents[key]) return false;
+            const entry = this._state.searchedEvents[key];
+            return !entry.cooldownUntil || entry.cooldownUntil > Date.now();
         },
 
-        _markEventSearched(eventId) {
+        _markEventSearched(eventId, type, outcome) {
             const key = this._searchedEventKey(eventId);
             if (!key) return;
             if (!this._state.searchedEvents) this._state.searchedEvents = {};
-            this._state.searchedEvents[key] = {
-                at: Date.now(),
-                mapId: $gameMap ? $gameMap.mapId() : null
-            };
+            const now = Date.now();
+            const current = this._state.searchedEvents[key] || { count: 0 };
+            current.at = now;
+            current.mapId = $gameMap ? $gameMap.mapId() : null;
+            current.type = type || current.type || 'container';
+            current.lastOutcome = outcome || current.lastOutcome || 'interacted';
+            current.count = (current.count || 0) + 1;
+            current.cooldownUntil = now + this._eventMemoryCooldownMs(current.type);
+            this._state.searchedEvents[key] = current;
         },
 
         _beginTask(action, payload, snapshot) {
@@ -4938,6 +4961,7 @@ Respond ONLY with this JSON:
 
             let distance = null;
             if ((task.action === 'INTERACT' || task.action === 'LOOT') && task.eventId != null) {
+                if (this._isEventSearched(task.eventId)) return false;
                 const target = snapshot.nearby.find(item => item.eventId === task.eventId);
                 if (!target) return false;
                 const approach = task.point || null;
@@ -5191,6 +5215,9 @@ Respond ONLY with this JSON:
             }
 
             if ((finalDecision.action === 'INTERACT' || finalDecision.action === 'LOOT') && finalDecision.eventId != null) {
+                if (this._isEventSearched(Number(finalDecision.eventId))) {
+                    return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                }
                 const target = nearby.find(item => item.eventId === Number(finalDecision.eventId));
                 if (!target) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'npc' && !snapshot.allowNpc) return Object.assign({ _autonomySource: 'fallback' }, fallback);
@@ -5630,7 +5657,7 @@ Respond ONLY with this JSON:
                         const eventData = event.event ? event.event() : null;
                         if (eventData && EnvironmentScanner && EnvironmentScanner._eventSnapshot) {
                             const snap = EnvironmentScanner._eventSnapshot(event, follower);
-                            if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
+                            if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                         }
                         Debug.log('[Autonomy] Interacted with event via here:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
@@ -5641,7 +5668,7 @@ Respond ONLY with this JSON:
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
                         this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
                         const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
+                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                         Debug.log('[Autonomy] Interacted with event via ahead:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
                     }
@@ -5651,7 +5678,7 @@ Respond ONLY with this JSON:
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
                         this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
                         const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
+                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                         Debug.log('[Autonomy] Interacted with event via here-all:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
                     }
@@ -5660,7 +5687,7 @@ Respond ONLY with this JSON:
                     event.start();
                     this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
                     const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                    if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId));
+                    if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                     Debug.log('[Autonomy] Interacted with event:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                     return true;
                 }
