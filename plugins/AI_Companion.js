@@ -4804,7 +4804,7 @@ Respond ONLY with this JSON:
         shouldSuppressDefaultChase(follower) {
             if (!this.isControlledFollower(follower)) return false;
             if (!Config.autonomyEnabled) return false;
-            return this._state.mode === 'target_event' || this._state.mode === 'target_point' || this._state.mode === 'hold';
+            return true;
         },
 
         canRun() {
@@ -4961,6 +4961,21 @@ Respond ONLY with this JSON:
             return 3;
         },
 
+        _nearestThreat(snapshot, maxDistance) {
+            const nearby = (snapshot && snapshot.nearby) || [];
+            const limit = maxDistance != null ? maxDistance : 2;
+            return nearby.find(item =>
+                item &&
+                (item.type === 'enemy' || item.type === 'trap' || item.type === 'hazard') &&
+                (item.danger === 'high' || item.danger === 'medium') &&
+                item.distance <= limit
+            ) || null;
+        },
+
+        _shouldStayTight(snapshot) {
+            return !!this._nearestThreat(snapshot, 2);
+        },
+
         _actionableTargets(snapshot) {
             const nearby = (snapshot && snapshot.nearby) || [];
             const maxRange = Math.max(2, (snapshot && snapshot.detourLimit ? snapshot.detourLimit : 2) + 4);
@@ -4974,7 +4989,7 @@ Respond ONLY with this JSON:
                     return false;
                 })
                 .sort((a, b) => {
-                    const priority = { npc: 0, container: 1, door: 2 };
+                    const priority = { container: 0, door: 1, npc: 2 };
                     const pa = priority[a.type] != null ? priority[a.type] : 99;
                     const pb = priority[b.type] != null ? priority[b.type] : 99;
                     if (pa !== pb) return pa - pb;
@@ -4983,20 +4998,21 @@ Respond ONLY with this JSON:
         },
 
         _localPurposeDecision(snapshot) {
-            const immediateThreat = snapshot.nearby.find(item => (item.danger === 'high' || item.danger === 'medium') && item.distance <= 1);
+            const immediateThreat = this._nearestThreat(snapshot, 1);
             if (immediateThreat && snapshot.autoReturn) {
                 return { action: 'RETURN', reason: 'immediate danger nearby', _autonomySource: 'local_purpose' };
             }
             if (snapshot.leashDistance > snapshot.scoutLimit + 1) {
                 return { action: 'RETURN', reason: 'too far from player', _autonomySource: 'local_purpose' };
             }
-            if (snapshot.threatNearby > 0) {
-                return { action: 'FOLLOW', reason: 'stay close under threat', _autonomySource: 'local_purpose' };
-            }
 
             const targets = this._actionableTargets(snapshot);
             if (targets.length > 0) {
                 const target = targets[0];
+                const keepClose = this._shouldStayTight(snapshot);
+                if (keepClose && target.distance > 1) {
+                    return { action: 'FOLLOW', reason: 'stay close under nearby danger', _autonomySource: 'local_purpose' };
+                }
                 return {
                     action: target.type === 'container' ? 'LOOT' : 'INTERACT',
                     eventId: target.eventId,
@@ -5062,7 +5078,7 @@ Respond ONLY with this JSON:
         },
 
         _fallbackDecision(snapshot) {
-            const immediateThreat = snapshot.nearby.find(item => item.danger === 'high' && item.distance <= 2);
+            const immediateThreat = this._nearestThreat(snapshot, 2);
             if (immediateThreat && snapshot.autoReturn) {
                 return { action: 'RETURN', reason: 'high threat nearby' };
             }
@@ -5073,8 +5089,7 @@ Respond ONLY with this JSON:
 
             const safeLoot = snapshot.nearby.find(item =>
                 (item.type === 'container' || item.type === 'loot') &&
-                item.distance <= snapshot.detourLimit &&
-                snapshot.threatNearby === 0
+                item.distance <= snapshot.detourLimit
             );
             if (safeLoot) {
                 return { action: 'LOOT', eventId: safeLoot.eventId, reason: 'safe nearby supplies' };
@@ -5083,8 +5098,7 @@ Respond ONLY with this JSON:
             const safeDoor = snapshot.nearby.find(item =>
                 item.type === 'door' &&
                 snapshot.allowDoors &&
-                item.distance <= Math.max(1, snapshot.detourLimit - 1) &&
-                snapshot.threatNearby === 0
+                item.distance <= Math.max(1, snapshot.detourLimit - 1)
             );
             if (safeDoor) {
                 return { action: 'INTERACT', eventId: safeDoor.eventId, reason: 'checking nearby door' };
@@ -5097,12 +5111,9 @@ Respond ONLY with this JSON:
             const finalDecision = Object.assign({}, decision || {});
             const nearby = (snapshot && snapshot.nearby) || [];
             const safeToDetour = snapshot &&
-                snapshot.threatNearby === 0 &&
+                !this._shouldStayTight(snapshot) &&
                 snapshot.leashDistance <= Math.max(2, snapshot.detourLimit);
 
-            const nearestNpc = snapshot && snapshot.allowNpc
-                ? nearby.find(item => item.type === 'npc' && item.distance <= Math.max(1, snapshot.detourLimit))
-                : null;
             const nearestLoot = nearby.find(item =>
                 (item.type === 'container' || item.type === 'loot') &&
                 item.distance <= Math.max(1, (snapshot && snapshot.detourLimit) || 1)
@@ -5110,16 +5121,11 @@ Respond ONLY with this JSON:
             const nearestDoor = snapshot && snapshot.allowDoors
                 ? nearby.find(item => item.type === 'door' && item.distance <= Math.max(1, snapshot.detourLimit))
                 : null;
+            const nearestNpc = snapshot && snapshot.allowNpc
+                ? nearby.find(item => item.type === 'npc' && item.distance <= Math.max(1, snapshot.detourLimit))
+                : null;
 
             if (safeToDetour && (finalDecision.action === 'FOLLOW' || finalDecision.action === 'SCOUT')) {
-                if (nearestNpc) {
-                    return {
-                        action: 'INTERACT',
-                        eventId: nearestNpc.eventId,
-                        reason: finalDecision.reason || 'safe nearby npc',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
                 if (nearestLoot) {
                     return {
                         action: 'LOOT',
@@ -5133,6 +5139,14 @@ Respond ONLY with this JSON:
                         action: 'INTERACT',
                         eventId: nearestDoor.eventId,
                         reason: finalDecision.reason || 'safe nearby door',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
+                if (nearestNpc) {
+                    return {
+                        action: 'INTERACT',
+                        eventId: nearestNpc.eventId,
+                        reason: finalDecision.reason || 'safe nearby npc',
                         _autonomySource: finalDecision._autonomySource || 'local'
                     };
                 }
@@ -5531,6 +5545,34 @@ Respond ONLY with this JSON:
             this._faceTarget(follower, event);
 
             try {
+                if (follower) {
+                    follower._okIsPressed = true;
+                    follower._preventNextOk = false;
+                }
+                if (follower && follower.checkEventTriggerHere) {
+                    follower.checkEventTriggerHere([0]);
+                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
+                        this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
+                        Debug.log('[Autonomy] Interacted with event via here:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
+                        return true;
+                    }
+                }
+                if (follower && follower.checkEventTriggerThere) {
+                    follower.checkEventTriggerThere([0, 1, 2]);
+                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
+                        this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
+                        Debug.log('[Autonomy] Interacted with event via ahead:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
+                        return true;
+                    }
+                }
+                if (follower && follower.checkEventTriggerHere) {
+                    follower.checkEventTriggerHere([0, 1, 2]);
+                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
+                        this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
+                        Debug.log('[Autonomy] Interacted with event via here-all:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
+                        return true;
+                    }
+                }
                 if (event.start) {
                     event.start();
                     this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
