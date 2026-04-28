@@ -3212,11 +3212,26 @@ Respond ONLY with this JSON:
                     }, isLocal ? { enable_thinking: false } : {})));
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
-                        return null;
+                        return { _requestFailed: true };
                     }
                     const response = JSON.parse(xhr.responseText);
+                    const rawContent = String(
+                        response &&
+                        response.choices &&
+                        response.choices[0] &&
+                        response.choices[0].message &&
+                        response.choices[0].message.content
+                            ? response.choices[0].message.content
+                            : ''
+                    );
+                    if (rawContent) {
+                        console.log('[Combat LLM]', rawContent);
+                        Debug.log('[Combat LLM]', rawContent);
+                    }
                     let decision = this._parseResponse(response);
                     if (decision) {
+                        console.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
+                        Debug.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                         decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
                     }
                     if (decision && this._validateDecision(decision, battleState)) {
@@ -3248,13 +3263,13 @@ Respond ONLY with this JSON:
                         return { _validationFailed: true, decision: decision };
                     }
                     Debug.warn(`[Combat] ${model} returned unparseable response`);
-                    return null;
+                    return { _parseFailed: true };
                 } catch (error) {
                     Debug.warn(`[Combat] ${model} error:`, error.message, error.name);
                     if (error && error.stack) {
                         Debug.warn('[Combat] Stack:', String(error.stack).substring(0, 400));
                     }
-                    return null;
+                    return { _requestFailed: true };
                 }
             };
 
@@ -3264,7 +3279,10 @@ Respond ONLY with this JSON:
                 const localResult = _trySyncRequest(
                     Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true
                 );
-                if (localResult) { _logCombatDecision(localResult, Config.localModel, 'local'); return localResult; }
+                if (localResult && !localResult._validationFailed && !localResult._parseFailed && !localResult._requestFailed) {
+                    _logCombatDecision(localResult, Config.localModel, 'local');
+                    return localResult;
+                }
 
                 // Local failed — fall back to Groq
                 if (Config.apiKey) {
@@ -3280,13 +3298,12 @@ Respond ONLY with this JSON:
                         const groqResult = _trySyncRequest(
                             Config.apiEndpoint, groqHeaders, model, 300, false
                         );
-                        if (groqResult && !groqResult._validationFailed) {
+                        if (groqResult && !groqResult._validationFailed && !groqResult._parseFailed && !groqResult._requestFailed) {
                             Debug.log('[Combat] Groq fallback succeeded:', model);
                             _logCombatDecision(groqResult, model, 'groq_fallback');
                             return groqResult;
                         }
-                        // Only penalize model for actual API/network failures, not validation issues
-                        if (!groqResult || !groqResult._validationFailed) ModelRouter.markFailed(model);
+                        if (groqResult && groqResult._requestFailed) ModelRouter.markFailed(model);
                     }
                 }
             } else {
@@ -3296,9 +3313,8 @@ Respond ONLY with this JSON:
                     const result = _trySyncRequest(
                         Config.getEndpoint(), Config.getHeaders(), model, 300, false
                     );
-                    if (result && !result._validationFailed) { _logCombatDecision(result, model, 'groq'); return result; }
-                    // Only penalize model for actual API/network failures, not validation issues
-                    if (!result || !result._validationFailed) ModelRouter.markFailed(model);
+                    if (result && !result._validationFailed && !result._parseFailed && !result._requestFailed) { _logCombatDecision(result, model, 'groq'); return result; }
+                    if (result && result._requestFailed) ModelRouter.markFailed(model);
                 }
             }
 
@@ -5010,16 +5026,20 @@ Respond ONLY with this JSON:
         _pickFollowAnchor(player) {
             const follower = this.getFollower();
             if (!player || !follower) return null;
-            const choices = [
-                { dx: 0, dy: 1 },
-                { dx: 1, dy: 0 },
+            const dir = player.direction ? player.direction() : 2;
+            const preferredByDir = {
+                2: [{ dx: -1, dy: -1 }, { dx: 1, dy: -1 }, { dx: 0, dy: -1 }],
+                4: [{ dx: 1, dy: -1 }, { dx: 1, dy: 1 }, { dx: 1, dy: 0 }],
+                6: [{ dx: -1, dy: -1 }, { dx: -1, dy: 1 }, { dx: -1, dy: 0 }],
+                8: [{ dx: -1, dy: 1 }, { dx: 1, dy: 1 }, { dx: 0, dy: 1 }]
+            };
+            const choices = preferredByDir[dir] || [
                 { dx: -1, dy: 0 },
-                { dx: 0, dy: -1 },
-                { dx: 1, dy: 1 },
-                { dx: -1, dy: 1 }
+                { dx: 1, dy: 0 },
+                { dx: 0, dy: -1 }
             ];
             for (let i = 0; i < choices.length; i++) {
-                const candidate = choices[Math.floor(Math.random() * choices.length)];
+                const candidate = choices[i];
                 const tx = player.x + candidate.dx;
                 const ty = player.y + candidate.dy;
                 if (!$gameMap.isValid(tx, ty)) continue;
@@ -5029,10 +5049,10 @@ Respond ONLY with this JSON:
                 return {
                     x: tx,
                     y: ty,
-                    expiresAt: Date.now() + 2500
+                    expiresAt: Date.now() + 6000
                 };
             }
-            return { x: player.x, y: player.y, expiresAt: Date.now() + 1500 };
+            return { x: player.x, y: player.y, expiresAt: Date.now() + 3000 };
         },
 
         _desiredMoveSpeed() {
@@ -5071,11 +5091,10 @@ Respond ONLY with this JSON:
                     if (this._isEventSearched(item.eventId)) return false;
                     if (item.type === 'container') return item.distance <= maxRange;
                     if (item.type === 'npc') return snapshot.allowNpc && item.distance <= maxRange;
-                    if (item.type === 'door') return snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(2, maxRange - 1);
                     return false;
                 })
                 .sort((a, b) => {
-                    const priority = { container: 0, door: 1, npc: 2 };
+                    const priority = { container: 0, npc: 1 };
                     const pa = priority[a.type] != null ? priority[a.type] : 99;
                     const pb = priority[b.type] != null ? priority[b.type] : 99;
                     if (pa !== pb) return pa - pb;
@@ -5192,7 +5211,7 @@ Respond ONLY with this JSON:
                 item.distance <= Math.max(1, snapshot.detourLimit - 1)
             );
             if (safeDoor) {
-                return { action: 'INTERACT', eventId: safeDoor.eventId, reason: 'checking nearby door' };
+                return { action: 'FOLLOW', reason: 'doors require explicit decision' };
             }
 
             return { action: 'FOLLOW', reason: 'stay with player' };
@@ -5209,9 +5228,7 @@ Respond ONLY with this JSON:
                 (item.type === 'container' || item.type === 'loot') &&
                 item.distance <= Math.max(1, (snapshot && snapshot.detourLimit) || 1)
             );
-            const nearestDoor = snapshot && snapshot.allowDoors
-                ? nearby.find(item => item.type === 'door' && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit))
-                : null;
+            const nearestDoor = null;
             const nearestNpc = snapshot && snapshot.allowNpc
                 ? nearby.find(item => item.type === 'npc' && item.distance <= Math.max(1, snapshot.detourLimit))
                 : null;
@@ -5222,14 +5239,6 @@ Respond ONLY with this JSON:
                         action: 'LOOT',
                         eventId: nearestLoot.eventId,
                         reason: finalDecision.reason || 'safe nearby loot',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
-                if (nearestDoor) {
-                    return {
-                        action: 'INTERACT',
-                        eventId: nearestDoor.eventId,
-                        reason: finalDecision.reason || 'safe nearby door',
                         _autonomySource: finalDecision._autonomySource || 'local'
                     };
                 }
@@ -5661,20 +5670,32 @@ Respond ONLY with this JSON:
         _advanceInteractionUi(follower) {
             if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
             const now = Date.now();
-            if (now - this._state.lastUiAdvanceAt < 450) return true;
+            if (now - this._state.lastUiAdvanceAt < 900) return true;
             this._state.lastUiAdvanceAt = now;
 
             const scene = SceneManager._scene;
             if (!scene) return true;
 
-            const choiceWindow = scene._choiceWindow;
+            const messageWindow = scene._messageWindow;
+            const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : scene._choiceWindow;
             if (choiceWindow && choiceWindow.active && choiceWindow.isOpen && choiceWindow.isOpen()) {
                 if (choiceWindow.index && choiceWindow.index() < 0 && choiceWindow.select) choiceWindow.select(0);
                 if (choiceWindow.processOk) choiceWindow.processOk();
                 return true;
             }
 
-            const messageWindow = scene._messageWindow;
+            const numberWindow = messageWindow && messageWindow._numberWindow ? messageWindow._numberWindow : scene._numberWindow;
+            if (numberWindow && numberWindow.active && numberWindow.processOk) {
+                numberWindow.processOk();
+                return true;
+            }
+
+            const itemWindow = messageWindow && messageWindow._itemWindow ? messageWindow._itemWindow : scene._itemWindow;
+            if (itemWindow && itemWindow.active) {
+                if (itemWindow.index && itemWindow.index() < 0 && itemWindow.select) itemWindow.select(0);
+                if (itemWindow.processOk) itemWindow.processOk();
+                return true;
+            }
             if (messageWindow && messageWindow.visible && !(messageWindow.isClosed && messageWindow.isClosed())) {
                 if (messageWindow.isAnySubWindowActive && messageWindow.isAnySubWindowActive()) {
                     return false;
@@ -5687,8 +5708,6 @@ Respond ONLY with this JSON:
                     return true;
                 }
                 if (messageWindow._textState) {
-                    messageWindow._showFast = true;
-                    messageWindow._lineShowFast = true;
                     return true;
                 }
             }
@@ -5726,7 +5745,7 @@ Respond ONLY with this JSON:
                         const eventData = event.event ? event.event() : null;
                         if (eventData && EnvironmentScanner && EnvironmentScanner._eventSnapshot) {
                             const snap = EnvironmentScanner._eventSnapshot(event, follower);
-                            if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
+                            if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                         }
                         Debug.log('[Autonomy] Interacted with event via here:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
@@ -5737,7 +5756,7 @@ Respond ONLY with this JSON:
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
                         this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
                         const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
+                        if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                         Debug.log('[Autonomy] Interacted with event via ahead:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
                     }
@@ -5747,7 +5766,7 @@ Respond ONLY with this JSON:
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
                         this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
                         const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                        if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
+                        if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                         Debug.log('[Autonomy] Interacted with event via here-all:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                         return true;
                     }
@@ -5756,7 +5775,7 @@ Respond ONLY with this JSON:
                     event.start();
                     this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
                     const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                    if (snap && snap.type === 'container') this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
+                    if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
                     Debug.log('[Autonomy] Interacted with event:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
                     return true;
                 }
