@@ -4776,6 +4776,7 @@ Respond ONLY with this JSON:
             lastMoveAt: 0,
             lastInteractAt: 0,
             lastUiAdvanceAt: 0,
+            lastMapTransferAt: 0,
             mode: 'follow',
             targetEventId: null,
             targetPoint: null,
@@ -4868,6 +4869,18 @@ Respond ONLY with this JSON:
             if (follower && follower.setThrough) follower.setThrough(true);
         },
 
+        onMapTransfer() {
+            this._state.lastMapTransferAt = Date.now();
+            this._state.mode = 'follow';
+            this._state.targetEventId = null;
+            this._state.targetPoint = null;
+            this._state.targetApproach = null;
+            this._state.followAnchor = null;
+            this._state.currentTask = null;
+            this._state.lastDecision = null;
+            this._state.lastSnapshotHash = null;
+        },
+
         _distance(a, b) {
             if (!a || !b) return 999;
             return Math.abs((a.x || 0) - (b.x || 0)) + Math.abs((a.y || 0) - (b.y || 0));
@@ -4928,6 +4941,20 @@ Respond ONLY with this JSON:
             current.count = (current.count || 0) + 1;
             current.cooldownUntil = now + this._eventMemoryCooldownMs(current.type);
             this._state.searchedEvents[key] = current;
+        },
+
+        _isRecentTransfer(ms) {
+            return !!this._state.lastMapTransferAt && (Date.now() - this._state.lastMapTransferAt) < (ms || 3500);
+        },
+
+        _panicThreat(snapshot) {
+            const nearby = (snapshot && snapshot.nearby) || [];
+            return nearby.find(item => {
+                if (!item || item.distance > 1) return false;
+                if (item.type === 'enemy') return item.danger === 'high' || item.danger === 'medium';
+                if ((item.type === 'trap' || item.type === 'hazard') && item.distance <= 0) return true;
+                return false;
+            }) || null;
         },
 
         _beginTask(action, payload, snapshot) {
@@ -5026,7 +5053,12 @@ Respond ONLY with this JSON:
         },
 
         _shouldStayTight(snapshot) {
-            return !!this._nearestThreat(snapshot, 2);
+            return !!(snapshot && (snapshot.nearby || []).find(item =>
+                item &&
+                item.type === 'enemy' &&
+                (item.danger === 'high' || item.danger === 'medium') &&
+                item.distance <= 2
+            ));
         },
 
         _actionableTargets(snapshot) {
@@ -5036,10 +5068,10 @@ Respond ONLY with this JSON:
                 .filter(item => {
                     if (!item || item.eventId == null) return false;
                     if (this._isEventOnCooldown(item.eventId)) return false;
-                    if ((item.type === 'container' || item.type === 'loot') && this._isEventSearched(item.eventId)) return false;
+                    if (this._isEventSearched(item.eventId)) return false;
                     if (item.type === 'container') return item.distance <= maxRange;
                     if (item.type === 'npc') return snapshot.allowNpc && item.distance <= maxRange;
-                    if (item.type === 'door') return snapshot.allowDoors && item.distance <= Math.max(2, maxRange - 1);
+                    if (item.type === 'door') return snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(2, maxRange - 1);
                     return false;
                 })
                 .sort((a, b) => {
@@ -5052,7 +5084,7 @@ Respond ONLY with this JSON:
         },
 
         _localPurposeDecision(snapshot) {
-            const immediateThreat = this._nearestThreat(snapshot, 1);
+            const immediateThreat = this._panicThreat(snapshot);
             if (immediateThreat && snapshot.autoReturn) {
                 return { action: 'RETURN', reason: 'immediate danger nearby', _autonomySource: 'local_purpose' };
             }
@@ -5065,6 +5097,9 @@ Respond ONLY with this JSON:
                 const target = targets[0];
                 const keepClose = this._shouldStayTight(snapshot);
                 if (keepClose && target.distance > 1) {
+                    return null;
+                }
+                if (target.type === 'door' && this._isRecentTransfer(4000)) {
                     return null;
                 }
                 return {
@@ -5152,6 +5187,8 @@ Respond ONLY with this JSON:
             const safeDoor = snapshot.nearby.find(item =>
                 item.type === 'door' &&
                 snapshot.allowDoors &&
+                !this._isEventSearched(item.eventId) &&
+                !this._isRecentTransfer(4000) &&
                 item.distance <= Math.max(1, snapshot.detourLimit - 1)
             );
             if (safeDoor) {
@@ -5173,7 +5210,7 @@ Respond ONLY with this JSON:
                 item.distance <= Math.max(1, (snapshot && snapshot.detourLimit) || 1)
             );
             const nearestDoor = snapshot && snapshot.allowDoors
-                ? nearby.find(item => item.type === 'door' && item.distance <= Math.max(1, snapshot.detourLimit))
+                ? nearby.find(item => item.type === 'door' && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit))
                 : null;
             const nearestNpc = snapshot && snapshot.allowNpc
                 ? nearby.find(item => item.type === 'npc' && item.distance <= Math.max(1, snapshot.detourLimit))
@@ -5222,6 +5259,7 @@ Respond ONLY with this JSON:
                 if (!target) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'npc' && !snapshot.allowNpc) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'door' && !snapshot.allowDoors) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (target.type === 'door' && this._isRecentTransfer(4000)) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'enemy' || target.type === 'trap' || target.type === 'hazard') {
                     return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 }
@@ -5389,11 +5427,15 @@ Respond ONLY with this JSON:
                     ? data.choices[0].message.content
                     : ''
             );
+            if (this._state.lastRawLocalContent) {
+                Debug.log('[Autonomy LLM]', this._state.lastRawLocalContent);
+            }
             let decision = GeminiAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
                 return Object.assign({ _autonomySource: 'fallback' }, fallback);
             }
             decision.action = String(decision.action).toUpperCase();
+            Debug.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
             decision = this._normalizeDecision(snapshot, Object.assign({ _autonomySource: 'local' }, decision), fallback);
 
             if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
@@ -5537,13 +5579,27 @@ Respond ONLY with this JSON:
                 const dist = approach ? this._distance(follower, approach) : this._distance(follower, event);
                 if (dist <= 0 || (!approach && this._distance(follower, event) <= 1)) {
                     if (approach && approach.faceDirection && follower.setDirection) follower.setDirection(approach.faceDirection);
-                    this._interactWithEvent(follower, event);
-                    this._state.mode = 'hold';
-                    this._state.targetEventId = null;
-                    this._state.targetPoint = null;
-                    this._state.targetApproach = null;
-                    this._state.lingerUntil = Date.now() + 900;
-                    this._clearTask();
+                    const interactionStarted = this._interactWithEvent(follower, event);
+                    if (interactionStarted) {
+                        this._state.mode = 'hold';
+                        this._state.targetEventId = null;
+                        this._state.targetPoint = null;
+                        this._state.targetApproach = null;
+                        this._state.lingerUntil = Date.now() + 900;
+                        this._clearTask();
+                    } else {
+                        const eventId = event.eventId ? event.eventId() : event._eventId;
+                        const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
+                        this._setEventCooldown(eventId, snap && snap.type === 'door' ? 60000 : 15000);
+                        if (snap && (snap.type === 'door' || snap.type === 'npc')) {
+                            this._markEventSearched(eventId, snap.type, 'interaction_failed');
+                        }
+                        this._state.mode = 'follow';
+                        this._state.targetEventId = null;
+                        this._state.targetPoint = null;
+                        this._state.targetApproach = null;
+                        this._clearTask();
+                    }
                     return;
                 }
 
@@ -5611,18 +5667,6 @@ Respond ONLY with this JSON:
             const scene = SceneManager._scene;
             if (!scene) return true;
 
-            const messageWindow = scene._messageWindow;
-            if (messageWindow && messageWindow._textState) {
-                messageWindow._showFast = true;
-                messageWindow._lineShowFast = true;
-                if (messageWindow.pause && messageWindow.terminateMessage) {
-                    messageWindow.terminateMessage();
-                } else if (messageWindow.updateInput) {
-                    messageWindow.updateInput();
-                }
-                return true;
-            }
-
             const choiceWindow = scene._choiceWindow;
             if (choiceWindow && choiceWindow.active && choiceWindow.isOpen && choiceWindow.isOpen()) {
                 if (choiceWindow.index && choiceWindow.index() < 0 && choiceWindow.select) choiceWindow.select(0);
@@ -5630,11 +5674,36 @@ Respond ONLY with this JSON:
                 return true;
             }
 
+            const messageWindow = scene._messageWindow;
+            if (messageWindow && messageWindow.visible && !(messageWindow.isClosed && messageWindow.isClosed())) {
+                if (messageWindow.isAnySubWindowActive && messageWindow.isAnySubWindowActive()) {
+                    return false;
+                }
+                if (messageWindow.pause) {
+                    messageWindow.pause = false;
+                    if (!messageWindow._textState && messageWindow.terminateMessage) {
+                        messageWindow.terminateMessage();
+                    }
+                    return true;
+                }
+                if (messageWindow._textState) {
+                    messageWindow._showFast = true;
+                    messageWindow._lineShowFast = true;
+                    return true;
+                }
+            }
+
             if (follower) {
                 follower._okIsPressed = true;
                 follower._preventNextOk = false;
-                if (follower.checkEventTriggerHere) follower.checkEventTriggerHere([0, 1, 2]);
-                if ($gameMap.setupStartingEvent) $gameMap.setupStartingEvent();
+                if (follower.checkEventTriggerHere) {
+                    follower.checkEventTriggerHere([0]);
+                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) return true;
+                }
+                if (follower.checkEventTriggerThere) {
+                    follower.checkEventTriggerThere([0, 1, 2]);
+                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) return true;
+                }
             }
             return true;
         },
@@ -8995,6 +9064,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             ThesisLogger.log('game_event', { event: 'map_transfer', map_name: mapName, map_id: $gameMap.mapId() });
             AmbientDialogue.onRoomEntry(mapName);
             WorldStateEngine.onMapTransfer($gameMap.mapId());
+            if (typeof AutonomySystem !== 'undefined' && AutonomySystem.onMapTransfer) {
+                AutonomySystem.onMapTransfer();
+            }
             NPCIntelligence.clearRecentDialogue(); // Clear on new map
         }
     };
