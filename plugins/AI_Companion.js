@@ -1566,7 +1566,7 @@ Reply with ONLY the category name, nothing else.`;
             const commandCodes = {};
             commands.forEach(command => { if (command) commandCodes[command.code] = true; });
             const hasText = !!commandCodes[101] || !!commandCodes[401] || !!commandCodes[102];
-            const hasShop = !!commandCodes[302] || hasKeyword(/merchant|mercader|comerciante|shop|tienda|trade|compr|vend/);
+            const hasShop = !!commandCodes[302] || hasKeyword(/merchant|mercader|comerciante|shop|tienda|pocketcat/);
             const bookcaseHint = hasKeyword(/bookshelf|bookcase|book shelf|books|libro|libros|estante|estanteria|estantería|biblioteca|shelf|tome|leer|read/);
             const furnitureLootHint = hasKeyword(/crate|barrel|box|boxes|caja|cajas|barril|baul|baúl|armario|cabinet|drawer|desk|table|mesa|mapa|bottle|botella|supply|supplies|food|bread|meat|cheese|apple|papers|notes|documents/);
             const pitHint = hasKeyword(/hole|pit|bloodpit|blood pit|agujero|pozo|hoyo|caida|caída|fall|drop/);
@@ -5988,6 +5988,12 @@ Respond ONLY with this JSON:
                     event.start();
                     if (!$gameMap.setupStartingEvent || $gameMap.setupStartingEvent()) {
                         return this._finalizeInteractionStart(event, follower, 'touch-door', snap);
+                    }
+                }
+                if (snap && snap.type === 'door' && event.start) {
+                    event.start();
+                    if (!$gameMap.setupStartingEvent || $gameMap.setupStartingEvent()) {
+                        return this._finalizeInteractionStart(event, follower, 'direct-door', snap);
                     }
                 }
                 if (this._interactAheadLikePlayer(follower)) {
