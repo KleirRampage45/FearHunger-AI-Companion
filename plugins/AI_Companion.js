@@ -5254,9 +5254,15 @@ Respond ONLY with this JSON:
                     return false;
                 })
                 .sort((a, b) => {
-                    const priority = { container: 0, door: 1, npc: 2 };
-                    const pa = priority[a.type] != null ? priority[a.type] : 99;
-                    const pb = priority[b.type] != null ? priority[b.type] : 99;
+                    const score = item => {
+                        if (item.type === 'door' && item.distance <= 1) return 0;
+                        if (item.type === 'container') return 10 + item.distance;
+                        if (item.type === 'door') return 20 + item.distance;
+                        if (item.type === 'npc') return 30 + item.distance;
+                        return 99 + item.distance;
+                    };
+                    const pa = score(a);
+                    const pb = score(b);
                     if (pa !== pb) return pa - pb;
                     return a.distance - b.distance;
                 });
@@ -5941,6 +5947,30 @@ Respond ONLY with this JSON:
             return true;
         },
 
+        _interactAheadLikePlayer(follower) {
+            if (!follower || !follower.canMove || !follower.canMove()) return false;
+            follower._okIsPressed = true;
+            follower._preventNextOk = false;
+            if (follower.checkEventTriggerHere) {
+                follower.checkEventTriggerHere([0]);
+                if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) return true;
+            }
+            if (follower.checkEventTriggerThere) {
+                follower.checkEventTriggerThere([0, 1, 2]);
+                if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) return true;
+            }
+            return false;
+        },
+
+        _interactHereLikePlayer(follower) {
+            if (!follower || !follower.canMove || !follower.canMove()) return false;
+            if (follower.checkEventTriggerHere) {
+                follower.checkEventTriggerHere([0, 1, 2]);
+                if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) return true;
+            }
+            return false;
+        },
+
         _interactWithEvent(follower, event) {
             const now = Date.now();
             if (now - this._state.lastInteractAt < 1000) return false;
@@ -5960,11 +5990,8 @@ Respond ONLY with this JSON:
                         return this._finalizeInteractionStart(event, follower, 'touch-door', snap);
                     }
                 }
-                if (follower && follower.checkEventTriggerHere) {
-                    follower.checkEventTriggerHere([0]);
-                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
-                        return this._finalizeInteractionStart(event, follower, 'here', snap);
-                    }
+                if (this._interactAheadLikePlayer(follower)) {
+                    return this._finalizeInteractionStart(event, follower, 'ahead-like-player', snap);
                 }
                 if (touchDoor && follower && follower.checkEventTriggerHere && follower.x === event.x && follower.y === event.y) {
                     follower.checkEventTriggerHere([1, 2]);
@@ -5972,17 +5999,8 @@ Respond ONLY with this JSON:
                         return this._finalizeInteractionStart(event, follower, 'touch-here', snap);
                     }
                 }
-                if (follower && follower.checkEventTriggerThere) {
-                    follower.checkEventTriggerThere([0, 1, 2]);
-                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
-                        return this._finalizeInteractionStart(event, follower, 'ahead', snap);
-                    }
-                }
-                if (follower && follower.checkEventTriggerHere) {
-                    follower.checkEventTriggerHere([0, 1, 2]);
-                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
-                        return this._finalizeInteractionStart(event, follower, 'here-all', snap);
-                    }
+                if (this._interactHereLikePlayer(follower)) {
+                    return this._finalizeInteractionStart(event, follower, 'here-like-player', snap);
                 }
                 if (event.start) {
                     event.start();
@@ -8974,6 +8992,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     const _Game_Follower_chaseCharacter = Game_Follower.prototype.chaseCharacter;
     Game_Follower.prototype.chaseCharacter = function(character) {
         if (AutonomySystem.shouldSuppressDefaultChase(this)) {
+            return;
+        }
+        if (Config.autonomyEnabled &&
+            character &&
+            AutonomySystem.isControlledFollower &&
+            AutonomySystem.isControlledFollower(character) &&
+            !AutonomySystem.isControlledFollower(this)) {
+            _Game_Follower_chaseCharacter.call(this, $gamePlayer);
             return;
         }
         _Game_Follower_chaseCharacter.call(this, character);
