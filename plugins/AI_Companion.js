@@ -1566,7 +1566,7 @@ Reply with ONLY the category name, nothing else.`;
             const commandCodes = {};
             commands.forEach(command => { if (command) commandCodes[command.code] = true; });
             const hasText = !!commandCodes[101] || !!commandCodes[401] || !!commandCodes[102];
-            const hasShop = !!commandCodes[302];
+            const hasShop = !!commandCodes[302] || hasKeyword(/merchant|mercader|comerciante|shop|tienda|trade|compr|vend/);
             const bookcaseHint = hasKeyword(/bookshelf|bookcase|book shelf|books|libro|libros|estante|estanteria|estantería|biblioteca|shelf|tome|leer|read/);
             const furnitureLootHint = hasKeyword(/crate|barrel|box|boxes|caja|cajas|barril|baul|baúl|armario|cabinet|drawer|desk|table|mesa|mapa|bottle|botella|supply|supplies|food|bread|meat|cheese|apple|papers|notes|documents/);
             const pitHint = hasKeyword(/hole|pit|bloodpit|blood pit|agujero|pozo|hoyo|caida|caída|fall|drop/);
@@ -1745,14 +1745,27 @@ Reply with ONLY the category name, nothing else.`;
             }
         },
 
+        _isTouchDoorEvent(event) {
+            const page = this._safeEventPage(event);
+            const data = this._safeEventData(event);
+            if (!page || !data) return false;
+            const metadata = this._eventMetadata(event);
+            const tags = this._eventTags(event, metadata);
+            return page.trigger === 1 && page.priorityType === 0 && tags.includes('door');
+        },
+
         _bestApproachForEvent(event, origin) {
             if (!event || !origin) return null;
-            const candidates = [
+            const candidates = [];
+            if (this._isTouchDoorEvent(event)) {
+                candidates.push({ x: event.x, y: event.y, faceDirection: null });
+            }
+            candidates.push(
                 { x: event.x, y: event.y - 1, faceDirection: 2 },
                 { x: event.x + 1, y: event.y, faceDirection: 4 },
                 { x: event.x - 1, y: event.y, faceDirection: 6 },
                 { x: event.x, y: event.y + 1, faceDirection: 8 }
-            ];
+            );
             const valid = candidates
                 .filter(candidate => {
                     if (!$gameMap.isValid(candidate.x, candidate.y)) return false;
@@ -4875,6 +4888,11 @@ Respond ONLY with this JSON:
             lingerUntil: 0,
             followAnchor: null,
             lastRawLocalContent: '',
+            lastInteractionEventId: null,
+            lastInteractionType: '',
+            lastInteractionLabel: '',
+            lastInteractionNeedsConsent: false,
+            manualUiHold: false,
             eventCooldowns: {},
             searchedEvents: {}
         },
@@ -4950,6 +4968,11 @@ Respond ONLY with this JSON:
             this._state.currentTask = null;
             this._state.lingerUntil = 0;
             this._state.lastRawLocalContent = '';
+            this._state.lastInteractionEventId = null;
+            this._state.lastInteractionType = '';
+            this._state.lastInteractionLabel = '';
+            this._state.lastInteractionNeedsConsent = false;
+            this._state.manualUiHold = false;
             if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
             if (follower && follower.setThrough) follower.setThrough(true);
         },
@@ -4964,6 +4987,11 @@ Respond ONLY with this JSON:
             this._state.currentTask = null;
             this._state.lastDecision = null;
             this._state.lastSnapshotHash = null;
+            this._state.lastInteractionEventId = null;
+            this._state.lastInteractionType = '';
+            this._state.lastInteractionLabel = '';
+            this._state.lastInteractionNeedsConsent = false;
+            this._state.manualUiHold = false;
         },
 
         _distance(a, b) {
@@ -5096,10 +5124,22 @@ Respond ONLY with this JSON:
             if (!snapshot || !item || item.eventId == null) return false;
             if (this._isEventOnCooldown(item.eventId)) return false;
             if (this._isEventSearched(item.eventId)) return false;
+            if (this._targetNeedsConsent(item)) return false;
             if (item.type === 'container' || item.type === 'loot') return item.distance <= Math.max(1, snapshot.detourLimit);
             if (item.type === 'npc') return !!snapshot.allowNpc && item.distance <= Math.max(1, snapshot.detourLimit);
             if (item.type === 'door') return !!snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit - 1);
             if (item.type === 'shop') return false;
+            return false;
+        },
+
+        _targetNeedsConsent(target) {
+            if (!target) return false;
+            const type = String(target.type || '').toLowerCase();
+            const subtype = String(target.subtype || '').toLowerCase();
+            const label = String(target.label || '').toLowerCase();
+            if (type === 'shop') return true;
+            if (/(merchant|mercader|comerciante|shop|tienda|pocketcat)/i.test(label)) return true;
+            if (/(merchant|mercader|comerciante|shop|tienda|pocketcat)/i.test(subtype)) return true;
             return false;
         },
 
@@ -5113,6 +5153,8 @@ Respond ONLY with this JSON:
             this._state.targetPoint = null;
             this._state.targetApproach = null;
             this._state.targetLabel = '';
+            this._state.manualUiHold = true;
+            this._state.lastInteractionNeedsConsent = false;
             this._clearTask();
             Debug.warn('[Autonomy] Consent required:', reason);
             if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue && AmbientDialogue._speak) {
@@ -5128,6 +5170,14 @@ Respond ONLY with this JSON:
             if (/(compr|buy|sell|vender|trade|merchant|mercader|shop|tienda)/i.test(joined)) return true;
             if (/(sacrific|ofrec|offering|altar|gro-goroth|grogoroth|god|dios|ritual|niña|nina|girl|companion|party member|ally)/i.test(joined)) return true;
             if (/(le'garde|legarde|enki|darce|cahara|ragnvaldr|moonless|buckman|trortur)/i.test(joined)) return true;
+            return false;
+        },
+
+        _interactionTextNeedsConsent(messageText) {
+            const text = String(messageText || '').toLowerCase();
+            if (!text.trim()) return false;
+            if (/(compr|buy|sell|vender|trade|merchant|mercader|comerciante|shop|tienda|intercambias|monedas de plata|qué te gustaría comprar|que te gustaria comprar)/i.test(text)) return true;
+            if (/(sacrific|ofrec|offering|altar|gro-goroth|grogoroth|god|dios|ritual|niña|nina|girl|companion|party member|ally)/i.test(text)) return true;
             return false;
         },
 
@@ -5197,6 +5247,7 @@ Respond ONLY with this JSON:
                     if (!item || item.eventId == null) return false;
                     if (this._isEventOnCooldown(item.eventId)) return false;
                     if (this._isEventSearched(item.eventId)) return false;
+                    if (this._targetNeedsConsent(item)) return false;
                     if (item.type === 'container') return item.distance <= maxRange;
                     if (item.type === 'door') return snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit);
                     if (item.type === 'npc') return snapshot.allowNpc && item.distance <= maxRange;
@@ -5366,6 +5417,7 @@ Respond ONLY with this JSON:
                 }
                 const target = nearby.find(item => item.eventId === Number(finalDecision.eventId));
                 if (!target) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (this._targetNeedsConsent(target)) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'npc' && !snapshot.allowNpc) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'door' && !snapshot.allowDoors) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'shop') return Object.assign({ _autonomySource: 'fallback' }, fallback);
@@ -5773,7 +5825,10 @@ Respond ONLY with this JSON:
         },
 
         _advanceInteractionUi(follower) {
-            if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
+            if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) {
+                this._state.manualUiHold = false;
+                return false;
+            }
             const now = Date.now();
             if (now - this._state.lastUiAdvanceAt < 900) return true;
             this._state.lastUiAdvanceAt = now;
@@ -5785,6 +5840,12 @@ Respond ONLY with this JSON:
             const messageText = ($gameMessage && $gameMessage._texts && $gameMessage._texts.length > 0)
                 ? $gameMessage._texts.join(' | ')
                 : '';
+            if (this._state.manualUiHold) return true;
+            if ((this._state.lastInteractionNeedsConsent || this._interactionTextNeedsConsent(messageText)) &&
+                (this._state.lastInteractionEventId != null || this._interactionTextNeedsConsent(messageText))) {
+                this._requireConsent('merchant or high-risk interaction');
+                return true;
+            }
             const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : scene._choiceWindow;
             if (choiceWindow && ((choiceWindow.active) || (choiceWindow.visible && choiceWindow.isOpen && choiceWindow.isOpen()))) {
                 const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
@@ -5806,12 +5867,20 @@ Respond ONLY with this JSON:
 
             const numberWindow = messageWindow && messageWindow._numberWindow ? messageWindow._numberWindow : scene._numberWindow;
             if (numberWindow && numberWindow.active && numberWindow.processOk) {
+                if (this._state.lastInteractionNeedsConsent || this._interactionTextNeedsConsent(messageText)) {
+                    this._requireConsent('high-risk number prompt');
+                    return true;
+                }
                 numberWindow.processOk();
                 return true;
             }
 
             const itemWindow = messageWindow && messageWindow._itemWindow ? messageWindow._itemWindow : scene._itemWindow;
             if (itemWindow && itemWindow.active) {
+                if (this._state.lastInteractionNeedsConsent || this._interactionTextNeedsConsent(messageText)) {
+                    this._requireConsent('high-risk item prompt');
+                    return true;
+                }
                 if (itemWindow.index && itemWindow.index() < 0 && itemWindow.select) itemWindow.select(0);
                 if (itemWindow.processOk) itemWindow.processOk();
                 return true;
@@ -5847,57 +5916,77 @@ Respond ONLY with this JSON:
             return true;
         },
 
+        _rememberInteractionTarget(event, follower) {
+            const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower || this.getFollower()) : null;
+            const eventId = event && (event.eventId ? event.eventId() : event._eventId);
+            this._state.lastInteractionEventId = snap && snap.id != null ? snap.id : eventId;
+            this._state.lastInteractionType = snap && snap.type ? snap.type : '';
+            this._state.lastInteractionLabel = snap && snap.label ? snap.label : '';
+            this._state.lastInteractionNeedsConsent = !!this._targetNeedsConsent(snap || {
+                type: this._state.lastInteractionType,
+                label: this._state.lastInteractionLabel
+            });
+            return snap;
+        },
+
+        _finalizeInteractionStart(event, follower, channel, snap) {
+            const eventId = event && (event.eventId ? event.eventId() : event._eventId);
+            const interactionSnap = snap || this._rememberInteractionTarget(event, follower);
+            const interactionType = interactionSnap && interactionSnap.type ? interactionSnap.type : this._state.lastInteractionType;
+            this._setEventCooldown(eventId, interactionType === 'door' ? 60000 : 15000);
+            if (interactionSnap && (interactionType === 'container' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
+                this._markEventSearched(interactionSnap.id || eventId, interactionType, 'interaction_started');
+            }
+            Debug.log('[Autonomy] Interacted with event via ' + channel + ':', eventId, event && event.event ? event.event().name : '');
+            return true;
+        },
+
         _interactWithEvent(follower, event) {
             const now = Date.now();
             if (now - this._state.lastInteractAt < 1000) return false;
             this._state.lastInteractAt = now;
             this._faceTarget(follower, event);
+            const snap = this._rememberInteractionTarget(event, follower);
+            const touchDoor = this._isTouchDoorEvent(event);
 
             try {
                 if (follower) {
                     follower._okIsPressed = true;
                     follower._preventNextOk = false;
                 }
+                if (touchDoor && follower && follower.x === event.x && follower.y === event.y && event.start) {
+                    event.start();
+                    if (!$gameMap.setupStartingEvent || $gameMap.setupStartingEvent()) {
+                        return this._finalizeInteractionStart(event, follower, 'touch-door', snap);
+                    }
+                }
                 if (follower && follower.checkEventTriggerHere) {
                     follower.checkEventTriggerHere([0]);
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
-                        this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
-                        const eventData = event.event ? event.event() : null;
-                        if (eventData && EnvironmentScanner && EnvironmentScanner._eventSnapshot) {
-                            const snap = EnvironmentScanner._eventSnapshot(event, follower);
-                            if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
-                        }
-                        Debug.log('[Autonomy] Interacted with event via here:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
-                        return true;
+                        return this._finalizeInteractionStart(event, follower, 'here', snap);
+                    }
+                }
+                if (touchDoor && follower && follower.checkEventTriggerHere && follower.x === event.x && follower.y === event.y) {
+                    follower.checkEventTriggerHere([1, 2]);
+                    if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
+                        return this._finalizeInteractionStart(event, follower, 'touch-here', snap);
                     }
                 }
                 if (follower && follower.checkEventTriggerThere) {
                     follower.checkEventTriggerThere([0, 1, 2]);
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
-                        this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
-                        const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                        if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
-                        Debug.log('[Autonomy] Interacted with event via ahead:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
-                        return true;
+                        return this._finalizeInteractionStart(event, follower, 'ahead', snap);
                     }
                 }
                 if (follower && follower.checkEventTriggerHere) {
                     follower.checkEventTriggerHere([0, 1, 2]);
                     if ($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) {
-                        this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
-                        const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                        if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
-                        Debug.log('[Autonomy] Interacted with event via here-all:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
-                        return true;
+                        return this._finalizeInteractionStart(event, follower, 'here-all', snap);
                     }
                 }
                 if (event.start) {
                     event.start();
-                    this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 15000);
-                    const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
-                    if (snap && (snap.type === 'container' || snap.type === 'door' || snap.type === 'npc')) this._markEventSearched(snap.id || (event.eventId ? event.eventId() : event._eventId), snap.type, 'interaction_started');
-                    Debug.log('[Autonomy] Interacted with event:', event.eventId ? event.eventId() : null, event.event ? event.event().name : '');
-                    return true;
+                    return this._finalizeInteractionStart(event, follower, 'direct', snap);
                 }
             } catch (error) {
                 this._setEventCooldown(event.eventId ? event.eventId() : event._eventId, 5000);
