@@ -3167,6 +3167,7 @@ Respond ONLY with this JSON:
             const startTime = performance.now();
             const prompt = this._buildPrompt(battleState);
             if (Config.debugMode) Debug.log('[Combat] Prompt built, length:', prompt.length);
+            const failureChain = [];
 
             // Telemetry helper for combat logging
             const _logCombatDecision = (decision, modelUsed, source) => {
@@ -3184,7 +3185,8 @@ Respond ONLY with this JSON:
                     decision_dialog: decision ? decision.dialog : null,
                     response_source: source,
                     model_used: modelUsed,
-                    latency_ms: latency
+                    latency_ms: latency,
+                    failure_chain: failureChain.slice()
                 };
                 ThesisLogger.log('combat_decision', snapshot);
                 DebugState.captureCombat(snapshot);
@@ -3212,7 +3214,7 @@ Respond ONLY with this JSON:
                     }, isLocal ? { enable_thinking: false } : {})));
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
-                        return { _requestFailed: true };
+                        return { _requestFailed: true, _failure: { model: model, type: 'http', status: xhr.status, body: String(xhr.responseText || '').substring(0, 400) } };
                     }
                     const response = JSON.parse(xhr.responseText);
                     const rawContent = String(
@@ -3260,16 +3262,16 @@ Respond ONLY with this JSON:
                     // so caller knows NOT to markFailed (model worked, validation didn't)
                     if (decision) {
                         Debug.warn(`[Combat] ${model} returned decision that failed validation:`, decision.action, '→', decision.target);
-                        return { _validationFailed: true, decision: decision };
+                        return { _validationFailed: true, decision: decision, _failure: { model: model, type: 'validation', action: decision.action, target: decision.target, limb: decision.limb } };
                     }
                     Debug.warn(`[Combat] ${model} returned unparseable response`);
-                    return { _parseFailed: true };
+                    return { _parseFailed: true, _failure: { model: model, type: 'parse', raw: rawContent || String(xhr.responseText || '').substring(0, 400) } };
                 } catch (error) {
                     Debug.warn(`[Combat] ${model} error:`, error.message, error.name);
                     if (error && error.stack) {
                         Debug.warn('[Combat] Stack:', String(error.stack).substring(0, 400));
                     }
-                    return { _requestFailed: true };
+                    return { _requestFailed: true, _failure: { model: model, type: 'exception', message: error.message, name: error.name } };
                 }
             };
 
@@ -3279,6 +3281,7 @@ Respond ONLY with this JSON:
                 const localResult = _trySyncRequest(
                     Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true
                 );
+                if (localResult && localResult._failure) failureChain.push(localResult._failure);
                 if (localResult && !localResult._validationFailed && !localResult._parseFailed && !localResult._requestFailed) {
                     _logCombatDecision(localResult, Config.localModel, 'local');
                     return localResult;
@@ -3298,12 +3301,12 @@ Respond ONLY with this JSON:
                         const groqResult = _trySyncRequest(
                             Config.apiEndpoint, groqHeaders, model, 300, false
                         );
+                        if (groqResult && groqResult._failure) failureChain.push(groqResult._failure);
                         if (groqResult && !groqResult._validationFailed && !groqResult._parseFailed && !groqResult._requestFailed) {
                             Debug.log('[Combat] Groq fallback succeeded:', model);
                             _logCombatDecision(groqResult, model, 'groq_fallback');
                             return groqResult;
                         }
-                        if (groqResult && groqResult._requestFailed) ModelRouter.markFailed(model);
                     }
                 }
             } else {
@@ -3313,8 +3316,8 @@ Respond ONLY with this JSON:
                     const result = _trySyncRequest(
                         Config.getEndpoint(), Config.getHeaders(), model, 300, false
                     );
+                    if (result && result._failure) failureChain.push(result._failure);
                     if (result && !result._validationFailed && !result._parseFailed && !result._requestFailed) { _logCombatDecision(result, model, 'groq'); return result; }
-                    if (result && result._requestFailed) ModelRouter.markFailed(model);
                 }
             }
 
@@ -5023,6 +5026,16 @@ Respond ONLY with this JSON:
             return true;
         },
 
+        _isActionableNearbyItem(snapshot, item) {
+            if (!snapshot || !item || item.eventId == null) return false;
+            if (this._isEventOnCooldown(item.eventId)) return false;
+            if (this._isEventSearched(item.eventId)) return false;
+            if (item.type === 'container' || item.type === 'loot') return item.distance <= Math.max(1, snapshot.detourLimit);
+            if (item.type === 'npc') return !!snapshot.allowNpc && item.distance <= Math.max(1, snapshot.detourLimit);
+            if (item.type === 'door') return !!snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit - 1);
+            return false;
+        },
+
         _pickFollowAnchor(player) {
             const follower = this.getFollower();
             if (!player || !follower) return null;
@@ -5195,21 +5208,12 @@ Respond ONLY with this JSON:
                 return { action: 'RETURN', reason: 'too far from player' };
             }
 
-            const safeLoot = snapshot.nearby.find(item =>
-                (item.type === 'container' || item.type === 'loot') &&
-                item.distance <= snapshot.detourLimit
-            );
+            const safeLoot = snapshot.nearby.find(item => this._isActionableNearbyItem(snapshot, item) && (item.type === 'container' || item.type === 'loot'));
             if (safeLoot) {
                 return { action: 'LOOT', eventId: safeLoot.eventId, reason: 'safe nearby supplies' };
             }
 
-            const safeDoor = snapshot.nearby.find(item =>
-                item.type === 'door' &&
-                snapshot.allowDoors &&
-                !this._isEventSearched(item.eventId) &&
-                !this._isRecentTransfer(4000) &&
-                item.distance <= Math.max(1, snapshot.detourLimit - 1)
-            );
+            const safeDoor = snapshot.nearby.find(item => this._isActionableNearbyItem(snapshot, item) && item.type === 'door');
             if (safeDoor) {
                 return { action: 'FOLLOW', reason: 'doors require explicit decision' };
             }
@@ -5225,12 +5229,12 @@ Respond ONLY with this JSON:
                 snapshot.leashDistance <= Math.max(2, snapshot.detourLimit);
 
             const nearestLoot = nearby.find(item =>
-                (item.type === 'container' || item.type === 'loot') &&
-                item.distance <= Math.max(1, (snapshot && snapshot.detourLimit) || 1)
+                this._isActionableNearbyItem(snapshot, item) &&
+                (item.type === 'container' || item.type === 'loot')
             );
             const nearestDoor = null;
             const nearestNpc = snapshot && snapshot.allowNpc
-                ? nearby.find(item => item.type === 'npc' && item.distance <= Math.max(1, snapshot.detourLimit))
+                ? nearby.find(item => this._isActionableNearbyItem(snapshot, item) && item.type === 'npc')
                 : null;
 
             if (safeToDetour && (finalDecision.action === 'FOLLOW' || finalDecision.action === 'SCOUT')) {
@@ -5348,8 +5352,9 @@ Respond ONLY with this JSON:
                 }
                 const snapshotHash = this._hashSnapshot(snapshot);
                 if (this._state.lastSnapshotHash === snapshotHash && this._state.lastDecision) {
-                    this._applyDecision(this._state.lastDecision, snapshot);
-                    this._logTick(snapshot, this._state.lastDecision, 'cached', Date.now() - start, null);
+                    const cachedDecision = this._normalizeDecision(snapshot, this._state.lastDecision, this._fallbackDecision(snapshot));
+                    this._applyDecision(cachedDecision, snapshot);
+                    this._logTick(snapshot, cachedDecision, 'cached', Date.now() - start, null);
                     return;
                 }
                 const decision = await this._requestDecision(snapshot);
@@ -5437,6 +5442,7 @@ Respond ONLY with this JSON:
                     : ''
             );
             if (this._state.lastRawLocalContent) {
+                console.log('[Autonomy LLM]', this._state.lastRawLocalContent);
                 Debug.log('[Autonomy LLM]', this._state.lastRawLocalContent);
             }
             let decision = GeminiAPIHandler._parseResponse(data);
@@ -5444,6 +5450,7 @@ Respond ONLY with this JSON:
                 return Object.assign({ _autonomySource: 'fallback' }, fallback);
             }
             decision.action = String(decision.action).toUpperCase();
+            console.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
             Debug.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
             decision = this._normalizeDecision(snapshot, Object.assign({ _autonomySource: 'local' }, decision), fallback);
 
@@ -5622,6 +5629,7 @@ Respond ONLY with this JSON:
             const leashLimit = Math.max(1, this._state.mode === 'return' ? 0 : Config.autonomyMaxDetourDistance);
             const distToPlayer = this._distance(follower, player);
             if (this._state.mode === 'follow') {
+                if (distToPlayer <= 2) return;
                 if (!this._state.followAnchor || this._state.followAnchor.expiresAt <= now || this._distance(follower, this._state.followAnchor) <= 0) {
                     this._state.followAnchor = this._pickFollowAnchor(player);
                 }
@@ -5678,8 +5686,16 @@ Respond ONLY with this JSON:
 
             const messageWindow = scene._messageWindow;
             const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : scene._choiceWindow;
-            if (choiceWindow && choiceWindow.active && choiceWindow.isOpen && choiceWindow.isOpen()) {
-                if (choiceWindow.index && choiceWindow.index() < 0 && choiceWindow.select) choiceWindow.select(0);
+            if (choiceWindow && ((choiceWindow.active) || (choiceWindow.visible && choiceWindow.isOpen && choiceWindow.isOpen()))) {
+                const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
+                let index = 0;
+                if (Array.isArray(choices) && choices.length >= 2) {
+                    const joined = choices.join(' | ').toLowerCase();
+                    if (/(cara|cruz|heads|tails|coin|moneda)/i.test(joined)) {
+                        index = Math.random() < 0.5 ? 0 : 1;
+                    }
+                }
+                if (choiceWindow.select) choiceWindow.select(index);
                 if (choiceWindow.processOk) choiceWindow.processOk();
                 return true;
             }
@@ -5698,7 +5714,7 @@ Respond ONLY with this JSON:
             }
             if (messageWindow && messageWindow.visible && !(messageWindow.isClosed && messageWindow.isClosed())) {
                 if (messageWindow.isAnySubWindowActive && messageWindow.isAnySubWindowActive()) {
-                    return false;
+                    return true;
                 }
                 if (messageWindow.pause) {
                     messageWindow.pause = false;
