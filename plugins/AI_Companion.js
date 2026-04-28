@@ -7827,7 +7827,7 @@ ${itemDesc ? 'Item info: ' + itemDesc : ''}
 ${gearComparison ? 'Gear comparison: ' + gearComparison : ''}
 ${isFood && isHungry ? 'You are HUNGRY. You desperately want to eat. React with hunger and need.' : ''}
 
-React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isArmor ? 'Comment on whether it is worth equipping based on the gear comparison.' : ''}`;
+React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isArmor ? 'Comment on whether it seems worth equipping based on the gear comparison, but do not claim you already equipped it.' : ''}`;
 
             try {
                 if (Config.useMockAI) {
@@ -7901,10 +7901,84 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             });
         },
 
+        _partySupportItems() {
+            if (!$gameParty) return { healing: [], bandages: [], food: [], mind: [] };
+            const buckets = { healing: [], bandages: [], food: [], mind: [] };
+            const items = $gameParty.items();
+            for (const item of items) {
+                const count = $gameParty.numItems(item);
+                if (count <= 0) continue;
+                const name = String(item.name || '');
+                const lower = name.toLowerCase();
+                const kb = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItemInfo) ? FearHungerKB.getItemInfo(name) : null;
+                if (kb && kb.type === 'food') {
+                    buckets.food.push({ item, count });
+                    continue;
+                }
+                if (/vendaje|bandage|gasas|gauze/i.test(lower)) {
+                    buckets.bandages.push({ item, count });
+                    continue;
+                }
+                if (/ale|cerveza|whiskey|wine|vino|opium|tabaco|tobacco|mind|cordura|vial azul|blue vial|elixir/i.test(lower)) {
+                    buckets.mind.push({ item, count });
+                    continue;
+                }
+                if (/hierba|herb|cura|heal|pocion|poción|vial verde|green vial|vial rojo|red vial|medicine|medicina/i.test(lower)) {
+                    buckets.healing.push({ item, count });
+                }
+            }
+            return buckets;
+        },
+
+        _supportNeedSnapshot() {
+            if (!$gameParty || !$gameParty.members) return null;
+            const members = $gameParty.members().filter(m => m);
+            if (members.length === 0) return null;
+            const items = this._partySupportItems();
+            const needs = [];
+            const hungerRegex = /hambre/i;
+            const bleedRegex = /sangr|bleed/i;
+            const poisonRegex = /poison|venen|toxic|tóxic/i;
+            for (const actor of members) {
+                const hpPct = actor.mhp > 0 ? (actor.hp / actor.mhp) * 100 : 100;
+                const mpPct = actor.mmp > 0 ? (actor.mp / actor.mmp) * 100 : 100;
+                const states = actor.states ? actor.states() : [];
+                const bleeding = states.some(s => bleedRegex.test(String(s.name || '')));
+                const poisoned = states.some(s => poisonRegex.test(String(s.name || '')));
+                const hungerStates = states.filter(s => hungerRegex.test(String(s.name || '')));
+                let hungerLevel = 0;
+                hungerStates.forEach(s => {
+                    const match = String(s.name || '').match(/(\d+)/);
+                    if (match) hungerLevel = Math.max(hungerLevel, Number(match[1]) || 0);
+                    else hungerLevel = Math.max(hungerLevel, 1);
+                });
+                if (bleeding && items.bandages.length > 0) {
+                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 100 : 95, kind: 'bandage', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.bandages[0].item.name });
+                }
+                if (poisoned && items.healing.length > 0) {
+                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 90 : 85, kind: 'healing', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.healing[0].item.name });
+                }
+                if (hpPct <= 35 && items.healing.length > 0) {
+                    needs.push({ priority: hpPct <= 20 ? 88 : 78, kind: 'healing', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.healing[0].item.name });
+                }
+                if (mpPct <= 30 && items.mind.length > 0) {
+                    needs.push({ priority: 60, kind: 'mind', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.mind[0].item.name });
+                }
+                if (hungerLevel >= 3 && items.food.length > 0) {
+                    needs.push({ priority: hungerLevel >= 4 ? 72 : 58, kind: 'food', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.food[0].item.name, hungerLevel });
+                }
+            }
+            if (needs.length === 0) return null;
+            needs.sort((a, b) => b.priority - a.priority);
+            return needs[0];
+        },
+
         // Hunger awareness — called periodically
         _lastHungerLevel: 0,
         _lastHungerCheck: 0,
         HUNGER_CHECK_INTERVAL: 60000, // 60 seconds
+        _lastSupportCheck: 0,
+        SUPPORT_CHECK_INTERVAL: 15000,
 
         checkHunger() {
             if (Date.now() - this._lastHungerCheck < this.HUNGER_CHECK_INTERVAL) return;
@@ -7920,6 +7994,41 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
 
             // AI comments about hunger
             this._generateHungerComment(hungerLevel);
+        },
+
+        checkSupportNeeds() {
+            if (Date.now() - this._lastSupportCheck < this.SUPPORT_CHECK_INTERVAL) return;
+            this._lastSupportCheck = Date.now();
+            if (!this.canSpeak()) return;
+            if ($gameParty.inBattle()) return;
+            if ($gameMessage.isBusy()) return;
+            const need = this._supportNeedSnapshot();
+            if (!need) return;
+            const topic = `support_${need.kind}`;
+            const factKey = `support:${need.kind}:${need.actor}:${need.itemName}`;
+            if (DialogueMemory.hasRecentFact(factKey, topic, 120000, $gameMap ? $gameMap.mapId() : null)) return;
+            const es = Config.language === 'es';
+            let line = '';
+            if (need.kind === 'bandage') {
+                line = need.targetSelf
+                    ? (es ? `Necesito un vendaje. Tengo ${need.itemName}.` : `I need a bandage. I have ${need.itemName}.`)
+                    : (es ? `${need.actor} necesita un vendaje.` : `${need.actor} needs a bandage.`);
+            } else if (need.kind === 'healing') {
+                line = need.targetSelf
+                    ? (es ? `Estoy mal. Mejor usar ${need.itemName}.` : `I'm hurt. Better use ${need.itemName}.`)
+                    : (es ? `${need.actor} necesita curación.` : `${need.actor} needs healing.`);
+            } else if (need.kind === 'mind') {
+                line = need.targetSelf
+                    ? (es ? `Me falla la cabeza. ${need.itemName} ayudaría.` : `My mind is slipping. ${need.itemName} would help.`)
+                    : (es ? `${need.actor} necesita recuperar cordura.` : `${need.actor} needs mind restored.`);
+            } else if (need.kind === 'food') {
+                line = need.targetSelf
+                    ? (es ? `Tengo hambre. Podría comer ${need.itemName}.` : `I'm hungry. I could eat ${need.itemName}.`)
+                    : (es ? `${need.actor} debería comer algo.` : `${need.actor} should eat something.`);
+            }
+            if (!line) return;
+            DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
+            this._speak(line, topic);
         },
 
         // Track warned positions to avoid repeating
@@ -8964,6 +9073,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
         // Periodic hunger awareness check
         AmbientDialogue.checkHunger();
+        AmbientDialogue.checkSupportNeeds();
 
         // Proactive trap/threat warning from EnvironmentScanner
         AmbientDialogue.checkNearbyThreats();
