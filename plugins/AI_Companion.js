@@ -4802,6 +4802,8 @@ Respond ONLY with this JSON:
             lastMoveAt: 0,
             lastInteractAt: 0,
             lastUiAdvanceAt: 0,
+            lastUiSignature: '',
+            uiHoldUntil: 0,
             lastMapTransferAt: 0,
             mode: 'follow',
             targetEventId: null,
@@ -4891,6 +4893,8 @@ Respond ONLY with this JSON:
             this._state.currentTask = null;
             this._state.lingerUntil = 0;
             this._state.lastRawLocalContent = '';
+            this._state.lastUiSignature = '';
+            this._state.uiHoldUntil = 0;
             if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
             if (follower && follower.setThrough) follower.setThrough(true);
         },
@@ -4905,6 +4909,8 @@ Respond ONLY with this JSON:
             this._state.currentTask = null;
             this._state.lastDecision = null;
             this._state.lastSnapshotHash = null;
+            this._state.lastUiSignature = '';
+            this._state.uiHoldUntil = 0;
         },
 
         _distance(a, b) {
@@ -5685,16 +5691,38 @@ Respond ONLY with this JSON:
         _advanceInteractionUi(follower) {
             if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
             const now = Date.now();
-            if (now - this._state.lastUiAdvanceAt < 900) return true;
-            this._state.lastUiAdvanceAt = now;
-
             const scene = SceneManager._scene;
             if (!scene) return true;
 
             const messageWindow = scene._messageWindow;
             const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : scene._choiceWindow;
+            const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
+            const messageText = ($gameMessage && $gameMessage._texts && $gameMessage._texts.length > 0)
+                ? $gameMessage._texts.join(' | ')
+                : '';
+            let signature = 'busy';
+            let holdMs = 1200;
             if (choiceWindow && ((choiceWindow.active) || (choiceWindow.visible && choiceWindow.isOpen && choiceWindow.isOpen()))) {
-                const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
+                signature = 'choice:' + choices.join('|');
+                holdMs = /(cara|cruz|heads|tails|coin|moneda)/i.test(signature) ? 1400 : 1700;
+            } else if (messageWindow && messageWindow.pause) {
+                signature = 'pause:' + messageText;
+                holdMs = 1700;
+            } else if (messageWindow && messageWindow._textState) {
+                signature = 'text:' + messageText;
+                holdMs = 0;
+            }
+
+            if (signature !== this._state.lastUiSignature) {
+                this._state.lastUiSignature = signature;
+                this._state.uiHoldUntil = now + holdMs;
+                return true;
+            }
+            if (this._state.uiHoldUntil && now < this._state.uiHoldUntil) return true;
+            if (now - this._state.lastUiAdvanceAt < 1300) return true;
+            this._state.lastUiAdvanceAt = now;
+
+            if (choiceWindow && ((choiceWindow.active) || (choiceWindow.visible && choiceWindow.isOpen && choiceWindow.isOpen()))) {
                 let index = 0;
                 if (Array.isArray(choices) && choices.length >= 2) {
                     const joined = choices.join(' | ').toLowerCase();
