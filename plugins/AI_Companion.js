@@ -5984,16 +5984,16 @@ Respond ONLY with this JSON:
                     follower._okIsPressed = true;
                     follower._preventNextOk = false;
                 }
-                if (touchDoor && follower && follower.x === event.x && follower.y === event.y && event.start) {
-                    event.start();
-                    if (!$gameMap.setupStartingEvent || $gameMap.setupStartingEvent()) {
-                        return this._finalizeInteractionStart(event, follower, 'touch-door', snap);
-                    }
-                }
                 if (snap && snap.type === 'door' && event.start) {
                     event.start();
                     if (!$gameMap.setupStartingEvent || $gameMap.setupStartingEvent()) {
                         return this._finalizeInteractionStart(event, follower, 'direct-door', snap);
+                    }
+                }
+                if (touchDoor && follower && follower.x === event.x && follower.y === event.y && event.start) {
+                    event.start();
+                    if (!$gameMap.setupStartingEvent || $gameMap.setupStartingEvent()) {
+                        return this._finalizeInteractionStart(event, follower, 'touch-door', snap);
                     }
                 }
                 if (this._interactAheadLikePlayer(follower)) {
