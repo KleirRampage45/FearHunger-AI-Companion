@@ -2504,6 +2504,49 @@ Reply with ONLY the category name, nothing else.`;
             return key === 'piernas' ? 'legs' : key;
         }
 
+        static _getLimbAliases(token) {
+            const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
+            const aliases = [normalized];
+            const translated = this.LIMB_TRANSLATIONS[normalized];
+            if (translated && aliases.indexOf(translated) === -1) aliases.push(translated);
+            if (normalized === 'arms') {
+                ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].forEach(alias => {
+                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                });
+            } else if (normalized === 'legs') {
+                ['left leg', 'right leg', 'pierna izquierda', 'pierna derecha'].forEach(alias => {
+                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                });
+            } else if (normalized === 'weapon arm' || normalized === 'sword arm') {
+                ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].forEach(alias => {
+                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                });
+            } else if (normalized === 'body') {
+                ['torso'].forEach(alias => {
+                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                });
+            }
+            return aliases;
+        }
+
+        static _findAliveLimbKey(enemy, token) {
+            if (!enemy || !enemy.limbs) return null;
+            const aliases = this._getLimbAliases(token);
+            for (let i = 0; i < aliases.length; i++) {
+                const alias = aliases[i];
+                if (enemy.limbs[alias] && enemy.limbs[alias].alive) return alias;
+            }
+            for (const [key, limb] of Object.entries(enemy.limbs)) {
+                if (!limb || !limb.alive) continue;
+                const keyLower = String(key).toLowerCase();
+                const translated = (this.LIMB_TRANSLATIONS[keyLower] || '').toLowerCase();
+                if (aliases.some(alias => keyLower === alias || translated === alias || keyLower.includes(alias) || alias.includes(keyLower) || (translated && (translated.includes(alias) || alias.includes(translated))))) {
+                    return key;
+                }
+            }
+            return null;
+        }
+
         static _findBattleEnemyByName(battleState, targetName) {
             const enemies = (battleState && battleState.enemies) ? battleState.enemies.filter(e => e && e.alive) : [];
             if (!targetName) return enemies[0] || null;
@@ -2519,21 +2562,22 @@ Reply with ONLY the category name, nothing else.`;
         static _expandPriorityToken(token, enemy) {
             const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
             const alive = enemy && enemy.limbs ? enemy.limbs : {};
-            if (normalized === 'arms') return ['left arm', 'right arm'].filter(key => alive[key] && alive[key].alive);
-            if (normalized === 'legs') return ['left leg', 'right leg'].filter(key => alive[key] && alive[key].alive);
+            if (normalized === 'arms') return ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].filter((key, idx, arr) => alive[key] && alive[key].alive && arr.indexOf(key) === idx);
+            if (normalized === 'legs') return ['left leg', 'right leg', 'pierna izquierda', 'pierna derecha'].filter((key, idx, arr) => alive[key] && alive[key].alive && arr.indexOf(key) === idx);
             if (normalized === 'weapon arm' || normalized === 'sword arm') {
-                return ['left arm', 'right arm'].filter(key => alive[key] && alive[key].alive);
+                return ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].filter((key, idx, arr) => alive[key] && alive[key].alive && arr.indexOf(key) === idx);
             }
             if (normalized === 'body') return alive.torso && alive.torso.alive ? ['torso'] : [];
-            return [normalized];
+            const resolved = this._findAliveLimbKey(enemy, normalized);
+            return resolved ? [resolved] : [normalized];
         }
 
         static _pickBestAliveLimb(enemy) {
             if (!enemy || !enemy.limbs) return null;
-            const preferredOrder = ['torso', 'head', 'left arm', 'right arm', 'left leg', 'right leg'];
+            const preferredOrder = ['torso', 'head', 'left arm', 'right arm', 'left leg', 'right leg', 'cabeza', 'brazo izquierdo', 'brazo derecho', 'pierna izquierda', 'pierna derecha'];
             for (let i = 0; i < preferredOrder.length; i++) {
-                const key = preferredOrder[i];
-                if (enemy.limbs[key] && enemy.limbs[key].alive) return key;
+                const key = this._findAliveLimbKey(enemy, preferredOrder[i]);
+                if (key) return key;
             }
             const aliveKeys = Object.keys(enemy.limbs).filter(key => enemy.limbs[key] && enemy.limbs[key].alive);
             return aliveKeys.length > 0 ? aliveKeys[0] : null;
@@ -2584,11 +2628,12 @@ Reply with ONLY the category name, nothing else.`;
                 }
             }
 
-            if (requestedLimb && enemy.limbs[requestedLimb] && enemy.limbs[requestedLimb].alive) {
-                chosenLimb = requestedLimb;
-            } else if (requestedLimb) {
-                const expandedRequested = this._expandPriorityToken(requestedLimb, enemy);
-                chosenLimb = expandedRequested.find(key => enemy.limbs[key] && enemy.limbs[key].alive) || null;
+            if (requestedLimb) {
+                chosenLimb = this._findAliveLimbKey(enemy, requestedLimb);
+                if (!chosenLimb) {
+                    const expandedRequested = this._expandPriorityToken(requestedLimb, enemy);
+                    chosenLimb = expandedRequested.find(key => enemy.limbs[key] && enemy.limbs[key].alive) || null;
+                }
             }
 
             if (preferredAliveLimbs.length > 0) {
@@ -2613,6 +2658,16 @@ Reply with ONLY the category name, nothing else.`;
 
         static _resolveTarget(decision) {
             if (!decision.target) return 0;
+            const normalizedAction = this._normalizeActionName(decision.action);
+            if (normalizedAction === 'guard' || normalizedAction === 'defend' || !decision.limb) {
+                const enemies = $gameTroop.members();
+                for (let i = 0; i < enemies.length; i++) {
+                    if (enemies[i].name().toLowerCase().includes(decision.target.toLowerCase())) {
+                        return i;
+                    }
+                }
+                return 0;
+            }
 
             // Check if targeting a limb
             if (decision.limb && decision.target) {
@@ -2628,6 +2683,10 @@ Reply with ONLY the category name, nothing else.`;
                         // Try all variations
                         let limb = enemy.limbs[limbKey] || enemy.limbs[limbKeyUnderscore]
                             || enemy.limbs[translated] || enemy.limbs[translatedUnderscore];
+                        if (!limb) {
+                            const resolvedKey = this._findAliveLimbKey(enemy, limbKey);
+                            if (resolvedKey) limb = enemy.limbs[resolvedKey];
+                        }
 
                         // If not found, fuzzy search all limbs
                         if (!limb) {
