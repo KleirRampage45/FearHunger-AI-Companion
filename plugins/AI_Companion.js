@@ -5947,7 +5947,7 @@ Respond ONLY with this JSON:
             this._state.lastInteractAt = now;
             this._faceTarget(follower, event);
             const snap = this._rememberInteractionTarget(event, follower);
-            const touchDoor = this._isTouchDoorEvent(event);
+            const touchDoor = !!(EnvironmentScanner && EnvironmentScanner._isTouchDoorEvent && EnvironmentScanner._isTouchDoorEvent(event));
 
             try {
                 if (follower) {
