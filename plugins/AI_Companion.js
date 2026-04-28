@@ -2465,6 +2465,13 @@ Reply with ONLY the category name, nothing else.`;
             return this.ACTION_ALIASES[key] || key;
         }
 
+        static _generateQuickDialog(decision) {
+            if (typeof GeminiAPIHandler !== 'undefined' && GeminiAPIHandler._generateQuickDialog) {
+                return GeminiAPIHandler._generateQuickDialog(decision);
+            }
+            return null;
+        }
+
         static _findSkillByName(actor, name) {
             return actor.skills().find(s =>
                 s.name.toLowerCase() === name.toLowerCase()
