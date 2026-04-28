@@ -5139,11 +5139,12 @@ Respond ONLY with this JSON:
                     if (this._isEventOnCooldown(item.eventId)) return false;
                     if (this._isEventSearched(item.eventId)) return false;
                     if (item.type === 'container') return item.distance <= maxRange;
+                    if (item.type === 'door') return snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit);
                     if (item.type === 'npc') return snapshot.allowNpc && item.distance <= maxRange;
                     return false;
                 })
                 .sort((a, b) => {
-                    const priority = { container: 0, npc: 1 };
+                    const priority = { container: 0, door: 1, npc: 2 };
                     const pa = priority[a.type] != null ? priority[a.type] : 99;
                     const pb = priority[b.type] != null ? priority[b.type] : 99;
                     if (pa !== pb) return pa - pb;
@@ -5722,6 +5723,9 @@ Respond ONLY with this JSON:
             if (!scene) return true;
 
             const messageWindow = scene._messageWindow;
+            const messageText = ($gameMessage && $gameMessage._texts && $gameMessage._texts.length > 0)
+                ? $gameMessage._texts.join(' | ')
+                : '';
             const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : scene._choiceWindow;
             if (choiceWindow && ((choiceWindow.active) || (choiceWindow.visible && choiceWindow.isOpen && choiceWindow.isOpen()))) {
                 const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
