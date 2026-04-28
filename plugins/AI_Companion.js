@@ -1587,13 +1587,13 @@ Reply with ONLY the category name, nothing else.`;
 
         _eventType(tags) {
             if (tags.includes('combat_trigger')) return 'combat_trigger';
+            if (tags.includes('shop')) return 'shop';
             if (tags.includes('npc') && !tags.includes('enemy')) return 'npc';
             if (tags.includes('enemy')) return 'enemy';
             if (tags.includes('trap')) return 'trap';
             if (tags.includes('door')) return 'door';
             if (tags.includes('container')) return 'container';
             if (tags.includes('save_point')) return 'save_point';
-            if (tags.includes('shop')) return 'shop';
             if (tags.includes('npc')) return 'npc';
             if (tags.includes('hazard')) return 'hazard';
             if (tags.includes('corpse')) return 'corpse';
@@ -5040,6 +5040,35 @@ Respond ONLY with this JSON:
             if (item.type === 'container' || item.type === 'loot') return item.distance <= Math.max(1, snapshot.detourLimit);
             if (item.type === 'npc') return !!snapshot.allowNpc && item.distance <= Math.max(1, snapshot.detourLimit);
             if (item.type === 'door') return !!snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit - 1);
+            if (item.type === 'shop') return false;
+            return false;
+        },
+
+        _requireConsent(reason) {
+            const targetEventId = this._state.targetEventId;
+            if (targetEventId != null) {
+                this._setEventCooldown(targetEventId, 120000);
+            }
+            this._state.mode = 'hold';
+            this._state.targetEventId = null;
+            this._state.targetPoint = null;
+            this._state.targetApproach = null;
+            this._state.targetLabel = '';
+            this._clearTask();
+            Debug.warn('[Autonomy] Consent required:', reason);
+            if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue && AmbientDialogue._speak) {
+                const es = Config.language === 'es';
+                AmbientDialogue._speak(es ? 'David, esto lo decides tú.' : 'This one is your call.', 'autonomy_consent');
+            }
+        },
+
+        _choiceNeedsConsent(choices, messageText) {
+            const joined = ((choices || []).join(' | ') + ' ' + (messageText || '')).toLowerCase();
+            if (!joined.trim()) return false;
+            if (/(cara|cruz|heads|tails|coin|moneda)/i.test(joined)) return false;
+            if (/(compr|buy|sell|vender|trade|merchant|mercader|shop|tienda)/i.test(joined)) return true;
+            if (/(sacrific|ofrec|offering|altar|gro-goroth|grogoroth|god|dios|ritual|niña|nina|girl|companion|party member|ally)/i.test(joined)) return true;
+            if (/(le'garde|legarde|enki|darce|cahara|ragnvaldr|moonless|buckman|trortur)/i.test(joined)) return true;
             return false;
         },
 
@@ -5279,6 +5308,7 @@ Respond ONLY with this JSON:
                 if (!target) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'npc' && !snapshot.allowNpc) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'door' && !snapshot.allowDoors) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (target.type === 'shop') return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'door' && this._isRecentTransfer(4000)) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'enemy' || target.type === 'trap' || target.type === 'hazard') {
                     return Object.assign({ _autonomySource: 'fallback' }, fallback);
@@ -5695,6 +5725,10 @@ Respond ONLY with this JSON:
             const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : scene._choiceWindow;
             if (choiceWindow && ((choiceWindow.active) || (choiceWindow.visible && choiceWindow.isOpen && choiceWindow.isOpen()))) {
                 const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
+                if (this._choiceNeedsConsent(choices, messageText)) {
+                    this._requireConsent('high-risk choice prompt');
+                    return true;
+                }
                 let index = 0;
                 if (Array.isArray(choices) && choices.length >= 2) {
                     const joined = choices.join(' | ').toLowerCase();
