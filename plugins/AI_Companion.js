@@ -9531,6 +9531,10 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             const text = es
                 ? `Encontré ${itemName}; ${reason}. ¿Me lo equipo?`
                 : `Found ${itemName}; ${reason}. Equip it?`;
+            if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
+                AutonomySystem._state.manualUiHold = true;
+                AutonomySystem._state.lastUiAdvanceAt = Date.now();
+            }
             $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
             $gameMessage.setBackground(0);
             $gameMessage.setPositionType(2);
@@ -9544,6 +9548,10 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             $gameMessage.setChoiceBackground(0);
             $gameMessage.setChoicePositionType(2);
             $gameMessage.setChoiceCallback(choice => {
+                if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
+                    AutonomySystem._state.manualUiHold = false;
+                    AutonomySystem._state.lastUiAdvanceAt = Date.now();
+                }
                 if (choice === 0) {
                     this._equip(candidate);
                 } else {
