@@ -8239,9 +8239,8 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (isLight) return es ? 'Encenderé esto. No me gusta la oscuridad.' : `I'll light this. I don't like the dark.`;
             if (subtype === 'bookshelf') return es ? 'Revisaré estos libros.' : `I'll check these books.`;
             if (subtype === 'furniture_loot') return es ? 'Voy a revisar la mesa.' : `I'll check the table.`;
-            if (subtype === 'chest') return es ? 'Voy a abrir el cofre.' : `I'll open the chest.`;
             if (subtype === 'crate') return es ? 'Voy a revisar la caja.' : `I'll check the crate.`;
-            if (target.type === 'container' || target.type === 'loot') return es ? `Voy a revisar ${label.toLowerCase()}.` : `I'll check ${label.toLowerCase()}.`;
+            if (target.type === 'container' || target.type === 'loot') return es ? 'Voy a revisar esto.' : `I'll check this.`;
             return es ? 'Déjame ver esto.' : `Let me check this.`;
         },
 
