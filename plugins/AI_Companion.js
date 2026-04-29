@@ -4886,12 +4886,16 @@ Respond ONLY with this JSON:
             lastSnapshotHash: null,
             currentTask: null,
             lingerUntil: 0,
+            roomSettleUntil: 0,
             followAnchor: null,
             lastRawLocalContent: '',
             lastInteractionEventId: null,
             lastInteractionType: '',
             lastInteractionLabel: '',
             lastInteractionNeedsConsent: false,
+            postDoorPoint: null,
+            lastDoorInteractionAt: 0,
+            lastDoorEventId: null,
             manualUiHold: false,
             eventCooldowns: {},
             searchedEvents: {}
@@ -4967,11 +4971,15 @@ Respond ONLY with this JSON:
             this._state.reason = '';
             this._state.currentTask = null;
             this._state.lingerUntil = 0;
+            this._state.roomSettleUntil = 0;
             this._state.lastRawLocalContent = '';
             this._state.lastInteractionEventId = null;
             this._state.lastInteractionType = '';
             this._state.lastInteractionLabel = '';
             this._state.lastInteractionNeedsConsent = false;
+            this._state.postDoorPoint = null;
+            this._state.lastDoorInteractionAt = 0;
+            this._state.lastDoorEventId = null;
             this._state.manualUiHold = false;
             if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
             if (follower && follower.setThrough) follower.setThrough(true);
@@ -4991,6 +4999,8 @@ Respond ONLY with this JSON:
             this._state.lastInteractionType = '';
             this._state.lastInteractionLabel = '';
             this._state.lastInteractionNeedsConsent = false;
+            this._state.roomSettleUntil = Date.now() + 3000;
+            this._state.postDoorPoint = null;
             this._state.manualUiHold = false;
         },
 
@@ -5060,6 +5070,38 @@ Respond ONLY with this JSON:
             return !!this._state.lastMapTransferAt && (Date.now() - this._state.lastMapTransferAt) < (ms || 3500);
         },
 
+        _isRoomSettling(ms) {
+            return !!this._state.roomSettleUntil && Date.now() < this._state.roomSettleUntil - (ms || 0);
+        },
+
+        _recordDoorInteraction(eventId) {
+            this._state.lastDoorInteractionAt = Date.now();
+            this._state.lastDoorEventId = eventId != null ? eventId : null;
+            this._state.roomSettleUntil = Date.now() + 3000;
+        },
+
+        _isRecentDoorInteraction(eventId, ms) {
+            if (!this._state.lastDoorInteractionAt) return false;
+            if (Date.now() - this._state.lastDoorInteractionAt >= (ms || 4000)) return false;
+            if (eventId == null) return true;
+            return this._state.lastDoorEventId === eventId;
+        },
+
+        _computePostDoorPoint(snap, event) {
+            const direction = snap && snap.faceDirection ? snap.faceDirection : null;
+            if (!direction || !event) return null;
+            let x = event.x;
+            let y = event.y;
+            if (direction === 2) y += 1;
+            else if (direction === 4) x -= 1;
+            else if (direction === 6) x += 1;
+            else if (direction === 8) y -= 1;
+            else return null;
+            if (!$gameMap || !$gameMap.isValid(x, y)) return null;
+            if (!EnvironmentScanner._tileStandable(x, y)) return null;
+            return { x, y };
+        },
+
         _panicThreat(snapshot) {
             const nearby = (snapshot && snapshot.nearby) || [];
             return nearby.find(item => {
@@ -5127,7 +5169,7 @@ Respond ONLY with this JSON:
             if (this._targetNeedsConsent(item)) return false;
             if (item.type === 'container' || item.type === 'loot') return item.distance <= Math.max(1, snapshot.detourLimit);
             if (item.type === 'npc') return !!snapshot.allowNpc && item.distance <= Math.max(1, snapshot.detourLimit);
-            if (item.type === 'door') return !!snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit - 1);
+            if (item.type === 'door') return !!snapshot.allowDoors && !this._isRecentTransfer(4000) && !this._isRecentDoorInteraction(item.eventId, 5000) && item.distance <= Math.max(1, snapshot.detourLimit - 1);
             if (item.type === 'shop') return false;
             return false;
         },
@@ -5272,6 +5314,9 @@ Respond ONLY with this JSON:
             const immediateThreat = this._panicThreat(snapshot);
             if (immediateThreat && snapshot.autoReturn) {
                 return { action: 'RETURN', reason: 'immediate danger nearby', _autonomySource: 'local_purpose' };
+            }
+            if (this._isRoomSettling() && snapshot.leashDistance <= 1) {
+                return { action: 'HOLD', reason: 'settling into room', _autonomySource: 'local_purpose' };
             }
             if (snapshot.leashDistance > snapshot.scoutLimit + 1) {
                 return { action: 'RETURN', reason: 'too far from player', _autonomySource: 'local_purpose' };
@@ -5739,11 +5784,19 @@ Respond ONLY with this JSON:
                     if (approach && approach.faceDirection && follower.setDirection) follower.setDirection(approach.faceDirection);
                     const interactionStarted = this._interactWithEvent(follower, event);
                     if (interactionStarted) {
-                        this._state.mode = 'hold';
+                        const postDoorPoint = this._state.postDoorPoint;
                         this._state.targetEventId = null;
-                        this._state.targetPoint = null;
                         this._state.targetApproach = null;
-                        this._state.lingerUntil = Date.now() + 900;
+                        if (postDoorPoint) {
+                            this._state.mode = 'target_point';
+                            this._state.targetPoint = { x: postDoorPoint.x, y: postDoorPoint.y };
+                            this._state.postDoorPoint = null;
+                            this._state.lingerUntil = 0;
+                        } else {
+                            this._state.mode = 'hold';
+                            this._state.targetPoint = null;
+                            this._state.lingerUntil = Date.now() + 900;
+                        }
                         this._clearTask();
                     } else {
                         const eventId = event.eventId ? event.eventId() : event._eventId;
@@ -5771,6 +5824,7 @@ Respond ONLY with this JSON:
             const leashLimit = Math.max(1, this._state.mode === 'return' ? 0 : Config.autonomyMaxDetourDistance);
             const distToPlayer = this._distance(follower, player);
             if (this._state.mode === 'follow') {
+                if (this._isRoomSettling() && distToPlayer <= 1) return;
                 if (distToPlayer <= 2) return;
                 if (!this._state.followAnchor || this._state.followAnchor.expiresAt <= now || this._distance(follower, this._state.followAnchor) <= 0) {
                     this._state.followAnchor = this._pickFollowAnchor(player);
@@ -5930,9 +5984,15 @@ Respond ONLY with this JSON:
             const eventId = event && (event.eventId ? event.eventId() : event._eventId);
             const interactionSnap = snap || this._rememberInteractionTarget(event, follower);
             const interactionType = interactionSnap && interactionSnap.type ? interactionSnap.type : this._state.lastInteractionType;
-            this._setEventCooldown(eventId, interactionType === 'door' ? 60000 : 15000);
+            this._setEventCooldown(eventId, interactionType === 'door' ? 90000 : 15000);
             if (interactionSnap && (interactionType === 'container' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
                 this._markEventSearched(interactionSnap.id || eventId, interactionType, 'interaction_started');
+            }
+            if (interactionType === 'door') {
+                this._recordDoorInteraction(interactionSnap && interactionSnap.id != null ? interactionSnap.id : eventId);
+                this._state.postDoorPoint = this._computePostDoorPoint(interactionSnap, event);
+            } else {
+                this._state.postDoorPoint = null;
             }
             Debug.log('[Autonomy] Interacted with event via ' + channel + ':', eventId, event && event.event ? event.event().name : '');
             return true;
