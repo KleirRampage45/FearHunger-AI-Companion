@@ -7160,6 +7160,34 @@ Respond ONLY with this JSON:
             this.addTranscriptMessage('player', playerMessage, exchangeContext);
             RelationshipTracker.onConversation();
 
+            if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) {
+                const approvalResponse = SupportApproval.handleChatApproval(playerMessage);
+                if (approvalResponse) {
+                    this.addToHistory('companion', approvalResponse, exchangeContext);
+                    this.addTranscriptMessage('companion', approvalResponse, exchangeContext);
+                    DialogueMemory.rememberLine(approvalResponse, 'chat', dialogueMeta);
+                    ThesisLogger.log('chat', {
+                        player_message: playerMessage,
+                        intent: { types: ['support_approval'], primary: 'support_approval', confidence: 1 },
+                        prompt_length: 0,
+                        prompt_sections: null,
+                        response_text: approvalResponse,
+                        response_source: 'support_approval',
+                        latency_ms: 0,
+                        model_used: null
+                    });
+                    DebugState.captureChat({
+                        player_message: playerMessage,
+                        intent: { types: ['support_approval'], primary: 'support_approval', confidence: 1 },
+                        response_text: approvalResponse,
+                        response_source: 'support_approval',
+                        latency_ms: 0,
+                        model_used: null
+                    });
+                    return approvalResponse;
+                }
+            }
+
             const context = this.getContext();
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
             this._normalizeIntentForContainerQuery(playerMessage, context, intent);
@@ -7962,22 +7990,22 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                     else hungerLevel = Math.max(hungerLevel, 1);
                 });
                 if (bleeding && items.bleed.length > 0) {
-                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 100 : 95, kind: 'bleed', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.bleed[0].item.name });
+                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 100 : 95, kind: 'bleed', actor: actor.name(), actorId: actor.actorId ? actor.actorId() : null, targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.bleed[0].item.name, item: items.bleed[0].item });
                 }
                 if (states.some(s => /infecc|infect/i.test(String(s.name || ''))) && items.infection.length > 0) {
-                    needs.push({ priority: 92, kind: 'infection', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.infection[0].item.name });
+                    needs.push({ priority: 92, kind: 'infection', actor: actor.name(), actorId: actor.actorId ? actor.actorId() : null, targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.infection[0].item.name, item: items.infection[0].item });
                 }
                 if (poisoned && items.poison.length > 0) {
-                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 90 : 85, kind: 'poison', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.poison[0].item.name });
+                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 90 : 85, kind: 'poison', actor: actor.name(), actorId: actor.actorId ? actor.actorId() : null, targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.poison[0].item.name, item: items.poison[0].item });
                 }
                 if (hpPct <= 35 && items.healing.length > 0) {
-                    needs.push({ priority: hpPct <= 20 ? 88 : 78, kind: 'healing', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.healing[0].item.name });
+                    needs.push({ priority: hpPct <= 20 ? 88 : 78, kind: 'healing', actor: actor.name(), actorId: actor.actorId ? actor.actorId() : null, targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.healing[0].item.name, item: items.healing[0].item });
                 }
                 if (mpPct <= 30 && items.mind.length > 0) {
-                    needs.push({ priority: 60, kind: 'mind', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.mind[0].item.name });
+                    needs.push({ priority: 60, kind: 'mind', actor: actor.name(), actorId: actor.actorId ? actor.actorId() : null, targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.mind[0].item.name, item: items.mind[0].item });
                 }
                 if (hungerLevel >= 3 && items.food.length > 0) {
-                    needs.push({ priority: hungerLevel >= 4 ? 72 : 58, kind: 'food', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.food[0].item.name, hungerLevel });
+                    needs.push({ priority: hungerLevel >= 4 ? 72 : 58, kind: 'food', actor: actor.name(), actorId: actor.actorId ? actor.actorId() : null, targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.food[0].item.name, item: items.food[0].item, hungerLevel });
                 }
             }
             if (needs.length === 0) return null;
@@ -8014,40 +8042,25 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (!this.canSpeakSupport()) return;
             const need = this._supportNeedSnapshot();
             if (!need) return;
+            if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending()) return;
             this._lastSupportTime = Date.now();
             const topic = `support_${need.kind}`;
             const factKey = `support:${need.kind}:${need.actor}:${need.itemName}`;
             if (DialogueMemory.hasRecentFact(factKey, topic, 120000, $gameMap ? $gameMap.mapId() : null)) return;
             const es = Config.language === 'es';
-            let line = '';
-            if (need.kind === 'bleed') {
-                line = need.targetSelf
-                    ? (es ? `Estoy sangrando. Usa ${need.itemName}.` : `I'm bleeding. Use ${need.itemName}.`)
-                    : (es ? `${need.actor} sangra. ${need.itemName}.` : `${need.actor} is bleeding. ${need.itemName}.`);
-            } else if (need.kind === 'infection') {
-                line = need.targetSelf
-                    ? (es ? `Tengo infección. ${need.itemName}, ya.` : `I'm infected. ${need.itemName}, now.`)
-                    : (es ? `${need.actor} tiene infección.` : `${need.actor} is infected.`);
-            } else if (need.kind === 'poison') {
-                line = need.targetSelf
-                    ? (es ? `Veneno. ${need.itemName} me ayudaría.` : `Poison. ${need.itemName} would help.`)
-                    : (es ? `${need.actor} está envenenado.` : `${need.actor} is poisoned.`);
-            } else if (need.kind === 'healing') {
-                line = need.targetSelf
-                    ? (es ? `Estoy mal. Mejor usar ${need.itemName}.` : `I'm hurt. Better use ${need.itemName}.`)
-                    : (es ? `${need.actor} necesita curación.` : `${need.actor} needs healing.`);
-            } else if (need.kind === 'mind') {
-                line = need.targetSelf
-                    ? (es ? `Me falla la cabeza. ${need.itemName} ayudaría.` : `My mind is slipping. ${need.itemName} would help.`)
-                    : (es ? `${need.actor} necesita recuperar cordura.` : `${need.actor} needs mind restored.`);
-            } else if (need.kind === 'food') {
-                line = need.targetSelf
-                    ? (es ? `Tengo hambre. Podría comer ${need.itemName}.` : `I'm hungry. I could eat ${need.itemName}.`)
-                    : (es ? `${need.actor} debería comer algo.` : `${need.actor} should eat something.`);
+            if (typeof SupportApproval !== 'undefined' && SupportApproval.request) {
+                SupportApproval.request(need);
             }
+            const line = typeof SupportApproval !== 'undefined' && SupportApproval.buildPrompt
+                ? SupportApproval.buildPrompt(need, es)
+                : '';
             if (!line) return;
             DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
-            this._speak(line, topic);
+            if (typeof SupportApproval !== 'undefined' && SupportApproval._showOverlay) {
+                SupportApproval._showOverlay(line);
+            } else {
+                this._speak(line, topic);
+            }
         },
 
         onUrgentStateChange(actor, state) {
@@ -8411,6 +8424,180 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             for (let i = 1; i < displayLines.length; i++) {
                 $gameMessage.add(displayLines[i]);
             }
+        }
+    };
+
+    //=========================================================================
+    // Support Approval — urgent ask/approve/use loop
+    //=========================================================================
+    const SupportApproval = {
+        _fallbackState: null,
+        PENDING_TTL_MS: 45000,
+
+        _emptyState() {
+            return { pending: null };
+        },
+
+        _getState() {
+            if (typeof $gameSystem === 'undefined' || !$gameSystem) {
+                if (!this._fallbackState) this._fallbackState = this._emptyState();
+                return this._fallbackState;
+            }
+            if (!$gameSystem._aiSupportApproval) $gameSystem._aiSupportApproval = this._emptyState();
+            return $gameSystem._aiSupportApproval;
+        },
+
+        hasPending() {
+            this._refreshPending();
+            return !!this._getState().pending;
+        },
+
+        getPending() {
+            this._refreshPending();
+            return this._getState().pending;
+        },
+
+        clear() {
+            this._getState().pending = null;
+        },
+
+        request(need) {
+            if (!need || !need.item || !need.actorId) return;
+            this._getState().pending = {
+                kind: need.kind,
+                actor: need.actor,
+                actorId: need.actorId,
+                itemName: need.itemName,
+                itemId: need.item.id,
+                targetSelf: !!need.targetSelf,
+                requestedAt: Date.now()
+            };
+        },
+
+        _refreshPending() {
+            const pending = this._getState().pending;
+            if (!pending) return;
+            if (Date.now() - (pending.requestedAt || 0) > this.PENDING_TTL_MS) {
+                this.clear();
+                return;
+            }
+            const item = this._findItem(pending.itemId);
+            const actor = $gameActors && $gameActors.actor ? $gameActors.actor(pending.actorId) : null;
+            if (!item || !actor || ($gameParty && $gameParty.numItems && $gameParty.numItems(item) <= 0) || !this._actorStillNeeds(actor, pending.kind)) {
+                this.clear();
+            }
+        },
+
+        _actorStillNeeds(actor, kind) {
+            if (!actor) return false;
+            const states = actor.states ? actor.states() : [];
+            if (kind === 'bleed') return states.some(s => /sangr|bleed/i.test(String(s.name || '')));
+            if (kind === 'infection') return states.some(s => /infecc|infect/i.test(String(s.name || '')));
+            if (kind === 'poison') return states.some(s => /poison|venen|toxic|tóxic/i.test(String(s.name || '')));
+            if (kind === 'healing') return actor.mhp > 0 ? (actor.hp / actor.mhp) * 100 <= 35 : false;
+            if (kind === 'mind') return actor.mmp > 0 ? (actor.mp / actor.mmp) * 100 <= 30 : false;
+            if (kind === 'food') return states.some(s => /hambre/i.test(String(s.name || '')));
+            return false;
+        },
+
+        _showOverlay(text) {
+            if (!text) return;
+            if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
+                ActionExecutor._showDialogue(text);
+                return;
+            }
+            if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue._speak) {
+                AmbientDialogue._speak(text, 'support_approval');
+            }
+        },
+
+        buildPrompt(need, es) {
+            if (!need) return '';
+            if (need.kind === 'bleed') return need.targetSelf ? (es ? `Estoy sangrando. ¿Uso ${need.itemName}?` : `I'm bleeding. Use ${need.itemName}?`) : (es ? `${need.actor} sangra. ¿Uso ${need.itemName}?` : `${need.actor} is bleeding. Use ${need.itemName}?`);
+            if (need.kind === 'infection') return need.targetSelf ? (es ? `Tengo infección. ¿Uso ${need.itemName}?` : `I'm infected. Use ${need.itemName}?`) : (es ? `${need.actor} tiene infección. ¿Uso ${need.itemName}?` : `${need.actor} is infected. Use ${need.itemName}?`);
+            if (need.kind === 'poison') return need.targetSelf ? (es ? `Estoy envenenado. ¿Uso ${need.itemName}?` : `I'm poisoned. Use ${need.itemName}?`) : (es ? `${need.actor} está envenenado. ¿Uso ${need.itemName}?` : `${need.actor} is poisoned. Use ${need.itemName}?`);
+            if (need.kind === 'healing') return need.targetSelf ? (es ? `Estoy herido. ¿Uso ${need.itemName}?` : `I'm hurt. Use ${need.itemName}?`) : (es ? `${need.actor} necesita curación. ¿Uso ${need.itemName}?` : `${need.actor} needs healing. Use ${need.itemName}?`);
+            if (need.kind === 'mind') return need.targetSelf ? (es ? `Me falla la cabeza. ¿Uso ${need.itemName}?` : `My mind is slipping. Use ${need.itemName}?`) : (es ? `${need.actor} necesita cordura. ¿Uso ${need.itemName}?` : `${need.actor} needs mind restored. Use ${need.itemName}?`);
+            if (need.kind === 'food') return need.targetSelf ? (es ? `Tengo hambre. ¿Como ${need.itemName}?` : `I'm hungry. Eat ${need.itemName}?`) : (es ? `${need.actor} necesita comida. ¿Uso ${need.itemName}?` : `${need.actor} needs food. Use ${need.itemName}?`);
+            return '';
+        },
+
+        _isAffirmative(message) {
+            return /^(?:si|sí|yes|y|ok|okay|dale|hazlo|go ahead|do it|usalo|úsalo|usa eso|hacele|curalo|cúralo)\b/i.test(String(message || '').trim());
+        },
+
+        _isNegative(message) {
+            return /^(?:no|nah|nope|espera|wait|cancel|dejalo|déjalo)\b/i.test(String(message || '').trim());
+        },
+
+        _findItem(itemId) {
+            return itemId && $dataItems ? $dataItems[itemId] || null : null;
+        },
+
+        _findUser(item) {
+            if (!$gameParty || !$gameParty.members) return null;
+            const companion = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
+            if (companion && companion.canUse && companion.canUse(item)) return companion;
+            return $gameParty.members().find(actor => actor && actor.canUse && actor.canUse(item)) || companion || ($gameParty.leader ? $gameParty.leader() : null);
+        },
+
+        _applyItem(item, targetActor) {
+            if (!item || !targetActor || !$gameParty || $gameParty.numItems(item) <= 0) return { ok: false };
+            const user = this._findUser(item);
+            if (!user || !user.canUse || !user.canUse(item)) return { ok: false };
+            try {
+                const action = new Game_Action(user);
+                action.setItemObject(item);
+                user.useItem(item);
+                const repeats = action.numRepeats ? action.numRepeats() : 1;
+                for (let i = 0; i < repeats; i++) action.apply(targetActor);
+                if (action.applyGlobal) action.applyGlobal();
+                if (targetActor.refresh) targetActor.refresh();
+                ShortTermMemory.addEvent(`${Config.companionName} used ${item.name} on ${targetActor.name()}.`);
+                ThesisLogger.log('game_event', {
+                    event: 'support_item_used',
+                    item_name: item.name,
+                    target_name: targetActor.name(),
+                    target_actor_id: targetActor.actorId ? targetActor.actorId() : null
+                });
+                return { ok: true };
+            } catch (e) {
+                Debug.warn('[SupportApproval] Item use failed:', e.message);
+                return { ok: false };
+            }
+        },
+
+        handleChatApproval(message) {
+            const pending = this.getPending();
+            if (!pending) return null;
+            const es = Config.language === 'es';
+            if (this._isNegative(message)) {
+                this.clear();
+                const reply = es ? 'Entendido. No haré nada.' : "Understood. I won't do it.";
+                this._showOverlay(reply);
+                return reply;
+            }
+            if (!this._isAffirmative(message)) {
+                return es ? `Solo dime sí o no para ${pending.itemName}.` : `Just tell me yes or no for ${pending.itemName}.`;
+            }
+            const item = this._findItem(pending.itemId);
+            const target = $gameActors && $gameActors.actor ? $gameActors.actor(pending.actorId) : null;
+            if (!item || !target || !this._actorStillNeeds(target, pending.kind)) {
+                this.clear();
+                const reply = es ? 'Ya no hace falta.' : `No need anymore.`;
+                this._showOverlay(reply);
+                return reply;
+            }
+            const result = this._applyItem(item, target);
+            this.clear();
+            if (!result.ok) {
+                const reply = es ? `No pude usar ${pending.itemName}.` : `I couldn't use ${pending.itemName}.`;
+                this._showOverlay(reply);
+                return reply;
+            }
+            const reply = es ? `Voy. Uso ${pending.itemName}${pending.targetSelf ? '' : ' en ' + pending.actor}.` : `Alright. Using ${pending.itemName}${pending.targetSelf ? '' : ' on ' + pending.actor}.`;
+            this._showOverlay(reply);
+            return reply;
         }
     };
 
