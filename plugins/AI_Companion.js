@@ -1349,6 +1349,99 @@ Reply with ONLY the category name, nothing else.`;
             girl: 'Niña'
         },
 
+        _curatedEventRegistry: null,
+
+        _eventEntry(type, subtype, label, extra) {
+            const entry = Object.assign({
+                type: type,
+                subtype: subtype,
+                label: label,
+                tags: [type]
+            }, extra || {});
+            if (type === 'shop') entry.tags = ['shop', 'npc'];
+            if (type === 'combat_trigger') entry.tags = ['combat_trigger'];
+            return entry;
+        },
+
+        _buildCuratedEventRegistry() {
+            const registry = {};
+            const add = (mapId, ids, type, subtype, label, extra) => {
+                if (!registry[mapId]) registry[mapId] = {};
+                ids.forEach(id => {
+                    registry[mapId][id] = this._eventEntry(type, subtype, label, extra);
+                });
+            };
+
+            // Early-game maps have many generic EV### names. These entries are
+            // hand-read from map event commands so the LLM sees player-facing nouns.
+            [1, 51].forEach(mapId => {
+                add(mapId, [5, 6, 7, 8, 16, 18, 20, 21, 22, 199, 200, 201, 280], 'door', 'door', 'Puerta');
+                add(mapId, [136, 137, 346, 347, 348, 349], 'door', 'transfer', 'Salida');
+                add(mapId, [9, 94, 100], 'enemy', 'guard', 'Guardia', { danger: 'high' });
+                add(mapId, [95], 'enemy', 'ghoul', 'Ghoul', { danger: 'high' });
+                add(mapId, [289, 290], 'enemy', 'moonless', 'Moonless', { danger: 'high' });
+                add(mapId, [12, 68, 183, 184], 'container', 'chest', 'Cofre');
+                add(mapId, [15, 49, 58, 59, 61, 62, 63, 64, 122, 176, 177], 'container', 'bookshelf', 'Estantería');
+                add(mapId, [74, 75, 76, 77], 'container', 'document', 'Libro de visitas');
+                add(mapId, [39, 40, 44, 45, 54, 81, 82, 96, 97, 99, 101, 103, 112, 114, 115, 116, 117, 118, 119, 120, 132, 175, 190, 193, 251], 'container', 'crate', 'Caja');
+                add(mapId, [47, 98, 134, 140, 171, 172, 173, 174, 248, 250, 253], 'container', 'barrel', 'Barril');
+                add(mapId, [19, 37, 48, 53, 57, 69, 70, 71, 72, 85, 305], 'container', 'furniture_loot', 'Mesa');
+                add(mapId, [33, 34, 35, 36, 38, 50], 'container', 'light_source', 'Vela', { tags: ['container', 'light_source'] });
+                add(mapId, [55], 'container', 'light_source', 'Horno', { tags: ['container', 'light_source'] });
+                add(mapId, [51, 52, 67], 'hazard', 'liquid', 'Líquido extraño', { danger: 'medium' });
+                add(mapId, [84, 106, 107, 108, 109, 232], 'hazard', 'ritual', 'Ritual', { danger: 'high' });
+                add(mapId, [88, 89, 104, 105], 'npc', 'caged_child', 'Niña enjaulada');
+                add(mapId, [281], 'container', 'cloth', 'Bandera');
+                add(mapId, [306], 'trap', 'rusty_nail', 'Clavo oxidado', { danger: 'medium' });
+                add(mapId, [309], 'hazard', 'rest', 'Cama', { danger: 'medium' });
+            });
+            add(51, [313], 'container', 'furniture_loot', 'Mesa');
+            add(1, [287, 288], 'trap', 'floor_trap', 'Suelo peligroso', { danger: 'medium' });
+
+            add(3, [14, 98], 'npc', 'buckman', 'Buckman');
+            add(3, [15], 'hazard', 'pit_hole', 'Retrete ensangrentado', { danger: 'medium' });
+            add(3, [41, 43, 50, 52, 54, 55], 'container', 'light_source', 'Vela', { tags: ['container', 'light_source'] });
+            add(3, [62, 96], 'container', 'crate', 'Caja');
+            add(3, [97, 99, 100, 103, 104, 192], 'container', 'barrel', 'Barril');
+            add(3, [106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 119, 120, 125, 126, 149, 150, 152, 153], 'container', 'bookshelf', 'Estantería');
+            add(3, [190, 191], 'container', 'chest', 'Cofre');
+            add(3, [86], 'enemy', 'guard', 'Guardia', { danger: 'high' });
+            add(3, [89, 222, 253], 'trap', 'pit_hole', 'Agujero peligroso', { danger: 'medium' });
+            add(3, [95, 270], 'door', 'cell_door', 'Puerta de celda');
+            add(3, [127], 'door', 'transfer', 'Salida');
+            add(3, [117, 156, 316], 'npc', 'girl', 'Niña');
+            add(3, [136, 137, 299], 'npc', 'trortur', 'Trortur');
+            add(3, [318], 'npc', 'legarde', "Le'garde");
+            add(3, [344, 350], 'hazard', 'rest', 'Cama', { danger: 'medium' });
+
+            add(6, [7, 10, 11, 12, 13, 14, 79], 'door', 'cell_door', 'Puerta de celda');
+            add(6, [31, 32, 43, 68, 72, 73, 80, 81], 'container', 'crate', 'Caja');
+            add(6, [34, 42, 74], 'container', 'barrel', 'Barril');
+            add(6, [35, 37, 38, 45], 'container', 'light_source', 'Vela', { tags: ['container', 'light_source'] });
+            add(6, [8, 9, 83, 84, 85, 86, 87], 'hazard', 'rest', 'Cama', { danger: 'medium' });
+            add(6, [16], 'enemy', 'ghoul', 'Ghoul', { danger: 'high' });
+
+            add(74, [14, 15, 16, 17, 38], 'door', 'transfer', 'Puerta');
+            add(74, [39, 40, 41, 148, 155], 'container', 'barrel', 'Barril');
+            add(74, [42, 43, 44, 45, 147, 149, 150], 'container', 'crate', 'Caja');
+            add(74, [47], 'shop', 'merchant', 'Mercader');
+            add(74, [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87], 'npc', 'legarde', "Le'garde");
+            add(74, [102, 113, 114], 'enemy', 'moonless', 'Moonless', { danger: 'high' });
+            add(74, [108, 109], 'container', 'hidden_loot', 'Contenedor');
+            add(74, [156], 'container', 'light_source', 'Antorcha', { tags: ['container', 'light_source'] });
+
+            return registry;
+        },
+
+        _eventRegistryEntry(event) {
+            if (!$gameMap || !event) return null;
+            if (!this._curatedEventRegistry) this._curatedEventRegistry = this._buildCuratedEventRegistry();
+            const mapTable = this._curatedEventRegistry[$gameMap.mapId()];
+            if (!mapTable) return null;
+            const eventId = event.eventId ? event.eventId() : event._eventId;
+            return mapTable[eventId] || null;
+        },
+
         _normalize(text) {
             return String(text || '').toLowerCase();
         },
@@ -1757,7 +1850,8 @@ Reply with ONLY the category name, nothing else.`;
             const data = this._safeEventData(event);
             if (!page || !data) return false;
             const metadata = this._eventMetadata(event);
-            const tags = this._eventTags(event, metadata);
+            const registryEntry = this._eventRegistryEntry(event);
+            const tags = registryEntry && registryEntry.tags ? registryEntry.tags : this._eventTags(event, metadata);
             return page.trigger === 1 && page.priorityType === 0 && tags.includes('door');
         },
 
@@ -1809,22 +1903,24 @@ Reply with ONLY the category name, nothing else.`;
                 // Keep them out of spatial perception summaries.
                 return null;
             }
-            const tags = this._eventTags(event, metadata);
+            const registryEntry = this._eventRegistryEntry(event);
+            const tags = registryEntry && registryEntry.tags ? registryEntry.tags.slice() : this._eventTags(event, metadata);
+            if (registryEntry && registryEntry.type && tags.indexOf(registryEntry.type) === -1) tags.push(registryEntry.type);
             if (tags.length === 0) return null;
 
-            const type = this._eventType(tags);
-            const subtype = this._subtypeFor(type, data, page, metadata);
+            const type = registryEntry && registryEntry.type ? registryEntry.type : this._eventType(tags);
+            const subtype = registryEntry && registryEntry.subtype ? registryEntry.subtype : this._subtypeFor(type, data, page, metadata);
             const dx = event.x - px;
             const dy = event.y - py;
             const distance = Math.abs(dx) + Math.abs(dy);
-            const label = this._labelForEvent(event, type, tags, metadata);
+            const label = registryEntry && registryEntry.label ? registryEntry.label : this._labelForEvent(event, type, tags, metadata);
             const bestApproach = this._bestApproachForEvent(event, origin);
 
             return {
                 id: event.eventId ? event.eventId() : event._eventId,
                 type: type,
                 subtype: subtype,
-                danger: this._dangerFor(type, subtype),
+                danger: registryEntry && registryEntry.danger ? registryEntry.danger : this._dangerFor(type, subtype),
                 label: label,
                 tags: tags,
                 visible: hasVisiblePresentation,
