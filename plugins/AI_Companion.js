@@ -1685,7 +1685,7 @@ Reply with ONLY the category name, nothing else.`;
                 if (lowerRawName.includes('table') || lowerRawName.includes('desk') || lowerRawName.includes('mesa') || lowerRawName.includes('mapa') || lowerRawName.includes('cabinet') || lowerRawName.includes('drawer') || (metadata && metadata.textHints && /table|desk|mesa|mapa|cabinet|drawer|bottle|papers|notes|documents/.test(metadata.textHints))) {
                     return 'Mesa';
                 }
-                return 'Cofre';
+                return 'Contenedor';
             }
             if (type === 'corpse') return 'Cadáver';
             if (type === 'trap') {
@@ -4899,6 +4899,7 @@ Respond ONLY with this JSON:
             lastDoorInteractionAt: 0,
             lastDoorEventId: null,
             manualUiHold: false,
+            allowPlayerMoveWhileUi: false,
             eventCooldowns: {},
             searchedEvents: {}
         },
@@ -4983,6 +4984,7 @@ Respond ONLY with this JSON:
             this._state.lastDoorInteractionAt = 0;
             this._state.lastDoorEventId = null;
             this._state.manualUiHold = false;
+            this._state.allowPlayerMoveWhileUi = false;
             if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
             if (follower && follower.setThrough) follower.setThrough(true);
         },
@@ -5004,6 +5006,7 @@ Respond ONLY with this JSON:
             this._state.roomSettleUntil = Date.now() + 3000;
             this._state.postDoorPoint = null;
             this._state.manualUiHold = false;
+            this._state.allowPlayerMoveWhileUi = false;
         },
 
         _distance(a, b) {
@@ -5198,6 +5201,7 @@ Respond ONLY with this JSON:
             this._state.targetApproach = null;
             this._state.targetLabel = '';
             this._state.manualUiHold = true;
+            this._state.allowPlayerMoveWhileUi = false;
             this._state.lastInteractionNeedsConsent = false;
             this._clearTask();
             Debug.warn('[Autonomy] Consent required:', reason);
@@ -5931,6 +5935,7 @@ Respond ONLY with this JSON:
         _advanceInteractionUi(follower) {
             if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) {
                 this._state.manualUiHold = false;
+                this._state.allowPlayerMoveWhileUi = false;
                 return false;
             }
             const now = Date.now();
@@ -6045,6 +6050,9 @@ Respond ONLY with this JSON:
             if (interactionSnap && (interactionType === 'container' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
                 this._markEventSearched(interactionSnap.id || eventId, interactionType, 'interaction_started');
             }
+            this._state.allowPlayerMoveWhileUi = channel !== 'background-loot' &&
+                !this._state.lastInteractionNeedsConsent &&
+                interactionType !== 'shop';
             if (interactionType === 'door') {
                 this._recordDoorInteraction(interactionSnap && interactionSnap.id != null ? interactionSnap.id : eventId);
                 this._state.postDoorPoint = this._computePostDoorPoint(interactionSnap, event);
@@ -6350,6 +6358,17 @@ Respond ONLY with this JSON:
                 lastDecision: this._state.lastDecision,
                 lastSnapshot: this._state.lastSnapshot
             };
+        },
+
+        shouldAllowPlayerMovement() {
+            if (!Config.autonomyEnabled) return false;
+            if (!this._state.allowPlayerMoveWhileUi) return false;
+            if (this._state.manualUiHold || this._state.lastInteractionNeedsConsent) return false;
+            if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) {
+                this._state.allowPlayerMoveWhileUi = false;
+                return false;
+            }
+            return true;
         }
     };
 
@@ -10070,6 +10089,23 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
     // Register C key for chat
     Input.keyMapper[67] = 'c';
+
+    const _Game_Player_canMove = Game_Player.prototype.canMove;
+    Game_Player.prototype.canMove = function() {
+        if (AutonomySystem.shouldAllowPlayerMovement && AutonomySystem.shouldAllowPlayerMovement()) {
+            if (this.isMoveRouteForcing() || this.areFollowersGathering()) {
+                return false;
+            }
+            if (this._vehicleGettingOn || this._vehicleGettingOff) {
+                return false;
+            }
+            if (this.isInVehicle() && !this.vehicle().canMove()) {
+                return false;
+            }
+            return true;
+        }
+        return _Game_Player_canMove.call(this);
+    };
 
     const _Game_Follower_chaseCharacter = Game_Follower.prototype.chaseCharacter;
     Game_Follower.prototype.chaseCharacter = function(character) {
