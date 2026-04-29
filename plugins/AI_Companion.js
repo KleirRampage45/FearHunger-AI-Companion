@@ -5263,6 +5263,28 @@ Respond ONLY with this JSON:
             return 3;
         },
 
+        _compactHint(text) {
+            const raw = String(text || '')
+                .replace(/\\c\[\d+\]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            if (!raw) return '';
+            const lower = raw.toLowerCase();
+            if (/(yesquero|vela|farol|antorcha|encend|oscur|dark|light|torch|candle|lantern)/i.test(lower)) {
+                return 'light-related interaction';
+            }
+            if (/(book|libro|estante|biblioteca|read|leer)/i.test(lower)) {
+                return 'books or reading';
+            }
+            if (/(table|desk|mesa|mapa|cabinet|drawer|paper|document|note|mapa|documentos)/i.test(lower)) {
+                return 'documents or furniture loot';
+            }
+            if (/(crate|barrel|caja|barril|box)/i.test(lower)) {
+                return 'container search';
+            }
+            return raw.length > 80 ? raw.substring(0, 80) + '...' : raw;
+        },
+
         _nearestThreat(snapshot, maxDistance) {
             const nearby = (snapshot && snapshot.nearby) || [];
             const limit = maxDistance != null ? maxDistance : 2;
@@ -5360,7 +5382,7 @@ Respond ONLY with this JSON:
                     subtype: item.subtype,
                     npcName: item.npcName,
                     speakerName: item.speakerName,
-                    textHints: item.textHints,
+                    textHints: this._compactHint(item.textHints),
                     danger: item.danger,
                     distance: item.distance,
                     direction: item.direction,
@@ -5390,6 +5412,33 @@ Respond ONLY with this JSON:
             };
             this._state.lastSnapshot = snapshot;
             return snapshot;
+        },
+
+        _promptSnapshot(snapshot) {
+            if (!snapshot) return null;
+            return {
+                mapName: snapshot.mapName,
+                leashDistance: snapshot.leashDistance,
+                threatLevel: snapshot.threatLevel,
+                situation: snapshot.situation,
+                threatNearby: snapshot.threatNearby,
+                interestingNearby: snapshot.interestingNearby,
+                hpPct: snapshot.hpPct,
+                scoutLimit: snapshot.scoutLimit,
+                detourLimit: snapshot.detourLimit,
+                allowNpc: snapshot.allowNpc,
+                allowDoors: snapshot.allowDoors,
+                nearby: (snapshot.nearby || []).slice(0, 10).map(item => ({
+                    eventId: item.eventId,
+                    label: item.label,
+                    type: item.type,
+                    subtype: item.subtype,
+                    distance: item.distance,
+                    direction: item.direction,
+                    danger: item.danger,
+                    hint: item.textHints || ''
+                }))
+            };
         },
 
         _fallbackDecision(snapshot) {
@@ -5587,11 +5636,11 @@ Respond ONLY with this JSON:
                 'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
                 '',
                 'STATE:',
-                JSON.stringify(snapshot)
+                JSON.stringify(this._promptSnapshot(snapshot))
             ].join('\n');
 
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 2500);
+            const timer = setTimeout(() => controller.abort(), 4000);
             let response;
             try {
                 response = await fetch(Config.getLocalEndpoint(), {
@@ -8197,7 +8246,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
         },
 
         _normalizeAutonomyComment(text, target, fallback, es) {
-            const raw = String(text || '').trim();
+            const raw = String(text || '').replace(/\s+/g, ' ').trim();
             if (!raw) return fallback;
             const lower = raw.toLowerCase();
             const subtype = String(target && target.subtype || '').toLowerCase();
@@ -8205,6 +8254,9 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela|antorcha/.test(hints) ||
                 /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(String(target && target.label || '').toLowerCase()) ||
                 subtype === 'light_source';
+            if (/soy\s+marcoh|i am\s+marcoh/i.test(lower)) {
+                return fallback;
+            }
             if (isLight && !/(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower)) {
                 return fallback;
             }
@@ -8232,6 +8284,9 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
         async _generateAutonomyComment(action, target, factKey) {
             const es = Config.language === 'es';
             const fallback = this._reactiveFallback(action, target, es);
+            const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela|antorcha/.test(String(target && target.textHints || '').toLowerCase()) ||
+                /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(String(target && target.label || '').toLowerCase()) ||
+                String(target && target.subtype || '').toLowerCase() === 'light_source';
             const show = text => {
                 const clean = String(text || '').trim();
                 if (!clean) return;
@@ -8245,6 +8300,11 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 }
             };
             if (Config.useMockAI) {
+                show(fallback);
+                return;
+            }
+            if (isLight) {
+                console.log('[Autonomy Comment]', fallback);
                 show(fallback);
                 return;
             }
