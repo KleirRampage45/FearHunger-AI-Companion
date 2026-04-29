@@ -1396,7 +1396,7 @@ Reply with ONLY the category name, nothing else.`;
                 add(mapId, [309], 'hazard', 'rest', 'Cama', { danger: 'medium' });
             });
             add(51, [313], 'container', 'furniture_loot', 'Mesa');
-            add(51, [221, 222, 223, 224, 225, 226, 227, 228, 229, 232], 'hazard', 'collapsed_passage', 'Pasillo derrumbado', { danger: 'medium' });
+            add(51, [46, 65, 66, 155, 156, 157, 158, 159, 160, 161, 162, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 232], 'hazard', 'collapsed_passage', 'Pasillo derrumbado', { danger: 'medium' });
             add(1, [287, 288], 'trap', 'floor_trap', 'Suelo peligroso', { danger: 'medium' });
 
             add(3, [14, 98], 'npc', 'buckman', 'Buckman');
@@ -4543,44 +4543,49 @@ Respond ONLY with this JSON:
                     // Apply starting equipment based on selected class
                     const loadout = STARTING_LOADOUTS[Config.companionClass];
                     if (loadout) {
+                        if ($gameTemp) $gameTemp._aiSuppressItemPickupHooks = true;
                         // Apply base stats
                         const s = loadout.stats;
-                        actor.addParam(2, s.atk - actor.paramBase(2));  // ATK
-                        actor.addParam(3, s.def - actor.paramBase(3));  // DEF
-                        actor.addParam(4, s.matk - actor.paramBase(4)); // MATK
-                        actor.addParam(5, s.mdef - actor.paramBase(5)); // MDEF
-                        actor.addParam(6, s.agi - actor.paramBase(6));  // AGI
-                        actor.addParam(7, s.luk - actor.paramBase(7));  // LUK
+                        try {
+                            actor.addParam(2, s.atk - actor.paramBase(2));  // ATK
+                            actor.addParam(3, s.def - actor.paramBase(3));  // DEF
+                            actor.addParam(4, s.matk - actor.paramBase(4)); // MATK
+                            actor.addParam(5, s.mdef - actor.paramBase(5)); // MDEF
+                            actor.addParam(6, s.agi - actor.paramBase(6));  // AGI
+                            actor.addParam(7, s.luk - actor.paramBase(7));  // LUK
 
-                        // Equip weapons
-                        for (const wId of loadout.weapons) {
-                            const weapon = $dataWeapons[wId];
-                            if (weapon) {
-                                $gameParty.gainItem(weapon, 1);
-                                actor.changeEquip(0, weapon);
+                            // Equip weapons
+                            for (const wId of loadout.weapons) {
+                                const weapon = $dataWeapons[wId];
+                                if (weapon) {
+                                    $gameParty.gainItem(weapon, 1);
+                                    actor.changeEquip(0, weapon);
+                                }
                             }
-                        }
 
-                        // Equip armors (slots: 1=shield, 2=head, 3=body, 4=accessory)
-                        for (const aId of loadout.armors) {
-                            const armor = $dataArmors[aId];
-                            if (armor) {
-                                $gameParty.gainItem(armor, 1);
-                                // Auto-detect slot from etypeId
-                                const slot = armor.etypeId - 1; // etypeId 2=shield(1), 3=head(2), 4=body(3), 5=acc(4)
-                                actor.changeEquip(slot, armor);
+                            // Equip armors (slots: 1=shield, 2=head, 3=body, 4=accessory)
+                            for (const aId of loadout.armors) {
+                                const armor = $dataArmors[aId];
+                                if (armor) {
+                                    $gameParty.gainItem(armor, 1);
+                                    // Auto-detect slot from etypeId
+                                    const slot = armor.etypeId - 1; // etypeId 2=shield(1), 3=head(2), 4=body(3), 5=acc(4)
+                                    actor.changeEquip(slot, armor);
+                                }
                             }
-                        }
 
-                        // Give items
-                        for (const [itemId, qty] of loadout.items) {
-                            const item = $dataItems[itemId];
-                            if (item) $gameParty.gainItem(item, qty);
-                        }
+                            // Give items
+                            for (const [itemId, qty] of loadout.items) {
+                                const item = $dataItems[itemId];
+                                if (item) $gameParty.gainItem(item, qty);
+                            }
 
-                        // Learn skills
-                        for (const skillId of loadout.skills) {
-                            actor.learnSkill(skillId);
+                            // Learn skills
+                            for (const skillId of loadout.skills) {
+                                actor.learnSkill(skillId);
+                            }
+                        } finally {
+                            if ($gameTemp) $gameTemp._aiSuppressItemPickupHooks = false;
                         }
 
                         Debug.log('Applied loadout:', Config.companionClass, loadout.nameEs);
@@ -8270,7 +8275,7 @@ CRITICAL GAME RULES (NEVER violate these):
             }
         },
 
-        onItemPickup(item) {
+        onItemPickup(item, source) {
             if (!this.canSpeak()) return;
             if (!item) return;
 
@@ -8297,24 +8302,27 @@ CRITICAL GAME RULES (NEVER violate these):
                 return;
             }
 
-            if ((isWeapon || isArmor) &&
+            if (source && source !== 'Player' &&
+                (isWeapon || isArmor) &&
                 typeof EquipmentApproval !== 'undefined' &&
-                EquipmentApproval.consider(item)) {
+                EquipmentApproval.consider(item, source)) {
                 return;
             }
 
             // Generate AI comment
-            this._generateItemComment(item, kbItem, isWeapon, isArmor, isFood, isHungry);
+            this._generateItemComment(item, kbItem, isWeapon, isArmor, isFood, isHungry, source);
         },
 
-        async _generateItemComment(item, kbItem, isWeapon, isArmor, isFood, isHungry) {
+        async _generateItemComment(item, kbItem, isWeapon, isArmor, isFood, isHungry, source) {
             const sanity = SanityManager.getSanityLevel();
             const es = Config.language === 'es';
             const companion = $gameActors.actor(Config.companionActorId);
+            const itemSource = source || 'Player';
+            const companionOwned = itemSource !== 'Player';
 
             // Build equipment comparison for weapons/armor
             let gearComparison = '';
-            if (isWeapon && companion) {
+            if (companionOwned && isWeapon && companion) {
                 const currentWeapon = companion.weapons()[0];
                 if (currentWeapon) {
                     gearComparison = `You currently have: ${currentWeapon.name} (ATK ${currentWeapon.params[2]}). Found: ${item.name} (ATK ${item.params[2]}). `;
@@ -8328,7 +8336,7 @@ CRITICAL GAME RULES (NEVER violate these):
                 } else {
                     gearComparison = 'You have NO weapon equipped. This is useful!';
                 }
-            } else if (isArmor && companion) {
+            } else if (companionOwned && isArmor && companion) {
                 const currentArmors = companion.armors();
                 const sameSlot = currentArmors.find(a => a.etypeId === item.etypeId);
                 if (sameSlot) {
@@ -8349,12 +8357,13 @@ ${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}
 Your personality: ${Config.personality}
 Your sanity: ${sanity.level} (${sanity.percent}%). ${sanity.modifier}
 
-You just found: ${item.name}
+${companionOwned ? `You just found: ${item.name}` : `The player just picked up: ${item.name}`}
+${companionOwned ? '' : 'This belongs to the player/party inventory unless they give it to you. Do NOT say you have it equipped, own it, or will equip it.'}
 ${itemDesc ? 'Item info: ' + itemDesc : ''}
 ${gearComparison ? 'Gear comparison: ' + gearComparison : ''}
 ${isFood && isHungry ? 'You are HUNGRY. You desperately want to eat. React with hunger and need.' : ''}
 
-React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isArmor ? 'Comment on whether it seems worth equipping based on the gear comparison, but do not claim you already equipped it.' : ''}`;
+React in one short sentence (max 60 chars). Stay in character. ${companionOwned && (isWeapon || isArmor) ? 'Comment on whether it seems worth equipping based on the gear comparison, but do not claim you already equipped it.' : ''}`;
 
             try {
                 if (Config.useMockAI) {
@@ -9518,19 +9527,72 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             return lines.slice(0, maxLines || 4);
         },
 
-        _showPrompt(candidate) {
-            if (!candidate || !$gameMessage || $gameMessage.isBusy()) return false;
-            if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) return false;
+        _fallbackPromptText(candidate) {
             const es = Config.language === 'es';
-            const appearance = CharacterPresets.getCurrentAppearance();
             const currentName = candidate.current ? candidate.current.name : (es ? 'nada' : 'nothing');
             const itemName = candidate.item.name;
             const reason = candidate.current
                 ? (es ? `mejora ${currentName}` : `better than ${currentName}`)
                 : (es ? 'ese espacio está vacío' : 'that slot is empty');
-            const text = es
+            return es
                 ? `Encontré ${itemName}; ${reason}. ¿Me lo equipo?`
                 : `Found ${itemName}; ${reason}. Equip it?`;
+        },
+
+        async _generatePromptText(candidate) {
+            const fallback = this._fallbackPromptText(candidate);
+            if (Config.useMockAI) return fallback;
+            try {
+                const es = Config.language === 'es';
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const currentName = candidate.current ? candidate.current.name : 'empty slot';
+                const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                    `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `Write ONE short approval request, under 16 words.\n` +
+                    `You found gear for yourself and need player consent before equipping.\n` +
+                    `Item: ${candidate.item.name}\n` +
+                    `Current gear in that slot: ${currentName}\n` +
+                    `New score: ${candidate.newScore}; current score: ${candidate.currentScore}\n` +
+                    `Do not claim you already equipped it. Ask if you should equip it.\n` +
+                    `Do not mention stats unless natural.`;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1400);
+                let resp;
+                try {
+                    resp = await fetch(endpoint, {
+                        method: 'POST',
+                        headers,
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model,
+                            messages: [{ role: 'system', content: prompt }],
+                            max_tokens: 44,
+                            temperature: 0.8
+                        })
+                    });
+                } finally {
+                    clearTimeout(timer);
+                }
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const text = data.choices?.[0]?.message?.content?.trim();
+                const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
+                if (!cleaned || cleaned.length < 5) return fallback;
+                return cleaned;
+            } catch (e) {
+                Debug.warn('[EquipmentApproval] Prompt generation failed:', e.message);
+                return fallback;
+            }
+        },
+
+        _showPrompt(candidate, promptText) {
+            if (!candidate || !$gameMessage || $gameMessage.isBusy()) return false;
+            if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) return false;
+            const es = Config.language === 'es';
+            const appearance = CharacterPresets.getCurrentAppearance();
+            const text = promptText || this._fallbackPromptText(candidate);
             if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
                 AutonomySystem._state.manualUiHold = true;
                 AutonomySystem._state.lastUiAdvanceAt = Date.now();
@@ -9559,6 +9621,26 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 }
             });
             return true;
+        },
+
+        async _requestPrompt(candidate, source) {
+            const text = await this._generatePromptText(candidate);
+            const refreshed = this._candidate(candidate.actor, candidate.item);
+            if (!refreshed) return false;
+            candidate = refreshed;
+            const shown = this._showPrompt(candidate, text);
+            if (shown) {
+                ThesisLogger.log('ambient', {
+                    topic: 'equipment_approval',
+                    source: source || null,
+                    prompt_text: text,
+                    item_name: candidate.item.name,
+                    current_item: candidate.current ? candidate.current.name : null,
+                    new_score: candidate.newScore,
+                    current_score: candidate.currentScore
+                });
+            }
+            return shown;
         },
 
         _reply(text) {
@@ -9594,23 +9676,15 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             }
         },
 
-        consider(item) {
+        consider(item, source) {
+            if (!source || source === 'Player') return false;
             if (!item || (!DataManager.isWeapon(item) && !DataManager.isArmor(item))) return false;
             if (!AmbientDialogue.canSpeakSupport || !AmbientDialogue.canSpeakSupport()) return false;
             const companion = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
             const candidate = this._candidate(companion, item);
             if (!candidate) return false;
-            const shown = this._showPrompt(candidate);
-            if (shown) {
-                ThesisLogger.log('ambient', {
-                    topic: 'equipment_approval',
-                    item_name: item.name,
-                    current_item: candidate.current ? candidate.current.name : null,
-                    new_score: candidate.newScore,
-                    current_score: candidate.currentScore
-                });
-            }
-            return shown;
+            this._requestPrompt(candidate, source);
+            return true;
         }
     };
 
@@ -10542,18 +10616,19 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
     const _Game_Party_gainItem = Game_Party.prototype.gainItem;
     Game_Party.prototype.gainItem = function (item, amount, includeEquip) {
         _Game_Party_gainItem.call(this, item, amount, includeEquip);
+        if ($gameTemp && $gameTemp._aiSuppressItemPickupHooks) return;
         if (item && amount > 0) {
             // Only trigger ambient dialogue when actually playing on the map
             const scene = SceneManager._scene;
             const isGameplay = scene && (scene.constructor.name === 'Scene_Map' || scene.constructor.name === 'Scene_Battle');
             if (isGameplay) {
-                AmbientDialogue.onItemPickup(item);
                 const autonomyState = (typeof AutonomySystem !== 'undefined' && AutonomySystem && AutonomySystem._state) ? AutonomySystem._state : null;
                 const autonomyRecentlyLooted = autonomyState &&
                     autonomyState.lastInteractionType === 'container' &&
                     Date.now() - (autonomyState.lastInteractAt || 0) < 30000;
                 const source = ($gameTemp && $gameTemp._aiCompanionLootSource) ||
                     (autonomyRecentlyLooted ? (Config.companionName || 'Companion') : 'Player');
+                AmbientDialogue.onItemPickup(item, source);
                 const verb = source === 'Player' ? 'picked up' : 'found';
                 ShortTermMemory.addEvent(`${source} ${verb} ${amount}x ${item.name}`);
             }
