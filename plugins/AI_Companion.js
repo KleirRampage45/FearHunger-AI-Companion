@@ -6207,6 +6207,7 @@ Respond ONLY with this JSON:
             const rewards = [];
             const originalGainGold = $gameParty.gainGold.bind($gameParty);
             const originalGainItem = $gameParty.gainItem.bind($gameParty);
+            if ($gameTemp) $gameTemp._aiCompanionLootSource = Config.companionName || 'Companion';
 
             $gameParty.gainGold = function(amount) {
                 if (amount > 0) rewards.push({ kind: 'gold', amount: amount });
@@ -6296,6 +6297,7 @@ Respond ONLY with this JSON:
             } finally {
                 $gameParty.gainGold = originalGainGold;
                 $gameParty.gainItem = originalGainItem;
+                if ($gameTemp) $gameTemp._aiCompanionLootSource = null;
             }
         },
 
@@ -7039,10 +7041,14 @@ Respond ONLY with this JSON:
             return entries.map(e => e.role === 'separator' ? `[${e.message}]` : `${e.role}: ${e.message}`).join('\n');
         },
 
-        _getRecentPickupLines(context) {
+        _getRecentPickupLines(context, playerMessage, intent) {
             if (!context || !context.recent_events) return [];
+            const message = String(playerMessage || '').toLowerCase();
+            const asksAboutLoot = intent && intent.primary === 'item_info' ||
+                /(?:que|qué|what).{0,24}(?:encontr|recog|agar|loot|found|picked|got)|(?:item|objeto|inventario|loot|bot[ií]n|cosas|suministros)/i.test(message);
+            if (!asksAboutLoot) return [];
             return context.recent_events
-                .filter(e => e && /picked up|recogi|obtuvo/i.test(e.desc))
+                .filter(e => e && /picked up|found|recogi|recogió|encontr[oó]|obtuvo/i.test(e.desc))
                 .map(e => `- ${e.desc}`);
         },
 
@@ -7264,7 +7270,7 @@ Respond ONLY with this JSON:
 
             pushSection('EVENT MEMORY', this._buildEventContext(context, intent));
 
-            const pickupLines = this._getRecentPickupLines(context);
+            const pickupLines = this._getRecentPickupLines(context, playerMessage, intent);
             if (pickupLines.length > 0) pushSection('RECENT PICKUPS', pickupLines);
 
             if (context.older_chat_memory && context.older_chat_memory.length > 0) {
@@ -7739,13 +7745,13 @@ CRITICAL GAME RULES (NEVER violate these):
                         const lastPlayerMsg = (context.recent_exchanges && context.recent_exchanges.length > 0)
                             ? context.recent_exchanges[context.recent_exchanges.length - 1].message.toLowerCase()
                             : '';
-                        const pickupEvents = context.recent_events.filter(e => /picked up|recogi|obtuvo/i.test(e.desc));
+                        const pickupEvents = context.recent_events.filter(e => /picked up|found|recogi|recogió|encontr[oó]|obtuvo/i.test(e.desc));
 
                         // Detect broad/generic queries: "lo que encontré", "lo que he encontrado", "what I found", etc.
                         const isGenericQuery = /lo que .{0,5}(encontr|recog|llev|teng)|que me sirve|what i (found|got|picked)|mis (item|objeto|cosa)|these items|los items|para que sirve|que (hemos|he) (encontr|recog)/i.test(lastPlayerMsg);
 
                         for (const evt of pickupEvents) {
-                            // Extract item name from "Player picked up 1x Vial rojo"
+                            // Extract item name from "Player picked up 1x Vial rojo" / "Marcoh found 1x Vial rojo".
                             const nameMatch = evt.desc.match(/\d+x\s+(.+)/);
                             if (!nameMatch) continue;
                             const itemName = nameMatch[1].toLowerCase().trim();
@@ -7957,8 +7963,9 @@ CRITICAL GAME RULES (NEVER violate these):
                 return '';
             }
 
-            // For emotional/general, include all recent events
-            return `\nRECENT EVENTS:\n${context.recent_events.map(e => `- ${e.desc}`).join('\n')}\n`;
+            const relevantEvents = context.recent_events.filter(e => !/picked up|found|recogi|recogió|encontr[oó]|obtuvo/i.test(e.desc));
+            if (relevantEvents.length === 0) return '';
+            return `\nRECENT EVENTS:\n${relevantEvents.map(e => `- ${e.desc}`).join('\n')}\n`;
         },
 
         /**
@@ -10292,7 +10299,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             const isGameplay = scene && (scene.constructor.name === 'Scene_Map' || scene.constructor.name === 'Scene_Battle');
             if (isGameplay) {
                 AmbientDialogue.onItemPickup(item);
-                ShortTermMemory.addEvent(`Player picked up ${amount}x ${item.name}`);
+                const autonomyState = (typeof AutonomySystem !== 'undefined' && AutonomySystem && AutonomySystem._state) ? AutonomySystem._state : null;
+                const autonomyRecentlyLooted = autonomyState &&
+                    autonomyState.lastInteractionType === 'container' &&
+                    Date.now() - (autonomyState.lastInteractAt || 0) < 30000;
+                const source = ($gameTemp && $gameTemp._aiCompanionLootSource) ||
+                    (autonomyRecentlyLooted ? (Config.companionName || 'Companion') : 'Player');
+                const verb = source === 'Player' ? 'picked up' : 'found';
+                ShortTermMemory.addEvent(`${source} ${verb} ${amount}x ${item.name}`);
             }
         }
     };
