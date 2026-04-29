@@ -5358,6 +5358,9 @@ Respond ONLY with this JSON:
                     label: item.label,
                     type: item.type,
                     subtype: item.subtype,
+                    npcName: item.npcName,
+                    speakerName: item.speakerName,
+                    textHints: item.textHints,
                     danger: item.danger,
                     distance: item.distance,
                     direction: item.direction,
@@ -8177,8 +8180,11 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             const subtype = String(target.subtype || '').toLowerCase();
             const hints = String(target.textHints || '').toLowerCase();
             const label = String(target.label || '');
+            const labelLower = label.toLowerCase();
             const npcName = target.npcName || label || (es ? 'alguien' : 'someone');
-            const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela/.test(hints);
+            const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela|antorcha/.test(hints) ||
+                /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(labelLower) ||
+                subtype === 'light_source';
             if (target.type === 'door') return es ? 'Abriré esta puerta.' : 'I will open this door.';
             if (target.type === 'npc') return es ? `Hablaré con ${npcName}.` : `I'll speak with ${npcName}.`;
             if (isLight) return es ? 'Encenderé esto. No me gusta la oscuridad.' : `I'll light this. I don't like the dark.`;
