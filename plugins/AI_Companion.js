@@ -5841,6 +5841,10 @@ Respond ONLY with this JSON:
             }
             const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : scene._choiceWindow;
             if (choiceWindow && ((choiceWindow.active) || (choiceWindow.visible && choiceWindow.isOpen && choiceWindow.isOpen()))) {
+                if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) {
+                    this._state.manualUiHold = true;
+                    return true;
+                }
                 const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
                 if (this._choiceNeedsConsent(choices, messageText)) {
                     this._requireConsent('high-risk choice prompt');
@@ -8530,6 +8534,10 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             const appearance = CharacterPresets.getCurrentAppearance();
             const es = Config.language === 'es';
             const namePrefix = `\\c[6]${Config.companionName}\\c[0]: `;
+            if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
+                AutonomySystem._state.manualUiHold = true;
+                AutonomySystem._state.lastUiAdvanceAt = Date.now();
+            }
             $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
             $gameMessage.setBackground(0);
             $gameMessage.setPositionType(2);
@@ -8541,6 +8549,10 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             $gameMessage.setChoiceBackground(0);
             $gameMessage.setChoicePositionType(2);
             $gameMessage.setChoiceCallback(choice => {
+                if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
+                    AutonomySystem._state.manualUiHold = false;
+                    AutonomySystem._state.lastUiAdvanceAt = Date.now();
+                }
                 const pending = this.getPending();
                 if (!pending) return;
                 if (choice === 0) {
