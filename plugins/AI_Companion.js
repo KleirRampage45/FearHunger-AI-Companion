@@ -5276,26 +5276,17 @@ Respond ONLY with this JSON:
             if (snapshot.leashDistance > snapshot.scoutLimit + 1) {
                 return { action: 'RETURN', reason: 'too far from player', _autonomySource: 'local_purpose' };
             }
-
-            const targets = this._actionableTargets(snapshot);
-            if (targets.length > 0) {
-                const target = targets[0];
-                const keepClose = this._shouldStayTight(snapshot);
-                if (keepClose && target.distance > 1) {
-                    return null;
-                }
-                if (target.type === 'door' && this._isRecentTransfer(4000)) {
-                    return null;
-                }
-                return {
-                    action: target.type === 'container' ? 'LOOT' : 'INTERACT',
-                    eventId: target.eventId,
-                    reason: 'purposeful nearby target',
-                    _autonomySource: 'local_purpose'
-                };
-            }
-
             return null;
+        },
+
+        _goalFreeFallback(snapshot, source) {
+            const emergency = this._localPurposeDecision(snapshot);
+            if (emergency) return emergency;
+            return {
+                action: 'FOLLOW',
+                reason: source || 'awaiting llm goal',
+                _autonomySource: 'no_goal_fallback'
+            };
         },
 
         _buildSnapshot() {
@@ -5499,28 +5490,19 @@ Respond ONLY with this JSON:
                 }
                 if (this._state.currentTask) this._clearTask();
                 const localPurpose = this._localPurposeDecision(snapshot);
-                if (localPurpose && (localPurpose.action === 'LOOT' || localPurpose.action === 'INTERACT' || localPurpose.action === 'RETURN')) {
+                if (localPurpose && localPurpose.action === 'RETURN') {
                     this._applyDecision(localPurpose, snapshot);
-                    this._state.lastSnapshotHash = this._hashSnapshot(snapshot);
                     this._logTick(snapshot, localPurpose, localPurpose._autonomySource || 'local_purpose', Date.now() - start, null);
                     return;
                 }
-                const snapshotHash = this._hashSnapshot(snapshot);
-                if (this._state.lastSnapshotHash === snapshotHash && this._state.lastDecision) {
-                    const cachedDecision = this._normalizeDecision(snapshot, this._state.lastDecision, this._fallbackDecision(snapshot));
-                    this._applyDecision(cachedDecision, snapshot);
-                    this._logTick(snapshot, cachedDecision, 'cached', Date.now() - start, null);
-                    return;
-                }
                 const decision = await this._requestDecision(snapshot);
-                const finalDecision = decision || this._fallbackDecision(snapshot);
+                const finalDecision = decision || this._goalFreeFallback(snapshot, 'llm unavailable');
                 this._applyDecision(finalDecision, snapshot);
-                this._state.lastSnapshotHash = snapshotHash;
                 this._logTick(snapshot, finalDecision, (finalDecision && finalDecision._autonomySource) || 'fallback', Date.now() - start, null);
             } catch (error) {
                 Debug.warn('[Autonomy] heartbeat failed:', error.message);
                 const snapshot = this._state.lastSnapshot || null;
-                const fallback = this._fallbackDecision(snapshot || {
+                const fallback = this._goalFreeFallback(snapshot || {
                     nearby: [],
                     autoReturn: true,
                     leashDistance: 0,
@@ -5537,8 +5519,8 @@ Respond ONLY with this JSON:
         },
 
         async _requestDecision(snapshot) {
-            const fallback = this._fallbackDecision(snapshot);
-            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+            const fallback = this._goalFreeFallback(snapshot, 'llm unavailable');
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'no_model' }, fallback);
             this._state.lastRawLocalContent = '';
 
             const prompt = [
@@ -5583,7 +5565,7 @@ Respond ONLY with this JSON:
             }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
-                return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                return Object.assign({ _autonomySource: 'llm_http_error' }, fallback);
             }
 
             const data = await response.json();
@@ -5602,7 +5584,7 @@ Respond ONLY with this JSON:
             }
             let decision = GeminiAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
-                return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                return Object.assign({ _autonomySource: 'llm_parse_fallback' }, fallback);
             }
             decision.action = String(decision.action).toUpperCase();
             console.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
@@ -5611,7 +5593,7 @@ Respond ONLY with this JSON:
 
             if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
             if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return decision;
-            return Object.assign({ _autonomySource: 'fallback' }, fallback);
+            return Object.assign({ _autonomySource: 'llm_invalid_action' }, fallback);
         },
 
         _applyDecision(decision, snapshot, preserveTask) {
