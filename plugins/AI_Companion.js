@@ -8196,6 +8196,39 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             return es ? 'Déjame ver esto.' : `Let me check this.`;
         },
 
+        _normalizeAutonomyComment(text, target, fallback, es) {
+            const raw = String(text || '').trim();
+            if (!raw) return fallback;
+            const lower = raw.toLowerCase();
+            const subtype = String(target && target.subtype || '').toLowerCase();
+            const hints = String(target && target.textHints || '').toLowerCase();
+            const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela|antorcha/.test(hints) ||
+                /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(String(target && target.label || '').toLowerCase()) ||
+                subtype === 'light_source';
+            if (isLight && !/(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower)) {
+                return fallback;
+            }
+            if (subtype !== 'chest' && /(cofre|chest)/i.test(lower)) {
+                return fallback;
+            }
+            if (subtype === 'furniture_loot' && !/(mesa|table|mapa|papel|document|desk|cabinet|drawer)/i.test(lower)) {
+                return fallback;
+            }
+            if (subtype === 'crate' && !/(caja|crate|barrel|box|barril)/i.test(lower)) {
+                return fallback;
+            }
+            if (subtype === 'bookshelf' && !/(libro|book|estante|shelf|biblioteca)/i.test(lower)) {
+                return fallback;
+            }
+            if (target && target.type === 'door' && !/(puerta|door|abrir|open)/i.test(lower)) {
+                return fallback;
+            }
+            if (target && target.type === 'npc' && /(cofre|caja|mesa|door|puerta|book|libro)/i.test(lower)) {
+                return fallback;
+            }
+            return raw;
+        },
+
         async _generateAutonomyComment(action, target, factKey) {
             const es = Config.language === 'es';
             const fallback = this._reactiveFallback(action, target, es);
@@ -8252,8 +8285,9 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
                 const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim() : '';
-                console.log('[Autonomy Comment]', cleaned || fallback);
-                show(cleaned || fallback);
+                const finalText = this._normalizeAutonomyComment(cleaned, target, fallback, es);
+                console.log('[Autonomy Comment]', finalText);
+                show(finalText);
             } catch (e) {
                 show(fallback);
             }
