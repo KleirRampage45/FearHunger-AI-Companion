@@ -1578,7 +1578,10 @@ Reply with ONLY the category name, nothing else.`;
             if (hasBattle && !hasVisiblePresentation) tags.push('combat_trigger');
             else if (!metadata.npcName && ((hasBattle && hasVisiblePresentation) || (hasVisiblePresentation && hasKeyword(/enemy|guard|skeleton|ghoul|mauler|moonless|knight|captain|mercenary|priest|monster|creature/)))) tags.push('enemy');
             if (hasShop) tags.push('shop');
-            if (metadata.npcName || (hasVisiblePresentation && (hasText || hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child|buckman|trortur|enki|cahara|ragnvaldr|darce|legarde|le_garde/)))) tags.push('npc');
+            if (metadata.npcName || metadata.speakerName ||
+                (hasVisiblePresentation && hasKeyword(/npc|talk|chained|prisoner|merchant|woman|man|girl|child|buckman|trortur|enki|cahara|ragnvaldr|darce|legarde|le_garde/))) {
+                tags.push('npc');
+            }
             if (hasKeyword(/dead|corpse/) || sprite.includes('dead')) tags.push('corpse');
             if (hasKeyword(/flesh|growth|demonseed|seed/) || sprite.includes('flesh') || sprite.includes('growth')) tags.push('hazard');
 
@@ -8544,7 +8547,8 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
                 const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
-                show(cleaned || fallback);
+                const finalText = this._normalizeProactiveChat(cleaned, target, fallback, es);
+                show(finalText);
             } catch (e) {
                 show(fallback);
             }
@@ -8560,6 +8564,24 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (subtype === 'furniture_loot') return es ? 'Ahí hay papeles o provisiones.' : `There may be papers or supplies there.`;
             if (type === 'container') return es ? `Podría revisar ${label || 'eso'}.` : `I could check ${label || 'that'}.`;
             return es ? 'Veo algo que vale la pena revisar.' : `I see something worth checking.`;
+        },
+
+        _normalizeProactiveChat(text, target, fallback, es) {
+            const raw = String(text || '').replace(/\s+/g, ' ').trim();
+            if (!raw) return fallback;
+            const lower = raw.toLowerCase();
+            if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) return fallback;
+            if (/^(soy marcoh|i am marcoh)/i.test(lower)) return fallback;
+            if (raw.length < 6) return fallback;
+            const type = String(target && target.type || '').toLowerCase();
+            const subtype = String(target && target.subtype || '').toLowerCase();
+            if (type === 'npc' && /(cofre|caja|mesa|barril|estante|chest|crate|table|shelf|barrel)/i.test(lower)) return fallback;
+            if (type === 'container') {
+                if (subtype === 'bookshelf' && !/(libro|book|estante|shelf|biblioteca|leer)/i.test(lower)) return fallback;
+                if (subtype === 'crate' && !/(caja|crate|barrel|barril|box)/i.test(lower)) return fallback;
+                if (subtype === 'furniture_loot' && !/(mesa|table|mapa|papel|document|desk|cabinet|drawer|provisi)/i.test(lower)) return fallback;
+            }
+            return raw;
         },
 
         _reactiveFallback(action, target, es) {
@@ -10105,6 +10127,35 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             return true;
         }
         return _Game_Player_canMove.call(this);
+    };
+
+    const _Game_Player_moveByInput = Game_Player.prototype.moveByInput;
+    Game_Player.prototype.moveByInput = function() {
+        if (AutonomySystem.shouldAllowPlayerMovement && AutonomySystem.shouldAllowPlayerMovement()) {
+            if (!this.isMoving()) {
+                var direction = this.getInputDirection();
+                if (direction > 0) {
+                    $gameTemp.clearDestination();
+                } else if ($gameTemp.isDestinationValid()) {
+                    var x = $gameTemp.destinationX();
+                    var y = $gameTemp.destinationY();
+                    direction = this.findDirectionTo(x, y);
+                }
+                if (direction > 0) {
+                    this.executeMove(direction);
+                }
+            }
+            return;
+        }
+        _Game_Player_moveByInput.call(this);
+    };
+
+    const _Scene_Map_isMapTouchOk = Scene_Map.prototype.isMapTouchOk;
+    Scene_Map.prototype.isMapTouchOk = function() {
+        if (AutonomySystem.shouldAllowPlayerMovement && AutonomySystem.shouldAllowPlayerMovement()) {
+            return this.isActive();
+        }
+        return _Scene_Map_isMapTouchOk.call(this);
     };
 
     const _Game_Follower_chaseCharacter = Game_Follower.prototype.chaseCharacter;
