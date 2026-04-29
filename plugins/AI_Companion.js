@@ -7711,8 +7711,10 @@ CRITICAL GAME RULES (NEVER violate these):
     const AmbientDialogue = {
         _lastTime: 0,
         _lastTopic: null,
+        _lastSupportTime: 0,
         _gameStartTime: Date.now(),  // Track when the plugin loaded
         COOLDOWN: 30000,  // 30 seconds
+        SUPPORT_COOLDOWN: 8000,
         STARTUP_DELAY: 8000,  // 8 seconds — stay silent after game starts
 
         canSpeak() {
@@ -7732,6 +7734,18 @@ CRITICAL GAME RULES (NEVER violate these):
             return Date.now() - this._lastTime > this.COOLDOWN &&
                 !DialogueGovernor.isAtLimit() &&
                 !$gameMessage.isBusy();
+        },
+
+        canSpeakSupport() {
+            if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
+            const scene = SceneManager._scene;
+            if (!scene) return false;
+            const sceneName = scene.constructor.name;
+            if (sceneName !== 'Scene_Map' && sceneName !== 'Scene_Battle') return false;
+            if (!$gameParty || !$gameParty.leader() || !$gameMap || !$gameMap.mapId()) return false;
+            if ($gameParty.inBattle()) return false;
+            if ($gameMessage.isBusy()) return false;
+            return Date.now() - this._lastSupportTime > this.SUPPORT_COOLDOWN;
         },
 
         // Track visited maps (per save file via $gameSystem)
@@ -7902,8 +7916,8 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
         },
 
         _partySupportItems() {
-            if (!$gameParty) return { healing: [], bandages: [], food: [], mind: [] };
-            const buckets = { healing: [], bandages: [], food: [], mind: [] };
+            if (!$gameParty) return { healing: [], bleed: [], infection: [], poison: [], food: [], mind: [] };
+            const buckets = { healing: [], bleed: [], infection: [], poison: [], food: [], mind: [] };
             const items = $gameParty.items();
             for (const item of items) {
                 const count = $gameParty.numItems(item);
@@ -7911,19 +7925,32 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 const name = String(item.name || '');
                 const lower = name.toLowerCase();
                 const kb = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItemInfo) ? FearHungerKB.getItemInfo(name) : null;
+                const effects = kb && Array.isArray(kb.effects) ? kb.effects : [];
                 if (kb && kb.type === 'food') {
                     buckets.food.push({ item, count });
                     continue;
                 }
-                if (/vendaje|bandage|gasas|gauze/i.test(lower)) {
-                    buckets.bandages.push({ item, count });
-                    continue;
-                }
-                if (/ale|cerveza|whiskey|wine|vino|opium|tabaco|tobacco|mind|cordura|vial azul|blue vial|elixir/i.test(lower)) {
+                if (effects.some(e => e && e.type === 'heal_mind') ||
+                    /ale|cerveza|whiskey|wine|vino|opium|tabaco|tobacco|mind|cordura|vial azul|blue vial|elixir/i.test(lower)) {
                     buckets.mind.push({ item, count });
                     continue;
                 }
-                if (/hierba|herb|cura|heal|pocion|poción|vial verde|green vial|vial rojo|red vial|medicine|medicina/i.test(lower)) {
+                if (effects.some(e => e && e.type === 'cure_status' && e.status === 'infection') ||
+                    /hierba verde|green herb|mezcla roja y verde|mix of red and green/i.test(lower)) {
+                    buckets.infection.push({ item, count });
+                    continue;
+                }
+                if (effects.some(e => e && e.type === 'cure_status' && (e.status === 'poison' || e.status === 'toxic')) ||
+                    /vial blanco|white vial|mezcla roja y verde|mix of red and green/i.test(lower)) {
+                    buckets.poison.push({ item, count });
+                    continue;
+                }
+                if (/cloth fragment|fragmento de tela|tela|trapo|vendaje|bandage|gasas|gauze/i.test(lower)) {
+                    buckets.bleed.push({ item, count });
+                    continue;
+                }
+                if (effects.some(e => e && e.type === 'heal_body') ||
+                    /hierba|herb|cura|heal|pocion|poción|vial verde|green vial|vial rojo|red vial|medicine|medicina/i.test(lower)) {
                     buckets.healing.push({ item, count });
                 }
             }
@@ -7952,11 +7979,14 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                     if (match) hungerLevel = Math.max(hungerLevel, Number(match[1]) || 0);
                     else hungerLevel = Math.max(hungerLevel, 1);
                 });
-                if (bleeding && items.bandages.length > 0) {
-                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 100 : 95, kind: 'bandage', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.bandages[0].item.name });
+                if (bleeding && items.bleed.length > 0) {
+                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 100 : 95, kind: 'bleed', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.bleed[0].item.name });
                 }
-                if (poisoned && items.healing.length > 0) {
-                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 90 : 85, kind: 'healing', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.healing[0].item.name });
+                if (states.some(s => /infecc|infect/i.test(String(s.name || ''))) && items.infection.length > 0) {
+                    needs.push({ priority: 92, kind: 'infection', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.infection[0].item.name });
+                }
+                if (poisoned && items.poison.length > 0) {
+                    needs.push({ priority: actor.actorId && actor.actorId() === Config.companionActorId ? 90 : 85, kind: 'poison', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.poison[0].item.name });
                 }
                 if (hpPct <= 35 && items.healing.length > 0) {
                     needs.push({ priority: hpPct <= 20 ? 88 : 78, kind: 'healing', actor: actor.name(), targetSelf: actor.actorId && actor.actorId() === Config.companionActorId, itemName: items.healing[0].item.name });
@@ -7999,20 +8029,27 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
         checkSupportNeeds() {
             if (Date.now() - this._lastSupportCheck < this.SUPPORT_CHECK_INTERVAL) return;
             this._lastSupportCheck = Date.now();
-            if (!this.canSpeak()) return;
-            if ($gameParty.inBattle()) return;
-            if ($gameMessage.isBusy()) return;
+            if (!this.canSpeakSupport()) return;
             const need = this._supportNeedSnapshot();
             if (!need) return;
+            this._lastSupportTime = Date.now();
             const topic = `support_${need.kind}`;
             const factKey = `support:${need.kind}:${need.actor}:${need.itemName}`;
             if (DialogueMemory.hasRecentFact(factKey, topic, 120000, $gameMap ? $gameMap.mapId() : null)) return;
             const es = Config.language === 'es';
             let line = '';
-            if (need.kind === 'bandage') {
+            if (need.kind === 'bleed') {
                 line = need.targetSelf
-                    ? (es ? `Necesito un vendaje. Tengo ${need.itemName}.` : `I need a bandage. I have ${need.itemName}.`)
-                    : (es ? `${need.actor} necesita un vendaje.` : `${need.actor} needs a bandage.`);
+                    ? (es ? `Estoy sangrando. Usa ${need.itemName}.` : `I'm bleeding. Use ${need.itemName}.`)
+                    : (es ? `${need.actor} sangra. ${need.itemName}.` : `${need.actor} is bleeding. ${need.itemName}.`);
+            } else if (need.kind === 'infection') {
+                line = need.targetSelf
+                    ? (es ? `Tengo infección. ${need.itemName}, ya.` : `I'm infected. ${need.itemName}, now.`)
+                    : (es ? `${need.actor} tiene infección.` : `${need.actor} is infected.`);
+            } else if (need.kind === 'poison') {
+                line = need.targetSelf
+                    ? (es ? `Veneno. ${need.itemName} me ayudaría.` : `Poison. ${need.itemName} would help.`)
+                    : (es ? `${need.actor} está envenenado.` : `${need.actor} is poisoned.`);
             } else if (need.kind === 'healing') {
                 line = need.targetSelf
                     ? (es ? `Estoy mal. Mejor usar ${need.itemName}.` : `I'm hurt. Better use ${need.itemName}.`)
@@ -8029,6 +8066,16 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (!line) return;
             DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
             this._speak(line, topic);
+        },
+
+        onUrgentStateChange(actor, state) {
+            if (!actor || !state || !$gameParty || !$gameParty.members || !$gameParty.members().includes(actor)) return;
+            if (!this.canSpeakSupport()) return;
+            const name = String(state.name || '');
+            if (!/sangr|bleed|infecc|infect|poison|venen|t[oó]xic/i.test(name)) return;
+            this._lastSupportCheck = 0;
+            this._lastSupportTime = 0;
+            this.checkSupportNeeds();
         },
 
         // Track warned positions to avoid repeating
@@ -9250,6 +9297,10 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                             const pick = reactions[Math.floor(Math.random() * reactions.length)];
                             AmbientDialogue._speak(pick, 'limb_loss');
                         }
+                    }
+
+                    if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue.onUrgentStateChange) {
+                        AmbientDialogue.onUrgentStateChange(this, state);
                     }
                 }
             }
