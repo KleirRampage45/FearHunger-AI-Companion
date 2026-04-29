@@ -1634,7 +1634,8 @@ Reply with ONLY the category name, nothing else.`;
             if (type === 'container') {
                 if (name.includes('coin')) return 'coin';
                 if (name.includes('book') || name.includes('shelf') || name.includes('libro') || name.includes('estante') || name.includes('biblioteca') || (metadata && metadata.textHints && /book|libro|estante|biblioteca|read|leer/.test(metadata.textHints))) return 'bookshelf';
-                if (name.includes('crate') || name.includes('barrel') || name.includes('caja') || name.includes('barril') || (metadata && metadata.textHints && /crate|barrel|caja|barril|box|boxes/.test(metadata.textHints))) return 'crate';
+                if (name.includes('barrel') || name.includes('barril') || (metadata && metadata.textHints && /barrel|barril/.test(metadata.textHints))) return 'barrel';
+                if (name.includes('crate') || name.includes('caja') || (metadata && metadata.textHints && /crate|caja|box|boxes/.test(metadata.textHints))) return 'crate';
                 if (name.includes('table') || name.includes('desk') || name.includes('mesa') || name.includes('mapa') || name.includes('cabinet') || name.includes('drawer') || (metadata && metadata.textHints && /table|desk|mesa|mapa|cabinet|drawer|bottle|papers|notes|documents/.test(metadata.textHints))) return 'furniture_loot';
                 return 'chest';
             }
@@ -1682,7 +1683,10 @@ Reply with ONLY the category name, nothing else.`;
                 if (lowerRawName.includes('book') || lowerRawName.includes('shelf') || lowerRawName.includes('libro') || lowerRawName.includes('estante') || lowerRawName.includes('biblioteca') || (metadata && metadata.textHints && /book|libro|estante|biblioteca|read|leer/.test(metadata.textHints))) {
                     return 'Estantería';
                 }
-                if (lowerRawName.includes('crate') || lowerRawName.includes('barrel') || lowerRawName.includes('caja') || lowerRawName.includes('barril') || (metadata && metadata.textHints && /crate|barrel|caja|barril|box|boxes/.test(metadata.textHints))) {
+                if (lowerRawName.includes('barrel') || lowerRawName.includes('barril') || (metadata && metadata.textHints && /barrel|barril/.test(metadata.textHints))) {
+                    return 'Barril';
+                }
+                if (lowerRawName.includes('crate') || lowerRawName.includes('caja') || (metadata && metadata.textHints && /crate|caja|box|boxes/.test(metadata.textHints))) {
                     return 'Caja';
                 }
                 if (lowerRawName.includes('table') || lowerRawName.includes('desk') || lowerRawName.includes('mesa') || lowerRawName.includes('mapa') || lowerRawName.includes('cabinet') || lowerRawName.includes('drawer') || (metadata && metadata.textHints && /table|desk|mesa|mapa|cabinet|drawer|bottle|papers|notes|documents/.test(metadata.textHints))) {
@@ -8493,7 +8497,6 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
 
         async _generateProactiveChat(target, factKey) {
             const es = Config.language === 'es';
-            const fallback = this._proactiveFallback(target, es);
             const show = text => {
                 const clean = String(text || '').trim();
                 if (!clean) return;
@@ -8507,10 +8510,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                     this._speak(clean, 'proactive_chat');
                 }
             };
-            if (Config.useMockAI) {
-                show(fallback);
-                return;
-            }
+            if (Config.useMockAI) return;
             try {
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
@@ -8518,6 +8518,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `Speak first on your own initiative in ONE short line, under 16 words.\n` +
+                    `Do not say generic filler like "I am here", "still here", or just announce your presence.\n` +
                     `This is a safe moment, not combat.\n` +
                     `Target nearby: ${target.label || 'object'}\n` +
                     `Target type: ${target.type}\n` +
@@ -8547,23 +8548,11 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
                 const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
-                const finalText = this._normalizeProactiveChat(cleaned, target, fallback, es);
-                show(finalText);
+                const finalText = this._normalizeProactiveChat(cleaned, target, '', es);
+                if (finalText) show(finalText);
             } catch (e) {
-                show(fallback);
+                return;
             }
-        },
-
-        _proactiveFallback(target, es) {
-            const type = String(target.type || '').toLowerCase();
-            const subtype = String(target.subtype || '').toLowerCase();
-            const label = String(target.label || '').toLowerCase();
-            if (type === 'npc') return es ? '¿Quieres que hable con él?' : `Do you want me to speak to them?`;
-            if (type === 'door') return es ? 'Esa puerta podría llevar a algo útil.' : `That door might lead somewhere useful.`;
-            if (subtype === 'bookshelf') return es ? 'Esos libros podrían decirnos algo.' : `Those books might tell us something.`;
-            if (subtype === 'furniture_loot') return es ? 'Ahí hay papeles o provisiones.' : `There may be papers or supplies there.`;
-            if (type === 'container') return es ? `Podría revisar ${label || 'eso'}.` : `I could check ${label || 'that'}.`;
-            return es ? 'Veo algo que vale la pena revisar.' : `I see something worth checking.`;
         },
 
         _normalizeProactiveChat(text, target, fallback, es) {
@@ -8578,29 +8567,11 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (type === 'npc' && /(cofre|caja|mesa|barril|estante|chest|crate|table|shelf|barrel)/i.test(lower)) return fallback;
             if (type === 'container') {
                 if (subtype === 'bookshelf' && !/(libro|book|estante|shelf|biblioteca|leer)/i.test(lower)) return fallback;
-                if (subtype === 'crate' && !/(caja|crate|barrel|barril|box)/i.test(lower)) return fallback;
+                if (subtype === 'crate' && !/(caja|crate|box)/i.test(lower)) return fallback;
+                if (subtype === 'barrel' && !/(barril|barrel)/i.test(lower)) return fallback;
                 if (subtype === 'furniture_loot' && !/(mesa|table|mapa|papel|document|desk|cabinet|drawer|provisi)/i.test(lower)) return fallback;
             }
             return raw;
-        },
-
-        _reactiveFallback(action, target, es) {
-            const subtype = String(target.subtype || '').toLowerCase();
-            const hints = String(target.textHints || '').toLowerCase();
-            const label = String(target.label || '');
-            const labelLower = label.toLowerCase();
-            const npcName = target.npcName || label || (es ? 'alguien' : 'someone');
-            const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela|antorcha/.test(hints) ||
-                /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(labelLower) ||
-                subtype === 'light_source';
-            if (target.type === 'door') return es ? 'Abriré esta puerta.' : 'I will open this door.';
-            if (target.type === 'npc') return es ? `Hablaré con ${npcName}.` : `I'll speak with ${npcName}.`;
-            if (isLight) return es ? 'Encenderé esto. No me gusta la oscuridad.' : `I'll light this. I don't like the dark.`;
-            if (subtype === 'bookshelf') return es ? 'Revisaré estos libros.' : `I'll check these books.`;
-            if (subtype === 'furniture_loot') return es ? 'Voy a revisar la mesa.' : `I'll check the table.`;
-            if (subtype === 'crate') return es ? 'Voy a revisar la caja.' : `I'll check the crate.`;
-            if (target.type === 'container' || target.type === 'loot') return es ? 'Voy a revisar esto.' : `I'll check this.`;
-            return es ? 'Déjame ver esto.' : `Let me check this.`;
         },
 
         _normalizeAutonomyComment(text, target, fallback, es) {
@@ -8615,6 +8586,9 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (/soy\s+marcoh|i am\s+marcoh/i.test(lower)) {
                 return fallback;
             }
+            if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) {
+                return fallback;
+            }
             if (isLight && !/(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower)) {
                 return fallback;
             }
@@ -8624,7 +8598,10 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (subtype === 'furniture_loot' && !/(mesa|table|mapa|papel|document|desk|cabinet|drawer)/i.test(lower)) {
                 return fallback;
             }
-            if (subtype === 'crate' && !/(caja|crate|barrel|box|barril)/i.test(lower)) {
+            if (subtype === 'crate' && !/(caja|crate|box)/i.test(lower)) {
+                return fallback;
+            }
+            if (subtype === 'barrel' && !/(barril|barrel)/i.test(lower)) {
                 return fallback;
             }
             if (subtype === 'bookshelf' && !/(libro|book|estante|shelf|biblioteca)/i.test(lower)) {
@@ -8641,10 +8618,6 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
 
         async _generateAutonomyComment(action, target, factKey) {
             const es = Config.language === 'es';
-            const fallback = this._reactiveFallback(action, target, es);
-            const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela|antorcha/.test(String(target && target.textHints || '').toLowerCase()) ||
-                /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(String(target && target.label || '').toLowerCase()) ||
-                String(target && target.subtype || '').toLowerCase() === 'light_source';
             const show = text => {
                 const clean = String(text || '').trim();
                 if (!clean) return;
@@ -8657,15 +8630,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                     this._speak(clean, 'autonomy_reactive');
                 }
             };
-            if (Config.useMockAI) {
-                show(fallback);
-                return;
-            }
-            if (isLight) {
-                console.log('[Autonomy Comment]', fallback);
-                show(fallback);
-                return;
-            }
+            if (Config.useMockAI) return;
             try {
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
@@ -8674,6 +8639,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `Say ONE short line, under 12 words, before you ${String(action).toLowerCase()} something.\n` +
                     `You ARE ${Config.companionName}. Speak in first person.\n` +
+                    `Do not say generic filler like "I am here", "still here", or your own name.\n` +
                     `Target type: ${target.type}\n` +
                     `Target subtype: ${target.subtype || 'none'}\n` +
                     `Target label: ${target.label || 'object'}\n` +
@@ -8703,11 +8669,12 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
                 const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim() : '';
-                const finalText = this._normalizeAutonomyComment(cleaned, target, fallback, es);
+                const finalText = this._normalizeAutonomyComment(cleaned, target, '', es);
+                if (!finalText) return;
                 console.log('[Autonomy Comment]', finalText);
                 show(finalText);
             } catch (e) {
-                show(fallback);
+                return;
             }
         },
 
