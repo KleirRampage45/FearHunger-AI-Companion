@@ -7849,10 +7849,12 @@ CRITICAL GAME RULES (NEVER violate these):
         _lastTopic: null,
         _lastSupportTime: 0,
         _lastReactiveTime: 0,
+        _lastProactiveTime: 0,
         _gameStartTime: Date.now(),  // Track when the plugin loaded
         COOLDOWN: 30000,  // 30 seconds
         SUPPORT_COOLDOWN: 8000,
         REACTIVE_COOLDOWN: 6000,
+        PROACTIVE_COOLDOWN: 90000,
         STARTUP_DELAY: 8000,  // 8 seconds — stay silent after game starts
 
         canSpeak() {
@@ -7895,6 +7897,21 @@ CRITICAL GAME RULES (NEVER violate these):
             if (!$gameParty || !$gameParty.leader() || !$gameMap || !$gameMap.mapId()) return false;
             if ($gameParty.inBattle()) return false;
             return Date.now() - this._lastReactiveTime > this.REACTIVE_COOLDOWN;
+        },
+
+        canSpeakProactive() {
+            if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
+            const scene = SceneManager._scene;
+            if (!scene) return false;
+            const sceneName = scene.constructor.name;
+            if (sceneName !== 'Scene_Map') return false;
+            if (!$gameParty || !$gameParty.leader() || !$gameMap || !$gameMap.mapId()) return false;
+            if ($gameParty.inBattle()) return false;
+            if ($gameMessage.isBusy()) return false;
+            if (Date.now() - this._lastProactiveTime <= this.PROACTIVE_COOLDOWN) return false;
+            if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) return false;
+            if (AutonomySystem && AutonomySystem._isRecentTransfer && AutonomySystem._isRecentTransfer(5000)) return false;
+            return true;
         },
 
         // Track visited maps (per save file via $gameSystem)
@@ -8223,6 +8240,96 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (DialogueMemory.hasRecentFact(factKey, 'autonomy_reactive', 120000, $gameMap ? $gameMap.mapId() : null)) return;
             this._lastReactiveTime = Date.now();
             this._generateAutonomyComment(action, target, factKey);
+        },
+
+        checkProactiveChat() {
+            if (!this.canSpeakProactive()) return;
+            const nearby = EnvironmentScanner && EnvironmentScanner.scanAround ? EnvironmentScanner.scanAround($gamePlayer, 4) : [];
+            const world = WorldStateEngine && WorldStateEngine.getSnapshot ? WorldStateEngine.getSnapshot() : null;
+            if (!world || world.threats.level === 'high' || world.threats.level === 'extreme') return;
+            const immediateThreat = (nearby || []).some(item => item && item.danger === 'high' && item.distance <= 2);
+            if (immediateThreat) return;
+            const candidates = (nearby || []).filter(item => item && item.distance <= 4 && ['npc', 'door', 'container'].includes(item.type));
+            if (candidates.length === 0) return;
+            const target = candidates[0];
+            const factKey = `proactive:${target.type}:${target.subtype || ''}:${target.label || ''}:${$gameMap.mapId()}`;
+            if (DialogueMemory.hasRecentFact(factKey, 'proactive_chat', 180000, $gameMap.mapId())) return;
+            this._lastProactiveTime = Date.now();
+            this._generateProactiveChat(target, factKey);
+        },
+
+        async _generateProactiveChat(target, factKey) {
+            const es = Config.language === 'es';
+            const fallback = this._proactiveFallback(target, es);
+            const show = text => {
+                const clean = String(text || '').trim();
+                if (!clean) return;
+                DialogueMemory.rememberFact(factKey, clean, 'proactive_chat', { mapId: $gameMap ? $gameMap.mapId() : null });
+                DialogueMemory.rememberLine(clean, 'proactive_chat', { mapId: $gameMap ? $gameMap.mapId() : null });
+                ThesisLogger.log('ambient', { topic: 'proactive_chat', text: clean, text_length: clean.length });
+                console.log('[Proactive Chat]', clean);
+                if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
+                    ActionExecutor._showDialogue(clean);
+                } else {
+                    this._speak(clean, 'proactive_chat');
+                }
+            };
+            if (Config.useMockAI) {
+                show(fallback);
+                return;
+            }
+            try {
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                    `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `Speak first on your own initiative in ONE short line, under 16 words.\n` +
+                    `This is a safe moment, not combat.\n` +
+                    `Target nearby: ${target.label || 'object'}\n` +
+                    `Target type: ${target.type}\n` +
+                    `Target subtype: ${target.subtype || 'none'}\n` +
+                    `Hints: ${target.textHints || 'none'}\n` +
+                    `You may make a brief suggestion, observation, or question.\n` +
+                    `Do not open a long conversation. No lists.`;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1400);
+                let resp;
+                try {
+                    resp = await fetch(endpoint, {
+                        method: 'POST',
+                        headers,
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model,
+                            messages: [{ role: 'system', content: prompt }],
+                            max_tokens: 36,
+                            temperature: 0.85
+                        })
+                    });
+                } finally {
+                    clearTimeout(timer);
+                }
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const text = data.choices?.[0]?.message?.content?.trim();
+                const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
+                show(cleaned || fallback);
+            } catch (e) {
+                show(fallback);
+            }
+        },
+
+        _proactiveFallback(target, es) {
+            const type = String(target.type || '').toLowerCase();
+            const subtype = String(target.subtype || '').toLowerCase();
+            const label = String(target.label || '').toLowerCase();
+            if (type === 'npc') return es ? '¿Quieres que hable con él?' : `Do you want me to speak to them?`;
+            if (type === 'door') return es ? 'Esa puerta podría llevar a algo útil.' : `That door might lead somewhere useful.`;
+            if (subtype === 'bookshelf') return es ? 'Esos libros podrían decirnos algo.' : `Those books might tell us something.`;
+            if (subtype === 'furniture_loot') return es ? 'Ahí hay papeles o provisiones.' : `There may be papers or supplies there.`;
+            if (type === 'container') return es ? `Podría revisar ${label || 'eso'}.` : `I could check ${label || 'that'}.`;
+            return es ? 'Veo algo que vale la pena revisar.' : `I see something worth checking.`;
         },
 
         _reactiveFallback(action, target, es) {
@@ -9724,6 +9831,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
         // Proactive trap/threat warning from EnvironmentScanner
         AmbientDialogue.checkNearbyThreats();
+        AmbientDialogue.checkProactiveChat();
 
         // Optional local-only companion autonomy heartbeat
         AutonomySystem.update();
