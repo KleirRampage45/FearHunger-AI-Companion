@@ -1396,6 +1396,7 @@ Reply with ONLY the category name, nothing else.`;
                 add(mapId, [309], 'hazard', 'rest', 'Cama', { danger: 'medium' });
             });
             add(51, [313], 'container', 'furniture_loot', 'Mesa');
+            add(51, [221, 222, 223, 224, 225, 226, 227, 228, 229, 232], 'hazard', 'collapsed_passage', 'Pasillo derrumbado', { danger: 'medium' });
             add(1, [287, 288], 'trap', 'floor_trap', 'Suelo peligroso', { danger: 'medium' });
 
             add(3, [14, 98], 'npc', 'buckman', 'Buckman');
@@ -8296,6 +8297,12 @@ CRITICAL GAME RULES (NEVER violate these):
                 return;
             }
 
+            if ((isWeapon || isArmor) &&
+                typeof EquipmentApproval !== 'undefined' &&
+                EquipmentApproval.consider(item)) {
+                return;
+            }
+
             // Generate AI comment
             this._generateItemComment(item, kbItem, isWeapon, isArmor, isFood, isHungry);
         },
@@ -9458,6 +9465,144 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             const reply = es ? `Voy. Uso ${pending.itemName}${pending.targetSelf ? '' : ' en ' + pending.actor}.` : `Alright. Using ${pending.itemName}${pending.targetSelf ? '' : ' on ' + pending.actor}.`;
             this._showReply(reply);
             return reply;
+        }
+    };
+
+    //=========================================================================
+    // Equipment Approval — ask before equipping clearly useful gear
+    //=========================================================================
+    const EquipmentApproval = {
+        _score(item) {
+            if (!item || !item.params) return 0;
+            if (DataManager.isWeapon(item)) return Number(item.params[2] || 0);
+            if (DataManager.isArmor(item)) {
+                return Number(item.params[3] || 0) + Number(item.params[5] || 0) + (Number(item.params[6] || 0) * 0.25);
+            }
+            return 0;
+        },
+
+        _slotIndex(actor, item) {
+            if (!actor || !item || !actor.equipSlots) return -1;
+            const slots = actor.equipSlots();
+            for (let i = 0; i < slots.length; i++) {
+                if (slots[i] === item.etypeId) return i;
+            }
+            return -1;
+        },
+
+        _candidate(actor, item) {
+            if (!actor || !item || !$gameParty || $gameParty.numItems(item) <= 0) return null;
+            if (actor.canEquip && !actor.canEquip(item)) return null;
+            const slotIndex = this._slotIndex(actor, item);
+            if (slotIndex < 0) return null;
+            const current = actor.equips && actor.equips()[slotIndex] ? actor.equips()[slotIndex] : null;
+            const newScore = this._score(item);
+            const currentScore = current ? this._score(current) : 0;
+            if (current && newScore <= currentScore) return null;
+            return { actor, item, slotIndex, current, newScore, currentScore };
+        },
+
+        _lineWrap(text, maxLineLen, maxLines) {
+            const words = String(text || '').split(/\s+/).filter(Boolean);
+            const lines = [];
+            let current = '';
+            words.forEach(word => {
+                if (current && current.length + word.length + 1 > maxLineLen) {
+                    lines.push(current);
+                    current = word;
+                } else {
+                    current += (current ? ' ' : '') + word;
+                }
+            });
+            if (current) lines.push(current);
+            return lines.slice(0, maxLines || 4);
+        },
+
+        _showPrompt(candidate) {
+            if (!candidate || !$gameMessage || $gameMessage.isBusy()) return false;
+            if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) return false;
+            const es = Config.language === 'es';
+            const appearance = CharacterPresets.getCurrentAppearance();
+            const currentName = candidate.current ? candidate.current.name : (es ? 'nada' : 'nothing');
+            const itemName = candidate.item.name;
+            const reason = candidate.current
+                ? (es ? `mejora ${currentName}` : `better than ${currentName}`)
+                : (es ? 'ese espacio está vacío' : 'that slot is empty');
+            const text = es
+                ? `Encontré ${itemName}; ${reason}. ¿Me lo equipo?`
+                : `Found ${itemName}; ${reason}. Equip it?`;
+            $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
+            $gameMessage.setBackground(0);
+            $gameMessage.setPositionType(2);
+            const lines = this._lineWrap(text, 36, 4);
+            $gameMessage.add(`\\c[6]${Config.companionName}\\c[0]: ${lines[0] || text}`);
+            for (let i = 1; i < lines.length; i++) $gameMessage.add(lines[i]);
+            if ($gameMessage.setChoiceHelps) $gameMessage.setChoiceHelps(['', '']);
+            if ($gameMessage.setChoiceMessages) $gameMessage.setChoiceMessages(['', '']);
+            if ($gameMessage.setChoiceFaces) $gameMessage.setChoiceFaces([null, null]);
+            $gameMessage.setChoices([es ? 'Sí' : 'Yes', es ? 'No' : 'No'], 0, 1);
+            $gameMessage.setChoiceBackground(0);
+            $gameMessage.setChoicePositionType(2);
+            $gameMessage.setChoiceCallback(choice => {
+                if (choice === 0) {
+                    this._equip(candidate);
+                } else {
+                    this._reply(es ? 'Lo guardo por ahora.' : 'I will keep it packed for now.');
+                }
+            });
+            return true;
+        },
+
+        _reply(text) {
+            setTimeout(() => {
+                if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue._speak && !$gameMessage.isBusy()) {
+                    AmbientDialogue._speak(text, 'equipment_reply');
+                }
+            }, 50);
+        },
+
+        _equip(candidate) {
+            const es = Config.language === 'es';
+            try {
+                if (!$gameParty || $gameParty.numItems(candidate.item) <= 0) {
+                    this._reply(es ? 'Ya no lo encuentro.' : "I can't find it now.");
+                    return false;
+                }
+                candidate.actor.changeEquip(candidate.slotIndex, candidate.item);
+                if (candidate.actor.refresh) candidate.actor.refresh();
+                ShortTermMemory.addEvent(`${Config.companionName} equipped ${candidate.item.name}.`);
+                ThesisLogger.log('game_event', {
+                    event: 'equipment_equipped',
+                    actor_name: candidate.actor.name(),
+                    item_name: candidate.item.name,
+                    replaced_item: candidate.current ? candidate.current.name : null
+                });
+                this._reply(es ? `Me equipo ${candidate.item.name}.` : `Equipping ${candidate.item.name}.`);
+                return true;
+            } catch (e) {
+                Debug.warn('[EquipmentApproval] Equip failed:', e.message);
+                this._reply(es ? `No pude equipar ${candidate.item.name}.` : `I could not equip ${candidate.item.name}.`);
+                return false;
+            }
+        },
+
+        consider(item) {
+            if (!item || (!DataManager.isWeapon(item) && !DataManager.isArmor(item))) return false;
+            if (!AmbientDialogue.canSpeakSupport || !AmbientDialogue.canSpeakSupport()) return false;
+            const companion = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
+            const candidate = this._candidate(companion, item);
+            if (!candidate) return false;
+            const shown = this._showPrompt(candidate);
+            if (shown) {
+                ThesisLogger.log('ambient', {
+                    topic: 'equipment_approval',
+                    item_name: item.name,
+                    current_item: candidate.current ? candidate.current.name : null,
+                    new_score: candidate.newScore,
+                    current_score: candidate.currentScore
+                });
+            }
+            return shown;
         }
     };
 
