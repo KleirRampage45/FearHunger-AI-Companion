@@ -6079,6 +6079,211 @@ Respond ONLY with this JSON:
             return false;
         },
 
+        _isSafeBackgroundChoice(params) {
+            if (!params || !Array.isArray(params[0])) return false;
+            const choices = params[0].map(choice => String(choice || '').toLowerCase().trim());
+            if (choices.length < 2 || choices.length > 3) return false;
+            const positive = /^(abrir|buscar|agarrar|tomar|revisar|usar|open|search|take|grab|check|inspect|yes|sí|si)\b/i;
+            const negative = /^(dejar|irse|ignorar|cancelar|no|leave|ignore|cancel|go away)\b/i;
+            if (!positive.test(choices[0])) return false;
+            for (let i = 1; i < choices.length; i++) {
+                if (!negative.test(choices[i])) return false;
+            }
+            return true;
+        },
+
+        _analyzeBackgroundLootEvent(event, snap) {
+            if (!event || !snap) return null;
+            if (!(snap.type === 'container' || snap.type === 'loot')) return null;
+            const page = event.page ? event.page() : null;
+            const list = page && Array.isArray(page.list) ? page.list : null;
+            if (!list || list.length === 0) return null;
+
+            const allowedCodes = {
+                0: true,
+                101: true,
+                102: true,
+                108: true,
+                111: true,
+                121: true,
+                122: true,
+                123: true,
+                125: true,
+                126: true,
+                127: true,
+                128: true,
+                230: true,
+                401: true,
+                402: true,
+                404: true,
+                408: true,
+                411: true,
+                412: true
+            };
+
+            let hasGain = false;
+            let hasChoice = false;
+
+            for (let i = 0; i < list.length; i++) {
+                const command = list[i];
+                if (!command) continue;
+                const code = Number(command.code) || 0;
+                if (!allowedCodes[code]) return null;
+                if (code === 102) {
+                    hasChoice = true;
+                    if (!this._isSafeBackgroundChoice(command.parameters)) return null;
+                }
+                if (code === 111) {
+                    const branchType = Number(command.parameters && command.parameters[0]);
+                    if (branchType === 11 || branchType === 12 || branchType === 13) return null;
+                }
+                if (code === 122) {
+                    const operandType = Number(command.parameters && command.parameters[3]);
+                    if (operandType === 4) return null;
+                }
+                if (code >= 125 && code <= 128) {
+                    hasGain = true;
+                }
+            }
+
+            if (!hasGain) return null;
+
+            return {
+                list: list,
+                eventId: snap.eventId != null ? snap.eventId : (event.eventId ? event.eventId() : event._eventId),
+                label: snap.label || 'Objeto',
+                type: snap.type || 'container',
+                subtype: snap.subtype || '',
+                hasChoice: hasChoice
+            };
+        },
+
+        _describeBackgroundLootRewards(rewards) {
+            if (!rewards || rewards.length === 0) return '';
+            const es = Config.language === 'es';
+            const bits = rewards.map(reward => {
+                if (!reward) return '';
+                if (reward.kind === 'gold') {
+                    return es ? `${reward.amount} monedas` : `${reward.amount} gold`;
+                }
+                const qty = reward.amount > 1 ? `${reward.amount}x ` : '';
+                return `${qty}${reward.name}`;
+            }).filter(Boolean);
+            if (bits.length === 0) return '';
+            if (bits.length === 1) return bits[0];
+            if (bits.length === 2) return bits[0] + (es ? ' y ' : ' and ') + bits[1];
+            return bits.slice(0, -1).join(', ') + (es ? ' y ' : ' and ') + bits[bits.length - 1];
+        },
+
+        _showBackgroundLootSummary(rewards) {
+            const summary = this._describeBackgroundLootRewards(rewards);
+            if (!summary) return;
+            const es = Config.language === 'es';
+            const text = es ? `Encontré ${summary}.` : `I found ${summary}.`;
+            if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
+                ActionExecutor._showDialogue(text);
+            }
+        },
+
+        _executeBackgroundLoot(event, follower, snap) {
+            const plan = this._analyzeBackgroundLootEvent(event, snap);
+            if (!plan || typeof Game_Interpreter === 'undefined') return false;
+
+            const rewards = [];
+            const originalGainGold = $gameParty.gainGold.bind($gameParty);
+            const originalGainItem = $gameParty.gainItem.bind($gameParty);
+
+            $gameParty.gainGold = function(amount) {
+                if (amount > 0) rewards.push({ kind: 'gold', amount: amount });
+                return originalGainGold(amount);
+            };
+            $gameParty.gainItem = function(item, amount, includeEquip) {
+                if (item && amount > 0) {
+                    rewards.push({
+                        kind: DataManager.isWeapon(item) ? 'weapon' : (DataManager.isArmor(item) ? 'armor' : 'item'),
+                        name: item.name,
+                        amount: amount
+                    });
+                }
+                return originalGainItem(item, amount, includeEquip);
+            };
+
+            try {
+                const interpreter = new Game_Interpreter();
+                interpreter.setup(plan.list, plan.eventId);
+                interpreter._mapId = $gameMap.mapId();
+                interpreter._eventId = plan.eventId;
+
+                interpreter.command101 = function() {
+                    while (this.nextEventCode() === 401) {
+                        this._index++;
+                    }
+                    if (this.nextEventCode() === 102) {
+                        this._index++;
+                        this.setupChoices(this.currentCommand().parameters);
+                    }
+                    return true;
+                };
+                interpreter.command102 = function() {
+                    this.setupChoices(this._params);
+                    return true;
+                };
+                interpreter.setupChoices = function() {
+                    this._branch[this._indent] = 0;
+                };
+                interpreter.command230 = function() {
+                    return true;
+                };
+                interpreter.command401 = function() {
+                    return true;
+                };
+                interpreter.command402 = function() {
+                    if (this._branch[this._indent] !== this._params[0]) {
+                        this.skipBranch();
+                    }
+                    return true;
+                };
+                interpreter.command404 = function() {
+                    return true;
+                };
+                interpreter.command411 = function() {
+                    if (this._branch[this._indent] !== false) {
+                        this.skipBranch();
+                    }
+                    return true;
+                };
+                interpreter.command412 = function() {
+                    return true;
+                };
+
+                let guard = 0;
+                while (interpreter.isRunning && interpreter.isRunning()) {
+                    if (!interpreter.executeCommand()) break;
+                    guard++;
+                    if (guard > 5000) {
+                        throw new Error('background loot interpreter exceeded guard limit');
+                    }
+                }
+
+                this._rememberInteractionTarget(event, follower);
+                this._setEventCooldown(plan.eventId, 90000);
+                this._markEventSearched(plan.eventId, plan.type, rewards.length > 0 ? 'background_loot' : 'background_loot_empty');
+                this._showBackgroundLootSummary(rewards);
+                Debug.log('[BackgroundLoot]', {
+                    eventId: plan.eventId,
+                    label: plan.label,
+                    rewards: rewards
+                });
+                return true;
+            } catch (error) {
+                Debug.warn('[BackgroundLoot] Failed, falling back to normal event:', error.message);
+                return false;
+            } finally {
+                $gameParty.gainGold = originalGainGold;
+                $gameParty.gainItem = originalGainItem;
+            }
+        },
+
         _interactWithEvent(follower, event) {
             const now = Date.now();
             if (now - this._state.lastInteractAt < 1000) return false;
@@ -6091,6 +6296,12 @@ Respond ONLY with this JSON:
                 if (follower) {
                     follower._okIsPressed = true;
                     follower._preventNextOk = false;
+                }
+                if (snap && (snap.type === 'container' || snap.type === 'loot')) {
+                    const backgroundHandled = this._executeBackgroundLoot(event, follower, snap);
+                    if (backgroundHandled) {
+                        return this._finalizeInteractionStart(event, follower, 'background-loot', snap);
+                    }
                 }
                 if (snap && snap.type === 'door' && event.start) {
                     event.start();
