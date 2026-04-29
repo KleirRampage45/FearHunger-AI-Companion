@@ -8111,6 +8111,7 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             try {
                 const line = await this._generateSupportPromptAsync(need, es, this._generateSupportPromptSync(need, es));
                 if (!line) return;
+                console.log('[SupportApproval Prompt]', line);
                 DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
                 if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
                     if (!SupportApproval._showPrompt(line)) {
@@ -8132,11 +8133,15 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 const model = Config.getChatModel();
                 const prompt = `You are ${Config.companionName}, a companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `You ARE ${Config.companionName}. Never refer to yourself as another person.\n` +
                     `Write ONE short approval request, under 14 words.\n` +
                     `Need: ${need.kind}\n` +
-                    `Target: ${need.actor}\n` +
+                    `Target: ${need.targetSelf ? 'self' : need.actor}\n` +
                     `Item: ${need.itemName}\n` +
+                    `Self target: ${need.targetSelf ? 'yes' : 'no'}\n` +
                     `Tone: urgent but not panicked. Ask permission clearly.\n` +
+                    `If self target is yes, use first person. Never say "en ${Config.companionName}" or address yourself by name.\n` +
+                    `If self target is no, you may mention the target by name once.\n` +
                     `Do not mention game mechanics. Do not add extra sentences.`;
                 const body = JSON.stringify({
                     model: model,
@@ -8615,7 +8620,26 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
             $gameMessage.setBackground(0);
             $gameMessage.setPositionType(2);
-            $gameMessage.add(namePrefix + text);
+            const maxChars = 130;
+            const maxLineLen = 36;
+            const cleanText = text.length > maxChars ? text.substring(0, maxChars) + '...' : text;
+            const words = cleanText.split(' ');
+            const lines = [];
+            let currentLine = '';
+            for (const word of words) {
+                if (currentLine.length + word.length + 1 > maxLineLen && currentLine.length > 0) {
+                    lines.push(currentLine);
+                    currentLine = word;
+                } else {
+                    currentLine += (currentLine ? ' ' : '') + word;
+                }
+            }
+            if (currentLine) lines.push(currentLine);
+            const displayLines = lines.slice(0, 4);
+            $gameMessage.add(namePrefix + displayLines[0]);
+            for (let i = 1; i < displayLines.length; i++) {
+                $gameMessage.add(displayLines[i]);
+            }
             if ($gameMessage.setChoiceHelps) $gameMessage.setChoiceHelps(['', '']);
             if ($gameMessage.setChoiceMessages) $gameMessage.setChoiceMessages(['', '']);
             if ($gameMessage.setChoiceFaces) $gameMessage.setChoiceFaces([null, null]);
