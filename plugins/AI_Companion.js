@@ -5009,11 +5009,14 @@ Respond ONLY with this JSON:
             lastDoorEventId: null,
             manualUiHold: false,
             allowPlayerMoveWhileUi: false,
+            consentApprovedEventId: null,
+            consentApprovedUntil: 0,
+            consentPromptPending: false,
             eventCooldowns: {},
             searchedEvents: {}
         },
 
-        ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT'],
+        ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT', 'CONSENT'],
 
         getFollower() {
             if (!$gamePlayer || !$gamePlayer._followers || !$gamePlayer._followers.forEach) return null;
@@ -5094,6 +5097,9 @@ Respond ONLY with this JSON:
             this._state.lastDoorEventId = null;
             this._state.manualUiHold = false;
             this._state.allowPlayerMoveWhileUi = false;
+            this._state.consentApprovedEventId = null;
+            this._state.consentApprovedUntil = 0;
+            this._state.consentPromptPending = false;
             if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
             if (follower && follower.setThrough) follower.setThrough(true);
         },
@@ -5116,6 +5122,9 @@ Respond ONLY with this JSON:
             this._state.postDoorPoint = null;
             this._state.manualUiHold = false;
             this._state.allowPlayerMoveWhileUi = false;
+            this._state.consentApprovedEventId = null;
+            this._state.consentApprovedUntil = 0;
+            this._state.consentPromptPending = false;
         },
 
         _distance(a, b) {
@@ -5299,6 +5308,163 @@ Respond ONLY with this JSON:
             return false;
         },
 
+        _isConsentApproved(eventId) {
+            if (eventId == null) return false;
+            if (this._state.consentApprovedEventId !== Number(eventId)) return false;
+            if (Date.now() > (this._state.consentApprovedUntil || 0)) {
+                this._state.consentApprovedEventId = null;
+                this._state.consentApprovedUntil = 0;
+                return false;
+            }
+            return true;
+        },
+
+        _approveConsent(eventId) {
+            this._state.consentApprovedEventId = Number(eventId);
+            this._state.consentApprovedUntil = Date.now() + 45000;
+        },
+
+        _clearConsentApproval() {
+            this._state.consentApprovedEventId = null;
+            this._state.consentApprovedUntil = 0;
+            this._state.consentPromptPending = false;
+        },
+
+        _wrapLines(text, maxLineLen, maxLines) {
+            const words = String(text || '').split(/\s+/).filter(Boolean);
+            const lines = [];
+            let current = '';
+            words.forEach(word => {
+                if (current && current.length + word.length + 1 > maxLineLen) {
+                    lines.push(current);
+                    current = word;
+                } else {
+                    current += (current ? ' ' : '') + word;
+                }
+            });
+            if (current) lines.push(current);
+            return lines.slice(0, maxLines || 4);
+        },
+
+        _fallbackConsentText(target) {
+            const es = Config.language === 'es';
+            const label = target && target.label ? target.label : (es ? 'esto' : 'this');
+            if (target && target.type === 'shop') {
+                return es ? `¿Quieres que hable con ${label}?` : `Should I talk to ${label}?`;
+            }
+            return es ? `Esto puede ser delicado. ¿Sigo?` : `This may be risky. Continue?`;
+        },
+
+        async _generateConsentText(target) {
+            const fallback = this._fallbackConsentText(target);
+            if (Config.useMockAI) return fallback;
+            try {
+                const es = Config.language === 'es';
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                    `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `Write ONE short consent question, under 14 words.\n` +
+                    `You want permission before interacting with a risky/merchant target.\n` +
+                    `Target label: ${target && target.label ? target.label : 'unknown'}\n` +
+                    `Target type: ${target && target.type ? target.type : 'unknown'}\n` +
+                    `Target subtype: ${target && target.subtype ? target.subtype : 'none'}\n` +
+                    `Do not say you already did it. Ask permission clearly.`;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1400);
+                let resp;
+                try {
+                    resp = await fetch(endpoint, {
+                        method: 'POST',
+                        headers,
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model,
+                            messages: [{ role: 'system', content: prompt }],
+                            max_tokens: 42,
+                            temperature: 0.8
+                        })
+                    });
+                } finally {
+                    clearTimeout(timer);
+                }
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const text = data.choices?.[0]?.message?.content?.trim();
+                const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
+                return cleaned && cleaned.length >= 4 ? cleaned : fallback;
+            } catch (e) {
+                Debug.warn('[Autonomy] Consent prompt generation failed:', e.message);
+                return fallback;
+            }
+        },
+
+        async _requestTargetConsent(target, originalAction, reason, snapshot) {
+            if (!target || target.eventId == null || this._state.consentPromptPending) return;
+            if (!$gameMessage || $gameMessage.isBusy()) return;
+            this._state.consentPromptPending = true;
+            this._state.mode = 'hold';
+            this._state.targetEventId = null;
+            this._state.targetPoint = null;
+            this._state.targetApproach = null;
+            this._state.targetLabel = target.label || '';
+            this._state.manualUiHold = true;
+            this._state.allowPlayerMoveWhileUi = false;
+            this._clearTask();
+
+            const es = Config.language === 'es';
+            const text = await this._generateConsentText(target);
+            if (!$gameMessage || $gameMessage.isBusy()) {
+                this._state.consentPromptPending = false;
+                return;
+            }
+            const appearance = CharacterPresets.getCurrentAppearance();
+            $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
+            $gameMessage.setBackground(0);
+            $gameMessage.setPositionType(2);
+            const lines = this._wrapLines(text, 36, 4);
+            $gameMessage.add(`\\c[6]${Config.companionName}\\c[0]: ${lines[0] || text}`);
+            for (let i = 1; i < lines.length; i++) $gameMessage.add(lines[i]);
+            if ($gameMessage.setChoiceHelps) $gameMessage.setChoiceHelps(['', '']);
+            if ($gameMessage.setChoiceMessages) $gameMessage.setChoiceMessages(['', '']);
+            if ($gameMessage.setChoiceFaces) $gameMessage.setChoiceFaces([null, null]);
+            $gameMessage.setChoices([es ? 'Sí' : 'Yes', es ? 'No' : 'No'], 0, 1);
+            $gameMessage.setChoiceBackground(0);
+            $gameMessage.setChoicePositionType(2);
+            $gameMessage.setChoiceCallback(choice => {
+                this._state.manualUiHold = false;
+                this._state.consentPromptPending = false;
+                this._state.lastUiAdvanceAt = Date.now();
+                if (choice === 0) {
+                    this._approveConsent(target.eventId);
+                    this._applyDecision({
+                        action: originalAction === 'LOOT' ? 'INTERACT' : (originalAction || 'INTERACT'),
+                        eventId: target.eventId,
+                        reason: reason || 'player approved consent',
+                        _autonomySource: 'consent_approved'
+                    }, snapshot || this._state.lastSnapshot);
+                    return;
+                }
+                this._setEventCooldown(target.eventId, 120000);
+                this._clearConsentApproval();
+                this._state.mode = 'follow';
+                this._state.targetEventId = null;
+                this._state.targetPoint = null;
+                this._state.targetApproach = null;
+                this._state.targetLabel = '';
+                this._clearTask();
+            });
+            ThesisLogger.log('ambient', {
+                topic: 'autonomy_consent',
+                prompt_text: text,
+                target_label: target.label || '',
+                target_type: target.type || '',
+                target_event_id: target.eventId,
+                reason: reason || ''
+            });
+        },
+
         _requireConsent(reason) {
             const targetEventId = this._state.targetEventId;
             if (targetEventId != null) {
@@ -5312,6 +5478,7 @@ Respond ONLY with this JSON:
             this._state.manualUiHold = true;
             this._state.allowPlayerMoveWhileUi = false;
             this._state.lastInteractionNeedsConsent = false;
+            this._clearConsentApproval();
             this._clearTask();
             Debug.warn('[Autonomy] Consent required:', reason);
             if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue && AmbientDialogue._speak) {
@@ -5580,37 +5747,6 @@ Respond ONLY with this JSON:
         _normalizeDecision(snapshot, decision, fallback) {
             const finalDecision = Object.assign({}, decision || {});
             const nearby = (snapshot && snapshot.nearby) || [];
-            const safeToDetour = snapshot &&
-                !this._shouldStayTight(snapshot) &&
-                snapshot.leashDistance <= Math.max(2, snapshot.detourLimit);
-
-            const nearestLoot = nearby.find(item =>
-                this._isActionableNearbyItem(snapshot, item) &&
-                (item.type === 'container' || item.type === 'loot')
-            );
-            const nearestDoor = null;
-            const nearestNpc = snapshot && snapshot.allowNpc
-                ? nearby.find(item => this._isActionableNearbyItem(snapshot, item) && item.type === 'npc')
-                : null;
-
-            if (safeToDetour && (finalDecision.action === 'FOLLOW' || finalDecision.action === 'SCOUT')) {
-                if (nearestLoot) {
-                    return {
-                        action: 'LOOT',
-                        eventId: nearestLoot.eventId,
-                        reason: finalDecision.reason || 'safe nearby loot',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
-                if (nearestNpc) {
-                    return {
-                        action: 'INTERACT',
-                        eventId: nearestNpc.eventId,
-                        reason: finalDecision.reason || 'safe nearby npc',
-                        _autonomySource: finalDecision._autonomySource || 'local'
-                    };
-                }
-            }
 
             if (finalDecision.action === 'SCOUT') {
                 return {
@@ -5626,10 +5762,17 @@ Respond ONLY with this JSON:
                 }
                 const target = nearby.find(item => item.eventId === Number(finalDecision.eventId));
                 if (!target) return Object.assign({ _autonomySource: 'fallback' }, fallback);
-                if (this._targetNeedsConsent(target)) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (this._targetNeedsConsent(target) && !this._isConsentApproved(target.eventId)) {
+                    return {
+                        action: 'CONSENT',
+                        eventId: target.eventId,
+                        originalAction: finalDecision.action,
+                        reason: finalDecision.reason || 'needs player consent',
+                        _autonomySource: finalDecision._autonomySource || 'local'
+                    };
+                }
                 if (target.type === 'npc' && !snapshot.allowNpc) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'door' && !snapshot.allowDoors) return Object.assign({ _autonomySource: 'fallback' }, fallback);
-                if (target.type === 'shop') return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'door' && this._isRecentTransfer(4000)) return Object.assign({ _autonomySource: 'fallback' }, fallback);
                 if (target.type === 'enemy' || target.type === 'trap' || target.type === 'hazard') {
                     return Object.assign({ _autonomySource: 'fallback' }, fallback);
@@ -5743,7 +5886,8 @@ Respond ONLY with this JSON:
                 'Use one action: FOLLOW, HOLD, RETURN, LOOT, INTERACT.',
                 'Move with purpose. Do not wander or scout empty frontiers.',
                 'Never choose enemies as targets. Never start fights.',
-                'Only choose LOOT or INTERACT for nearby containers, bookshelves, doors, or NPCs that are actually listed.',
+                'Only choose LOOT or INTERACT for nearby containers, bookshelves, doors, NPCs, or shops that are actually listed.',
+                'Shops, merchants, rituals, sacrifices, and risky prompts require player consent; choose INTERACT only if you want to ask first.',
                 'If there is no clear nearby task, choose FOLLOW.',
                 'If threat is high or distance from player is too large, choose RETURN.',
                 'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
@@ -5808,7 +5952,7 @@ Respond ONLY with this JSON:
             console.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
             decision = this._normalizeDecision(snapshot, Object.assign({ _autonomySource: 'local' }, decision), fallback);
 
-            if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
+            if (decision.action === 'LOOT' || decision.action === 'INTERACT' || decision.action === 'CONSENT') return decision;
             if (decision.action === 'FOLLOW' || decision.action === 'RETURN' || decision.action === 'HOLD') return decision;
             return Object.assign({ _autonomySource: 'llm_invalid_action' }, fallback);
         },
@@ -5839,6 +5983,19 @@ Respond ONLY with this JSON:
                 return;
             }
 
+            if (action === 'CONSENT') {
+                const consentTarget = snapshot && snapshot.nearby
+                    ? snapshot.nearby.find(item => item.eventId === Number(decision.eventId))
+                    : null;
+                if (!consentTarget) {
+                    this._state.mode = 'follow';
+                    this._clearTask();
+                    return;
+                }
+                this._requestTargetConsent(consentTarget, decision.originalAction || 'INTERACT', reason, snapshot);
+                return;
+            }
+
             if (action === 'SCOUT') {
                 const frontier = snapshot.frontiers && snapshot.frontiers[Number(decision.frontierIndex)];
                 if (!frontier) {
@@ -5866,6 +6023,11 @@ Respond ONLY with this JSON:
                 this._state.targetApproach = null;
                 this._state.targetLabel = '';
                 if (!preserveTask) this._clearTask();
+                return;
+            }
+
+            if (this._targetNeedsConsent(target) && !this._isConsentApproved(target.eventId)) {
+                this._requestTargetConsent(target, action, reason, snapshot);
                 return;
             }
 
@@ -6147,7 +6309,7 @@ Respond ONLY with this JSON:
             this._state.lastInteractionNeedsConsent = !!this._targetNeedsConsent(snap || {
                 type: this._state.lastInteractionType,
                 label: this._state.lastInteractionLabel
-            });
+            }) && !this._isConsentApproved(this._state.lastInteractionEventId);
             return snap;
         },
 
@@ -6167,6 +6329,9 @@ Respond ONLY with this JSON:
                 this._state.postDoorPoint = this._computePostDoorPoint(interactionSnap, event);
             } else {
                 this._state.postDoorPoint = null;
+            }
+            if (this._isConsentApproved(eventId)) {
+                this._clearConsentApproval();
             }
             Debug.log('[Autonomy] Interacted with event via ' + channel + ':', eventId, event && event.event ? event.event().name : '');
             return true;
@@ -6292,13 +6457,63 @@ Respond ONLY with this JSON:
             return bits.slice(0, -1).join(', ') + (es ? ' y ' : ' and ') + bits[bits.length - 1];
         },
 
-        _showBackgroundLootSummary(rewards) {
+        async _showBackgroundLootSummary(rewards) {
             const summary = this._describeBackgroundLootRewards(rewards);
             if (!summary) return;
             const es = Config.language === 'es';
-            const text = es ? `Encontré ${summary}.` : `I found ${summary}.`;
+            let text = es ? `Encontré ${summary}.` : `I found ${summary}.`;
+            if (!Config.useMockAI) {
+                try {
+                    const endpoint = Config.getEndpoint();
+                    const headers = Config.getHeaders();
+                    const model = Config.getChatModel();
+                    const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                        `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                        `You just found loot while searching independently.\n` +
+                        `Loot: ${summary}\n` +
+                        `Say ONE short line, under 12 words. Mention what you found.`;
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 1400);
+                    let resp;
+                    try {
+                        resp = await fetch(endpoint, {
+                            method: 'POST',
+                            headers,
+                            signal: controller.signal,
+                            body: JSON.stringify({
+                                model,
+                                messages: [{ role: 'system', content: prompt }],
+                                max_tokens: 36,
+                                temperature: 0.8
+                            })
+                        });
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        const raw = data.choices?.[0]?.message?.content?.trim();
+                        const cleaned = raw ? raw.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
+                        if (cleaned && cleaned.length >= 4) text = cleaned;
+                    }
+                } catch (e) {
+                    // Summary fallback is intentionally quiet; looting should not stall.
+                }
+            }
             if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
                 ActionExecutor._showDialogue(text);
+            }
+        },
+
+        _rememberBackgroundLootResult(plan, rewards) {
+            if (!plan || typeof ShortTermMemory === 'undefined') return;
+            const actorName = Config.companionName || 'Companion';
+            const label = plan.label || (Config.language === 'es' ? 'objeto' : 'object');
+            const summary = this._describeBackgroundLootRewards(rewards);
+            if (summary) {
+                ShortTermMemory.addEvent(`${actorName} searched ${label} and found ${summary}.`);
+            } else {
+                ShortTermMemory.addEvent(`${actorName} searched ${label}; found nothing useful.`);
             }
         },
 
@@ -6386,6 +6601,7 @@ Respond ONLY with this JSON:
                 this._rememberInteractionTarget(event, follower);
                 this._setEventCooldown(plan.eventId, 90000);
                 this._markEventSearched(plan.eventId, plan.type, rewards.length > 0 ? 'background_loot' : 'background_loot_empty');
+                this._rememberBackgroundLootResult(plan, rewards);
                 this._showBackgroundLootSummary(rewards);
                 Debug.log('[BackgroundLoot]', {
                     eventId: plan.eventId,
