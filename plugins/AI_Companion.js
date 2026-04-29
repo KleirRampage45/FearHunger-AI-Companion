@@ -1836,7 +1836,9 @@ Reply with ONLY the category name, nothing else.`;
                 transferMapName: metadata.transferMapName,
                 battleTroopId: metadata.battleTroopId,
                 battleTroopName: metadata.battleTroopName,
-                speakerName: metadata.speakerName
+                speakerName: metadata.speakerName,
+                npcName: metadata.npcName,
+                textHints: metadata.textHints
             };
         },
 
@@ -5711,6 +5713,9 @@ Respond ONLY with this JSON:
             this._state.targetLabel = target.label;
             this._state.targetAction = action;
             if (!preserveTask) {
+                if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue.onAutonomyIntent) {
+                    AmbientDialogue.onAutonomyIntent(action, target);
+                }
                 this._beginTask(action, {
                     eventId: target.eventId,
                     distance: this._state.targetApproach ? this._distance(this.getFollower(), this._state.targetApproach) : target.distance,
@@ -7791,9 +7796,11 @@ CRITICAL GAME RULES (NEVER violate these):
         _lastTime: 0,
         _lastTopic: null,
         _lastSupportTime: 0,
+        _lastReactiveTime: 0,
         _gameStartTime: Date.now(),  // Track when the plugin loaded
         COOLDOWN: 30000,  // 30 seconds
         SUPPORT_COOLDOWN: 8000,
+        REACTIVE_COOLDOWN: 6000,
         STARTUP_DELAY: 8000,  // 8 seconds — stay silent after game starts
 
         canSpeak() {
@@ -7825,6 +7832,17 @@ CRITICAL GAME RULES (NEVER violate these):
             if ($gameParty.inBattle()) return false;
             if ($gameMessage.isBusy()) return false;
             return Date.now() - this._lastSupportTime > this.SUPPORT_COOLDOWN;
+        },
+
+        canSpeakReactive() {
+            if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
+            const scene = SceneManager._scene;
+            if (!scene) return false;
+            const sceneName = scene.constructor.name;
+            if (sceneName !== 'Scene_Map') return false;
+            if (!$gameParty || !$gameParty.leader() || !$gameMap || !$gameMap.mapId()) return false;
+            if ($gameParty.inBattle()) return false;
+            return Date.now() - this._lastReactiveTime > this.REACTIVE_COOLDOWN;
         },
 
         // Track visited maps (per save file via $gameSystem)
@@ -8144,6 +8162,95 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (this._supportPromptInFlight) return;
             this._supportPromptInFlight = true;
             this._requestAndShowSupportPrompt(need, topic, factKey, es);
+        },
+
+        onAutonomyIntent(action, target) {
+            if (!this.canSpeakReactive()) return;
+            if (!target || !action) return;
+            const factKey = `autonomy:${action}:${target.type}:${target.subtype || ''}:${target.label || ''}:${target.eventId || target.id || ''}`;
+            if (DialogueMemory.hasRecentFact(factKey, 'autonomy_reactive', 120000, $gameMap ? $gameMap.mapId() : null)) return;
+            this._lastReactiveTime = Date.now();
+            this._generateAutonomyComment(action, target, factKey);
+        },
+
+        _reactiveFallback(action, target, es) {
+            const subtype = String(target.subtype || '').toLowerCase();
+            const hints = String(target.textHints || '').toLowerCase();
+            const label = String(target.label || '');
+            const npcName = target.npcName || label || (es ? 'alguien' : 'someone');
+            const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela/.test(hints);
+            if (target.type === 'door') return es ? 'Abriré esta puerta.' : 'I will open this door.';
+            if (target.type === 'npc') return es ? `Hablaré con ${npcName}.` : `I'll speak with ${npcName}.`;
+            if (isLight) return es ? 'Encenderé esto. No me gusta la oscuridad.' : `I'll light this. I don't like the dark.`;
+            if (subtype === 'bookshelf') return es ? 'Revisaré estos libros.' : `I'll check these books.`;
+            if (subtype === 'furniture_loot') return es ? 'Voy a revisar la mesa.' : `I'll check the table.`;
+            if (subtype === 'chest') return es ? 'Voy a abrir el cofre.' : `I'll open the chest.`;
+            if (subtype === 'crate') return es ? 'Voy a revisar la caja.' : `I'll check the crate.`;
+            if (target.type === 'container' || target.type === 'loot') return es ? `Voy a revisar ${label.toLowerCase()}.` : `I'll check ${label.toLowerCase()}.`;
+            return es ? 'Déjame ver esto.' : `Let me check this.`;
+        },
+
+        async _generateAutonomyComment(action, target, factKey) {
+            const es = Config.language === 'es';
+            const fallback = this._reactiveFallback(action, target, es);
+            const show = text => {
+                const clean = String(text || '').trim();
+                if (!clean) return;
+                DialogueMemory.rememberFact(factKey, clean, 'autonomy_reactive', { mapId: $gameMap ? $gameMap.mapId() : null });
+                DialogueMemory.rememberLine(clean, 'autonomy_reactive', { mapId: $gameMap ? $gameMap.mapId() : null });
+                ThesisLogger.log('ambient', { topic: 'autonomy_reactive', text: clean, text_length: clean.length });
+                if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
+                    ActionExecutor._showDialogue(clean);
+                } else {
+                    this._speak(clean, 'autonomy_reactive');
+                }
+            };
+            if (Config.useMockAI) {
+                show(fallback);
+                return;
+            }
+            try {
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                    `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `Say ONE short line, under 12 words, before you ${String(action).toLowerCase()} something.\n` +
+                    `You ARE ${Config.companionName}. Speak in first person.\n` +
+                    `Target type: ${target.type}\n` +
+                    `Target subtype: ${target.subtype || 'none'}\n` +
+                    `Target label: ${target.label || 'object'}\n` +
+                    `NPC name: ${target.npcName || target.speakerName || 'none'}\n` +
+                    `Hints: ${target.textHints || 'none'}\n` +
+                    `If this is a light source, mention darkness naturally.\n` +
+                    `No lists. No extra explanation.`;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1200);
+                let resp;
+                try {
+                    resp = await fetch(endpoint, {
+                        method: 'POST',
+                        headers,
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model,
+                            messages: [{ role: 'system', content: prompt }],
+                            max_tokens: 30,
+                            temperature: 0.85
+                        })
+                    });
+                } finally {
+                    clearTimeout(timer);
+                }
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const text = data.choices?.[0]?.message?.content?.trim();
+                const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim() : '';
+                console.log('[Autonomy Comment]', cleaned || fallback);
+                show(cleaned || fallback);
+            } catch (e) {
+                show(fallback);
+            }
         },
 
         onUrgentStateChange(actor, state) {
