@@ -8534,6 +8534,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             $gameMessage.setBackground(0);
             $gameMessage.setPositionType(2);
             $gameMessage.add(namePrefix + text);
+            if ($gameMessage.setChoiceHelps) $gameMessage.setChoiceHelps(['', '']);
+            if ($gameMessage.setChoiceMessages) $gameMessage.setChoiceMessages(['', '']);
+            if ($gameMessage.setChoiceFaces) $gameMessage.setChoiceFaces([null, null]);
             $gameMessage.setChoices([es ? 'Sí' : 'Yes', es ? 'No' : 'No'], 0, 1);
             $gameMessage.setChoiceBackground(0);
             $gameMessage.setChoicePositionType(2);
