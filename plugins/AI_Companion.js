@@ -5500,7 +5500,9 @@ Respond ONLY with this JSON:
                 this._applyDecision(finalDecision, snapshot);
                 this._logTick(snapshot, finalDecision, (finalDecision && finalDecision._autonomySource) || 'fallback', Date.now() - start, null);
             } catch (error) {
-                Debug.warn('[Autonomy] heartbeat failed:', error.message);
+                if (!(error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || ''))))) {
+                    Debug.warn('[Autonomy] heartbeat failed:', error.message);
+                }
                 const snapshot = this._state.lastSnapshot || null;
                 const fallback = this._goalFreeFallback(snapshot || {
                     nearby: [],
@@ -5539,7 +5541,7 @@ Respond ONLY with this JSON:
             ].join('\n');
 
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 1200);
+            const timer = setTimeout(() => controller.abort(), 2500);
             let response;
             try {
                 response = await fetch(Config.getLocalEndpoint(), {
@@ -5560,6 +5562,11 @@ Respond ONLY with this JSON:
                         stop: ['<turn|>']
                     })
                 });
+            } catch (error) {
+                if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
+                    return Object.assign({ _autonomySource: 'llm_timeout' }, fallback);
+                }
+                throw error;
             } finally {
                 clearTimeout(timer);
             }
@@ -5580,7 +5587,6 @@ Respond ONLY with this JSON:
             );
             if (this._state.lastRawLocalContent) {
                 console.log('[Autonomy LLM]', this._state.lastRawLocalContent);
-                Debug.log('[Autonomy LLM]', this._state.lastRawLocalContent);
             }
             let decision = GeminiAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
@@ -5588,7 +5594,6 @@ Respond ONLY with this JSON:
             }
             decision.action = String(decision.action).toUpperCase();
             console.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
-            Debug.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
             decision = this._normalizeDecision(snapshot, Object.assign({ _autonomySource: 'local' }, decision), fallback);
 
             if (decision.action === 'LOOT' || decision.action === 'INTERACT') return decision;
@@ -8056,8 +8061,10 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
                 : '';
             if (!line) return;
             DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
-            if (typeof SupportApproval !== 'undefined' && SupportApproval._showOverlay) {
-                SupportApproval._showOverlay(line);
+            if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
+                if (!SupportApproval._showPrompt(line)) {
+                    this._speak(line, topic);
+                }
             } else {
                 this._speak(line, topic);
             }
@@ -8500,15 +8507,60 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             return false;
         },
 
-        _showOverlay(text) {
+        _showReply(text) {
             if (!text) return;
-            if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
-                ActionExecutor._showDialogue(text);
+            if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue._speak && !$gameMessage.isBusy()) {
+                AmbientDialogue._speak(text, 'support_approval_reply');
                 return;
             }
-            if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue._speak) {
-                AmbientDialogue._speak(text, 'support_approval');
+            if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
+                ActionExecutor._showDialogue(text);
             }
+        },
+
+        _queueReply(text) {
+            if (!text) return;
+            setTimeout(() => {
+                this._showReply(text);
+            }, 50);
+        },
+
+        _showPrompt(text) {
+            if (!text || !$gameMessage || $gameMessage.isBusy()) return false;
+            const appearance = CharacterPresets.getCurrentAppearance();
+            const es = Config.language === 'es';
+            const namePrefix = `\\c[6]${Config.companionName}\\c[0]: `;
+            $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
+            $gameMessage.setBackground(0);
+            $gameMessage.setPositionType(2);
+            $gameMessage.add(namePrefix + text);
+            $gameMessage.setChoices([es ? 'Sí' : 'Yes', es ? 'No' : 'No'], 0, 1);
+            $gameMessage.setChoiceBackground(0);
+            $gameMessage.setChoicePositionType(2);
+            $gameMessage.setChoiceCallback(choice => {
+                const pending = this.getPending();
+                if (!pending) return;
+                if (choice === 0) {
+                    const item = this._findItem(pending.itemId);
+                    const target = $gameActors && $gameActors.actor ? $gameActors.actor(pending.actorId) : null;
+                    if (!item || !target || !this._actorStillNeeds(target, pending.kind)) {
+                        this.clear();
+                        this._queueReply(es ? 'Ya no hace falta.' : 'No need anymore.');
+                        return;
+                    }
+                    const result = this._applyItem(item, target);
+                    this.clear();
+                    if (!result.ok) {
+                        this._queueReply(es ? `No pude usar ${pending.itemName}.` : `I couldn't use ${pending.itemName}.`);
+                        return;
+                    }
+                    this._queueReply(es ? `Voy. Uso ${pending.itemName}${pending.targetSelf ? '' : ' en ' + pending.actor}.` : `Alright. Using ${pending.itemName}${pending.targetSelf ? '' : ' on ' + pending.actor}.`);
+                    return;
+                }
+                this.clear();
+                this._queueReply(es ? 'Entendido. No haré nada.' : "Understood. I won't do it.");
+            });
+            return true;
         },
 
         buildPrompt(need, es) {
@@ -8574,7 +8626,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             if (this._isNegative(message)) {
                 this.clear();
                 const reply = es ? 'Entendido. No haré nada.' : "Understood. I won't do it.";
-                this._showOverlay(reply);
+                this._showReply(reply);
                 return reply;
             }
             if (!this._isAffirmative(message)) {
@@ -8585,18 +8637,18 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             if (!item || !target || !this._actorStillNeeds(target, pending.kind)) {
                 this.clear();
                 const reply = es ? 'Ya no hace falta.' : `No need anymore.`;
-                this._showOverlay(reply);
+                this._showReply(reply);
                 return reply;
             }
             const result = this._applyItem(item, target);
             this.clear();
             if (!result.ok) {
                 const reply = es ? `No pude usar ${pending.itemName}.` : `I couldn't use ${pending.itemName}.`;
-                this._showOverlay(reply);
+                this._showReply(reply);
                 return reply;
             }
             const reply = es ? `Voy. Uso ${pending.itemName}${pending.targetSelf ? '' : ' en ' + pending.actor}.` : `Alright. Using ${pending.itemName}${pending.targetSelf ? '' : ' on ' + pending.actor}.`;
-            this._showOverlay(reply);
+            this._showReply(reply);
             return reply;
         }
     };
