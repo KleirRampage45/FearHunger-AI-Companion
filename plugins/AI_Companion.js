@@ -8027,7 +8027,12 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
         _lastHungerCheck: 0,
         HUNGER_CHECK_INTERVAL: 60000, // 60 seconds
         _lastSupportCheck: 0,
-        SUPPORT_CHECK_INTERVAL: 15000,
+        SUPPORT_CHECK_INTERVAL: 3000,
+        SUPPORT_PROMPT_DELAY: 3500,
+        _scheduledSupportAt: 0,
+        _pendingSupportNeed: null,
+        _pendingSupportFactKey: null,
+        _supportPromptInFlight: false,
 
         checkHunger() {
             if (Date.now() - this._lastHungerCheck < this.HUNGER_CHECK_INTERVAL) return;
@@ -8049,10 +8054,23 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (Date.now() - this._lastSupportCheck < this.SUPPORT_CHECK_INTERVAL) return;
             this._lastSupportCheck = Date.now();
             if (!this.canSpeakSupport()) return;
-            const need = this._supportNeedSnapshot();
+            const now = Date.now();
+            let need = this._pendingSupportNeed;
+            if (!need) {
+                need = this._supportNeedSnapshot();
+            }
             if (!need) return;
             if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending()) return;
-            this._lastSupportTime = Date.now();
+            if (this._scheduledSupportAt && now < this._scheduledSupportAt) return;
+            const refreshedNeed = this._supportNeedSnapshot();
+            if (!refreshedNeed || refreshedNeed.kind !== need.kind || refreshedNeed.actorId !== need.actorId || refreshedNeed.itemName !== need.itemName) {
+                this._pendingSupportNeed = null;
+                this._pendingSupportFactKey = null;
+                this._scheduledSupportAt = 0;
+                return;
+            }
+            need = refreshedNeed;
+            this._lastSupportTime = now;
             const topic = `support_${need.kind}`;
             const factKey = `support:${need.kind}:${need.actor}:${need.itemName}`;
             if (DialogueMemory.hasRecentFact(factKey, topic, 120000, $gameMap ? $gameMap.mapId() : null)) return;
@@ -8060,28 +8078,84 @@ React in one short sentence (max 60 chars). Stay in character. ${isWeapon || isA
             if (typeof SupportApproval !== 'undefined' && SupportApproval.request) {
                 SupportApproval.request(need);
             }
-            const line = typeof SupportApproval !== 'undefined' && SupportApproval.buildPrompt
-                ? SupportApproval.buildPrompt(need, es)
-                : '';
-            if (!line) return;
-            DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
-            if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
-                if (!SupportApproval._showPrompt(line)) {
-                    this._speak(line, topic);
-                }
-            } else {
-                this._speak(line, topic);
-            }
+            this._pendingSupportNeed = null;
+            this._pendingSupportFactKey = null;
+            this._scheduledSupportAt = 0;
+            if (this._supportPromptInFlight) return;
+            this._supportPromptInFlight = true;
+            this._requestAndShowSupportPrompt(need, topic, factKey, es);
         },
 
         onUrgentStateChange(actor, state) {
             if (!actor || !state || !$gameParty || !$gameParty.members || !$gameParty.members().includes(actor)) return;
-            if (!this.canSpeakSupport()) return;
             const name = String(state.name || '');
             if (!/sangr|bleed|infecc|infect|poison|venen|t[oó]xic/i.test(name)) return;
+            const need = this._supportNeedSnapshot();
+            if (!need) return;
+            this._pendingSupportNeed = need;
+            this._pendingSupportFactKey = `support:${need.kind}:${need.actor}:${need.itemName}`;
+            this._scheduledSupportAt = Date.now() + this.SUPPORT_PROMPT_DELAY;
             this._lastSupportCheck = 0;
             this._lastSupportTime = 0;
-            this.checkSupportNeeds();
+        },
+
+        _generateSupportPromptSync(need, es) {
+            if (!need) return '';
+            const fallback = typeof SupportApproval !== 'undefined' && SupportApproval.buildPrompt
+                ? SupportApproval.buildPrompt(need, es)
+                : '';
+            return fallback;
+        },
+
+        async _requestAndShowSupportPrompt(need, topic, factKey, es) {
+            try {
+                const line = await this._generateSupportPromptAsync(need, es, this._generateSupportPromptSync(need, es));
+                if (!line) return;
+                DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
+                if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
+                    if (!SupportApproval._showPrompt(line)) {
+                        this._speak(line, topic);
+                    }
+                } else {
+                    this._speak(line, topic);
+                }
+            } finally {
+                this._supportPromptInFlight = false;
+            }
+        },
+
+        async _generateSupportPromptAsync(need, es, fallback) {
+            if (Config.useMockAI) return fallback;
+            try {
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const prompt = `You are ${Config.companionName}, a companion in Fear & Hunger.\n` +
+                    `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `Write ONE short approval request, under 14 words.\n` +
+                    `Need: ${need.kind}\n` +
+                    `Target: ${need.actor}\n` +
+                    `Item: ${need.itemName}\n` +
+                    `Tone: urgent but not panicked. Ask permission clearly.\n` +
+                    `Do not mention game mechanics. Do not add extra sentences.`;
+                const body = JSON.stringify({
+                    model: model,
+                    messages: [{ role: 'system', content: prompt }],
+                    max_tokens: 40,
+                    temperature: 0.8
+                });
+                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const text = data.choices?.[0]?.message?.content?.trim();
+                if (!text) return fallback;
+                const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim();
+                if (!cleaned || cleaned.length < 4) return fallback;
+                return cleaned;
+            } catch (e) {
+                Debug.warn('[SupportApproval] Prompt generation failed:', e.message);
+                return fallback;
+            }
         },
 
         // Track warned positions to avoid repeating
