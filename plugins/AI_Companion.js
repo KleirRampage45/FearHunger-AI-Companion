@@ -8588,7 +8588,11 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                         : isWeapon
                         ? (es ? ['Un arma...', 'Esto podría servir.'] : ['A weapon...', 'This could work.'])
                         : (es ? ['¿Qué es esto...?', 'Interesante.'] : ['What is this...?', 'Interesting.']);
-                    this._speak(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'item_pickup');
+                    this._speakWithThought(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'item_pickup', {
+                        itemName: item.name,
+                        source: itemSource,
+                        mock: true
+                    });
                     return;
                 }
 
@@ -8611,7 +8615,11 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
                                        .replace(/\*\*/g, '').replace(/\*/g, '').trim();
                     if (cleaned.length > 3) {
-                        this._speak(cleaned, 'item_pickup');
+                        this._speakWithThought(cleaned, 'item_pickup', {
+                            itemName: item.name,
+                            source: itemSource,
+                            itemType: itemType || (isWeapon ? 'weapon' : isArmor ? 'armor' : isFood ? 'food' : 'item')
+                        });
                         Debug.log('[Ambient] Item comment:', cleaned);
                     }
                 }
@@ -8832,9 +8840,16 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
         async _generateProactiveChat(target, factKey) {
             const es = Config.language === 'es';
-            const show = text => {
+            const show = async text => {
                 const clean = String(text || '').trim();
                 if (!clean) return;
+                const shouldSpeak = await this._shouldSpeak(clean, 'proactive_chat', {
+                    targetType: target.type,
+                    targetSubtype: target.subtype || '',
+                    targetLabel: target.label || '',
+                    textHints: target.textHints || ''
+                });
+                if (!shouldSpeak) return;
                 DialogueMemory.rememberFact(factKey, clean, 'proactive_chat', { mapId: $gameMap ? $gameMap.mapId() : null });
                 DialogueMemory.rememberLine(clean, 'proactive_chat', { mapId: $gameMap ? $gameMap.mapId() : null });
                 ThesisLogger.log('ambient', { topic: 'proactive_chat', text: clean, text_length: clean.length });
@@ -8884,7 +8899,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const text = data.choices?.[0]?.message?.content?.trim();
                 const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
                 const finalText = this._normalizeProactiveChat(cleaned, target, '', es);
-                if (finalText) show(finalText);
+                if (finalText) await show(finalText);
             } catch (e) {
                 return;
             }
@@ -8953,9 +8968,17 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
         async _generateAutonomyComment(action, target, factKey) {
             const es = Config.language === 'es';
-            const show = text => {
+            const show = async text => {
                 const clean = String(text || '').trim();
                 if (!clean) return;
+                const shouldSpeak = await this._shouldSpeak(clean, 'autonomy_reactive', {
+                    action: action,
+                    targetType: target.type,
+                    targetSubtype: target.subtype || '',
+                    targetLabel: target.label || '',
+                    textHints: target.textHints || ''
+                });
+                if (!shouldSpeak) return;
                 DialogueMemory.rememberFact(factKey, clean, 'autonomy_reactive', { mapId: $gameMap ? $gameMap.mapId() : null });
                 DialogueMemory.rememberLine(clean, 'autonomy_reactive', { mapId: $gameMap ? $gameMap.mapId() : null });
                 ThesisLogger.log('ambient', { topic: 'autonomy_reactive', text: clean, text_length: clean.length });
@@ -9007,7 +9030,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const finalText = this._normalizeAutonomyComment(cleaned, target, '', es);
                 if (!finalText) return;
                 console.log('[Autonomy Comment]', finalText);
-                show(finalText);
+                await show(finalText);
             } catch (e) {
                 return;
             }
@@ -9176,7 +9199,11 @@ React in one short sentence (max 60 chars). Stay in character. Express your hung
                     const fallbacks = hasFood
                         ? (es ? ['Tengo hambre... ¿no teníamos comida?', 'Necesito comer algo...'] : ['I\'m hungry... didn\'t we have food?', 'I need to eat...'])
                         : (es ? ['El hambre me está matando...', 'Necesitamos comida...'] : ['The hunger is killing me...', 'We need food...']);
-                    this._speak(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'hunger');
+                    this._speakWithThought(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'hunger', {
+                        hungerLevel,
+                        hasFood,
+                        mock: true
+                    });
                     return;
                 }
 
@@ -9199,7 +9226,11 @@ React in one short sentence (max 60 chars). Stay in character. Express your hung
                     const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
                                        .replace(/\*\*/g, '').replace(/\*/g, '').trim();
                     if (cleaned.length > 3) {
-                        this._speak(cleaned, 'hunger');
+                        this._speakWithThought(cleaned, 'hunger', {
+                            hungerLevel,
+                            hasFood,
+                            foodNames
+                        });
                         Debug.log('[Ambient] Hunger comment:', cleaned);
                     }
                 }
@@ -9243,7 +9274,10 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
                     const fallbacks = es
                         ? ['Alguien más... no sé si confiar.', 'Más gente... bien, supongo.', '¿Quién eres tú?']
                         : ['Someone else... I don\'t know if I trust them.', 'More people... good, I guess.', 'Who are you?'];
-                    this._speak(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'party_join');
+                    this._speakWithThought(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'party_join', {
+                        memberName,
+                        mock: true
+                    });
                     return;
                 }
 
@@ -9266,7 +9300,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
                     const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
                                        .replace(/\*\*/g, '').replace(/\*/g, '').trim();
                     if (cleaned.length > 3) {
-                        this._speak(cleaned, 'party_join');
+                        this._speakWithThought(cleaned, 'party_join', { memberName });
                         Debug.log('[Ambient] Party join comment:', cleaned);
                     }
                 }
@@ -9284,10 +9318,10 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
             if (!this.canSpeak() || Math.random() > 0.40) return;
             if (victory) {
                 const lines = ['Terminamos.', 'Sigue con vida...', 'Hay que seguir.', 'No fue fácil.', 'Eso estuvo cerca.'];
-                this._speak(lines[Math.floor(Math.random() * lines.length)], 'battle_end');
+                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: true });
             } else {
                 const lines = ['Hay que huir.', 'No podemos ganar esto.', 'Retírate, ¡ahora!'];
-                this._speak(lines[Math.floor(Math.random() * lines.length)], 'battle_end');
+                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: false });
             }
         },
 
@@ -9361,7 +9395,11 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
 
                 if (Config.useMockAI) {
                     const fallback = es ? 'Este lugar... no me gusta nada.' : 'This place... I don\'t like it.';
-                    this._speak(fallback, 'room_entry');
+                    this._speakWithThought(fallback, 'room_entry', {
+                        mapName,
+                        location: locationEntry.displayNameEs || locationEntry.displayName || mapName,
+                        mock: true
+                    });
                     return;
                 }
 
@@ -9381,12 +9419,117 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                     const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
                                        .replace(/\*\*/g, '').replace(/\*/g, '').trim();
                     if (cleaned.length > 3) {
-                        this._speak(cleaned, 'room_entry');
+                        this._speakWithThought(cleaned, 'room_entry', {
+                            mapName,
+                            location: locationEntry.displayNameEs || locationEntry.displayName || mapName
+                        });
                         Debug.log('[Ambient] AI room comment:', cleaned);
                     }
                 }
             } catch (e) {
                 Debug.warn('[Ambient] Failed to generate room comment:', e.message);
+            }
+        },
+
+        async _speakWithThought(text, topic, context) {
+            if (await this._shouldSpeak(text, topic, context || {})) {
+                this._speak(text, topic);
+            }
+        },
+
+        _shouldAlwaysSpeak(topic) {
+            return /^(support_|autonomy_consent|equipment_reply|limb_loss|threat_warning)/.test(String(topic || ''));
+        },
+
+        _heuristicShouldSpeak(text, topic) {
+            const raw = String(text || '').replace(/\s+/g, ' ').trim();
+            if (!raw || raw.length < 4) return { speak: false, thought: 'empty or too short', source: 'heuristic' };
+            if (this._shouldAlwaysSpeak(topic)) return { speak: true, thought: 'mandatory prompt', source: 'heuristic' };
+            const lower = raw.toLowerCase();
+            if (/^(estoy aqu[ií]|aqu[ií] estoy|sigo aqu[ií]|soy marcoh|here\b|i am here\b|still here\b|we are here\b|i am marcoh\b)/i.test(lower)) {
+                return { speak: false, thought: 'generic presence filler', source: 'heuristic' };
+            }
+            if (/^(mm+\.?|eh+\.?|bueno\.?|vale\.?|ok\.?)$/i.test(lower)) {
+                return { speak: false, thought: 'single filler token', source: 'heuristic' };
+            }
+            if (DialogueMemory.wasLineRecent(raw, topic, 180000)) {
+                return { speak: false, thought: 'recent duplicate', source: 'heuristic' };
+            }
+            return { speak: true, thought: 'passes local filters', source: 'heuristic' };
+        },
+
+        async _shouldSpeak(text, topic, context) {
+            const local = this._heuristicShouldSpeak(text, topic);
+            const meta = {
+                topic,
+                candidate_text: String(text || ''),
+                map_id: $gameMap ? $gameMap.mapId() : null,
+                context: context || {}
+            };
+            if (!local.speak || this._shouldAlwaysSpeak(topic) || Config.useMockAI) {
+                ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
+                    speak: local.speak,
+                    thought: local.thought,
+                    source: local.source
+                }));
+                console.log(`[Ambient Thought] speak=${local.speak} topic=${topic} reason=${local.thought}`);
+                return local.speak;
+            }
+
+            try {
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const es = Config.language === 'es';
+                const prompt = `You are the private internal monologue gate for ${Config.companionName} in Fear & Hunger.
+${es ? 'Puedes razonar en español, pero devuelve JSON.' : 'Return JSON.'}
+Decide if the candidate line should be spoken aloud now.
+Say SPEAK only if it adds useful information, clear action context, a meaningful warning, or strong character flavor.
+Say SILENT for filler, repeated obvious statements, self-introductions, generic "I am here", or low-value narration.
+Return JSON only: {"speak":true|false,"thought":"short reason"}
+Topic: ${topic}
+Candidate line: ${String(text || '').replace(/\s+/g, ' ').trim()}
+Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1200);
+                let resp;
+                try {
+                    resp = await fetch(endpoint, {
+                        method: 'POST',
+                        headers,
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model,
+                            messages: [{ role: 'system', content: prompt }],
+                            max_tokens: 50,
+                            temperature: 0.2
+                        })
+                    });
+                } finally {
+                    clearTimeout(timer);
+                }
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const raw = data.choices?.[0]?.message?.content || data.response || '';
+                const jsonMatch = String(raw).match(/\{[\s\S]*\}/);
+                const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(String(raw));
+                const speak = parsed && parsed.speak === true;
+                const thought = String(parsed && parsed.thought || (speak ? 'approved' : 'suppressed')).slice(0, 160);
+                ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
+                    speak,
+                    thought,
+                    source: 'llm'
+                }));
+                console.log(`[Ambient Thought] speak=${speak} topic=${topic} reason=${thought}`);
+                return speak;
+            } catch (e) {
+                ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
+                    speak: local.speak,
+                    thought: `${local.thought}; gate fallback: ${e.message}`,
+                    source: 'heuristic_fallback'
+                }));
+                console.log(`[Ambient Thought] speak=${local.speak} topic=${topic} reason=${local.thought}; gate fallback`);
+                return local.speak;
             }
         },
 
