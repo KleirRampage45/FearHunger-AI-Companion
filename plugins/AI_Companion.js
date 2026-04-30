@@ -9869,13 +9869,37 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             };
         },
 
+        _normalizeThoughtReason(thought, speak, source) {
+            const raw = String(thought || '').replace(/\s+/g, ' ').trim();
+            if (!raw) return speak ? 'Me parece que debo decirlo ahora.' : 'Mejor guardármelo.';
+            const lower = raw.toLowerCase();
+            const metaPatterns = [
+                /candidato|candidate|línea|linea|line\b|mensaje|message/,
+                /interacci[oó]n|interaction|contexto emocional|contexto/i,
+                /personaje|character|jugador|player/,
+                /agrega|adds|aporta|useful information|clear action context|character flavor/,
+                /speak|silent|approved|suppressed|filtro|filter|heuristic|gate|llm/
+            ];
+            const isMeta = metaPatterns.some(pattern => pattern.test(lower));
+            if (!isMeta && raw.length <= 160) return raw;
+            const es = Config.language === 'es';
+            if (/duplicate|repet|recent/i.test(lower)) return es ? 'Ya lo dije hace poco.' : 'I said that recently.';
+            if (/filler|relleno|generic|obvious|obvio|presence/i.test(lower)) return es ? 'No quiero llenar el silencio sin razón.' : 'No need to fill the silence.';
+            if (/warning|danger|threat|peligro|amenaza|risk|riesgo/i.test(lower)) return es ? 'Esto puede advertirle de un peligro.' : 'This may warn him of danger.';
+            if (/action|objetivo|target|interact|loot|buy|shop|merchant|mercader|compr/i.test(lower)) return es ? 'Tiene que saber qué estoy por hacer.' : 'He should know what I am about to do.';
+            return speak
+                ? (es ? 'Esto merece decirse en voz baja.' : 'This is worth saying quietly.')
+                : (es ? 'Mejor guardármelo por ahora.' : 'Better keep it to myself for now.');
+        },
+
         _logThought(meta, speak, thought, source) {
+            const cleanThought = this._normalizeThoughtReason(thought, speak, source);
             ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
                 speak: !!speak,
-                thought: thought || '',
+                thought: cleanThought,
                 source: source || ''
             }));
-            console.log(`[Ambient Thought] speak=${!!speak} topic=${meta.topic} source=${source || ''} reason=${thought || ''}`);
+            console.log(`[Ambient Thought] speak=${!!speak} topic=${meta.topic} source=${source || ''} reason=${cleanThought}`);
         },
 
         async _shouldSpeak(text, topic, context) {
@@ -9910,11 +9934,13 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 const headers = Config.getHeaders();
                 const model = Config.getChatModel();
                 const es = Config.language === 'es';
-                const prompt = `You are the private internal monologue gate for ${Config.companionName} in Fear & Hunger.
-${es ? 'Puedes razonar en español, pero devuelve JSON.' : 'Return JSON.'}
+                const prompt = `You are ${Config.companionName}'s private internal monologue in Fear & Hunger.
+${es ? 'Devuelve JSON en español.' : 'Return JSON in English.'}
 Decide if the candidate line should be spoken aloud now.
 Say SPEAK only if it adds useful information, clear action context, a meaningful warning, or strong character flavor.
 Say SILENT for filler, repeated obvious statements, self-introductions, generic "I am here", or low-value narration.
+The "thought" field must be ${Config.companionName}'s in-character private thought, in first person.
+Do NOT mention: candidate line, message, interaction, player, character, context, useful information, roleplay, AI, filter, gate, approve, suppress.
 Return JSON only: {"speak":true|false,"thought":"short reason"}
 Topic: ${topic}
 Candidate line: ${String(text || '').replace(/\s+/g, ' ').trim()}
@@ -9943,7 +9969,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const jsonMatch = String(raw).match(/\{[\s\S]*\}/);
                 const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(String(raw));
                 const speak = parsed && parsed.speak === true;
-                const thought = String(parsed && parsed.thought || (speak ? 'approved' : 'suppressed')).slice(0, 160);
+                const thought = this._normalizeThoughtReason(parsed && parsed.thought, speak, 'llm');
                 this._setThoughtCache(cacheKey, speak, thought, 'llm');
                 this._logThought(meta, speak, thought, 'llm');
                 return speak;
