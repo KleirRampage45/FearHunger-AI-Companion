@@ -11038,8 +11038,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     };
     Window_AIMerchantApproval.prototype.makeCommandList = function () {
         const es = Config.language === 'es';
-        this.addCommand(es ? 'Sí, comprar' : 'Yes, buy it', 'yes');
         this.addCommand(es ? 'No, salir' : 'No, leave', 'no');
+        this.addCommand(es ? 'Sí, comprar' : 'Yes, buy it', 'yes');
+    };
+    Window_AIMerchantApproval.prototype.processOk = function () {
+        if (this._aiEnabledAt && Date.now() < this._aiEnabledAt) {
+            return;
+        }
+        Window_Command.prototype.processOk.call(this);
     };
 
     //=========================================================================
@@ -11144,7 +11150,18 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             });
             scene._aiMerchantApprovalWindow = win;
             scene.addWindow(win);
-            win.activate();
+            win._aiEnabledAt = Date.now() + 650;
+            win.select(0);
+            win.deactivate();
+            if (Input && Input.clear) Input.clear();
+            if (TouchInput && TouchInput.clear) TouchInput.clear();
+            setTimeout(() => {
+                if (SceneManager._scene === scene && scene._aiMerchantApprovalWindow === win) {
+                    if (Input && Input.clear) Input.clear();
+                    if (TouchInput && TouchInput.clear) TouchInput.clear();
+                    win.activate();
+                }
+            }, 650);
         },
 
         _buyAndLeave(scene, candidate) {
