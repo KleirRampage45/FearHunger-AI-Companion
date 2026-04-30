@@ -855,6 +855,201 @@
     };
 
     //=========================================================================
+    // Personality Drift + Fear State — long-term tone and situational pressure
+    //=========================================================================
+    const PersonalityDrift = {
+        _defaultState() {
+            return {
+                caution: 0,
+                protectiveness: 0,
+                attachment: 0,
+                ruthlessness: 0,
+                trauma: 0,
+                lastTrigger: '',
+                updatedAt: Date.now()
+            };
+        },
+
+        _state() {
+            if (!$gameSystem) return this._defaultState();
+            if (!$gameSystem._aiCompanionPersonalityDrift) {
+                $gameSystem._aiCompanionPersonalityDrift = this._defaultState();
+            }
+            return $gameSystem._aiCompanionPersonalityDrift;
+        },
+
+        _clamp(value) {
+            return Math.max(-20, Math.min(20, Number(value) || 0));
+        },
+
+        record(trigger, changes, detail) {
+            const state = this._state();
+            const delta = changes || {};
+            ['caution', 'protectiveness', 'attachment', 'ruthlessness', 'trauma'].forEach(key => {
+                if (delta[key]) state[key] = this._clamp((state[key] || 0) + delta[key]);
+            });
+            state.lastTrigger = detail || trigger || '';
+            state.updatedAt = Date.now();
+            try {
+                ThesisLogger.log('personality_drift', Object.assign({
+                    trigger,
+                    detail: detail || '',
+                    state: Object.assign({}, state)
+                }, delta));
+            } catch (e) { /* telemetry should never block gameplay */ }
+        },
+
+        onConversation() {
+            this.record('conversation', { attachment: 0.25 }, 'regular talk');
+        },
+
+        onBattleWon(enemyNames) {
+            const dangerous = (enemyNames || []).some(name => /guard|mauler|trortur|shakespeare|priest|sacerdote|moonless|ghoul/i.test(String(name || '')));
+            this.record('battle_victory', {
+                attachment: 0.5,
+                ruthlessness: dangerous ? 0.5 : 0.25,
+                trauma: dangerous ? 0.75 : 0.25
+            }, (enemyNames || []).join(', '));
+        },
+
+        onBattleFled(enemyNames) {
+            this.record('battle_escape', {
+                caution: 1.5,
+                trauma: 1,
+                ruthlessness: -0.25
+            }, (enemyNames || []).join(', '));
+        },
+
+        onSevereState(actorName, stateName) {
+            const severe = /perd|lost|infecc|infect|sangr|bleed|poison|venen|toxic|maldic|curse|blind|ciego|paraly|par[aá]liz/i.test(String(stateName || ''));
+            if (!severe) return;
+            this.record('severe_state', {
+                caution: 1,
+                protectiveness: 1,
+                trauma: 1
+            }, `${actorName || 'party'}: ${stateName || 'state'}`);
+        },
+
+        getState() {
+            return Object.assign({}, this._state());
+        },
+
+        getSummary() {
+            const s = this._state();
+            const traits = [];
+            if (s.caution >= 6) traits.push('more cautious');
+            else if (s.caution <= -6) traits.push('more daring');
+            if (s.protectiveness >= 5) traits.push('protective');
+            if (s.attachment >= 6) traits.push('attached to the player');
+            if (s.ruthlessness >= 6) traits.push('more ruthless in fights');
+            if (s.trauma >= 6) traits.push('haunted by recent events');
+            return traits.length ? traits.join(', ') : 'stable personality';
+        },
+
+        getPromptModifier() {
+            const s = this._state();
+            return `Personality drift: ${this.getSummary()} (caution ${Math.round(s.caution)}, protectiveness ${Math.round(s.protectiveness)}, attachment ${Math.round(s.attachment)}, ruthlessness ${Math.round(s.ruthlessness)}, trauma ${Math.round(s.trauma)}). Keep core loyalty and identity stable; this changes tone and risk tolerance, not moral anchors.`;
+        },
+
+        getAutonomyBias() {
+            const s = this._state();
+            if (s.trauma >= 8 || s.caution >= 8) return 'prefer safe nearby tasks; avoid optional NPCs and risky detours';
+            if (s.ruthlessness >= 8 && s.caution < 5) return 'act decisively on safe loot/doors; still never start fights';
+            if (s.protectiveness >= 8) return 'stay closer when allies are hurt; prioritize support opportunities';
+            return 'normal cautious autonomy';
+        }
+    };
+
+    const FearState = {
+        _phobiaWeight(states) {
+            let score = 0;
+            (states || []).forEach(state => {
+                const name = String(state && state.name || '');
+                if (/panofobia|panophobia/i.test(name)) score += 2;
+                else if (/fobia|phobia/i.test(name)) score += 1;
+            });
+            return score;
+        },
+
+        getSnapshot() {
+            let score = 0;
+            const reasons = [];
+            try {
+                const members = $gameParty && $gameParty.members ? $gameParty.members() : [];
+                members.forEach(member => {
+                    if (!member) return;
+                    const hpPct = member.mhp > 0 ? (member.hp / member.mhp) * 100 : 100;
+                    if (member.isDead && member.isDead()) {
+                        score += 5;
+                        reasons.push(`${member.name()} down`);
+                    } else if (hpPct <= 25) {
+                        score += 3;
+                        reasons.push(`${member.name()} critical HP`);
+                    } else if (hpPct <= 50) {
+                        score += 1;
+                        reasons.push(`${member.name()} wounded`);
+                    }
+                    const states = member.states ? member.states() : [];
+                    const phobiaScore = this._phobiaWeight(states);
+                    if (phobiaScore > 0) {
+                        score += phobiaScore;
+                        reasons.push(`${member.name()} phobia`);
+                    }
+                    states.forEach(state => {
+                        const stateName = String(state && state.name || '');
+                        if (/sangr|bleed|infecc|infect|poison|venen|toxic|maldic|curse/i.test(stateName)) {
+                            score += 1;
+                        }
+                    });
+                });
+            } catch (e) { /* party may not be ready */ }
+
+            try {
+                const threats = EnvironmentScanner && EnvironmentScanner.scanAround
+                    ? EnvironmentScanner.scanAround($gamePlayer, 4)
+                    : [];
+                const closeDanger = threats.filter(item =>
+                    item &&
+                    item.distance <= 3 &&
+                    (item.type === 'enemy' || item.type === 'trap') &&
+                    (item.danger === 'high' || item.danger === 'medium')
+                );
+                if (closeDanger.length > 0) {
+                    score += closeDanger.length * 2;
+                    reasons.push('nearby danger');
+                }
+            } catch (e) { /* scanner may not be ready */ }
+
+            try {
+                const lastBattle = ShortTermMemory.getLastBattle();
+                if (lastBattle && Date.now() - lastBattle.time < 120000) {
+                    score += lastBattle.victory ? 1 : 3;
+                    reasons.push(lastBattle.victory ? 'recent fight' : 'recent escape');
+                }
+            } catch (e) { /* memory may not be ready */ }
+
+            let level = 'calm';
+            if (score >= 10) level = 'panicked';
+            else if (score >= 7) level = 'afraid';
+            else if (score >= 4) level = 'uneasy';
+
+            return {
+                score,
+                level,
+                reasons: reasons.slice(0, 4),
+                prompt: this._promptFor(level, reasons)
+            };
+        },
+
+        _promptFor(level, reasons) {
+            if (level === 'panicked') return 'Fear level: panicked. Keep lines short and tense. Prefer survival, retreat, healing, or staying close unless a safe task is obvious.';
+            if (level === 'afraid') return 'Fear level: afraid. Be wary and protective. Avoid bravado. Mention danger only when it is concrete.';
+            if (level === 'uneasy') return 'Fear level: uneasy. Stay alert but do not over-warn. Keep autonomy conservative.';
+            return 'Fear level: calm. Speak normally and avoid unnecessary danger talk.';
+        }
+    };
+
+    //=========================================================================
     // IntentDetector — multi-label intent classification (Phase 4)
     //=========================================================================
     const IntentDetector = {
@@ -3074,6 +3269,8 @@ Reply with ONLY the category name, nothing else.`;
 
             // Sanity modifier for combat speech
             const sanityMod = SanityManager.getPromptModifier();
+            const fearState = FearState.getSnapshot();
+            const driftPrompt = PersonalityDrift.getPromptModifier();
 
             // Build identity with party awareness (declared early — used by coinFlip + prompt)
             const playerName = $gameParty && $gameParty.leader() ? $gameParty.leader().name() : 'the player';
@@ -3105,6 +3302,8 @@ ${otherAllies ? 'Other allies in this fight: ' + otherAllies + '.' : ''}
 You speak from experience, cautiously and with weight. NEVER break immersion.
 You are ${Config.personality}.
 SANITY: ${sanityMod}
+${fearState.prompt}
+${driftPrompt}
 ${CharacterPresets.getCurrentPersonality().backstory ? '\nCHARACTER BACKSTORY: ' + CharacterPresets.getCurrentPersonality().backstory + '\n' : ''}
 GAME RULES: NO leveling/XP exists. COIN FLIP = instant death mechanic on specific turns. Kill enemies BEFORE their coin flip turn. Use "Atacar" to deal damage — NOT self-buff skills.
 BATTLE STATE (Turn ${battleState.turn_number}):
@@ -4832,6 +5031,7 @@ Respond ONLY with this JSON:
         _getMoraleState() {
             const sanity = SanityManager.getSanityLevel();
             const trust = RelationshipTracker.getSummary();
+            const fear = FearState.getSnapshot();
 
             // Hunger level from AmbientDialogue helper
             let hunger = 0;
@@ -4851,14 +5051,21 @@ Respond ONLY with this JSON:
                 sanity_level: sanity.level,
                 sanity_pct: sanity.percent,
                 trust_summary: trust,
+                fear_level: fear.level,
+                fear_score: fear.score,
+                personality_drift: PersonalityDrift.getSummary(),
                 hunger_level: hunger,
                 overall: this._computeMoraleOverall(sanity.percent, hunger)
             };
         },
 
         _computeMoraleOverall(sanityPct, hunger) {
+            const fear = FearState.getSnapshot();
+            if (fear.level === 'panicked') return 'desperate';
             if (sanityPct < 15 || hunger >= 4) return 'desperate';
+            if (fear.level === 'afraid') return 'low';
             if (sanityPct < 35 || hunger >= 3) return 'low';
+            if (fear.level === 'uneasy') return 'shaky';
             if (sanityPct < 60) return 'shaky';
             return 'steady';
         },
@@ -4945,6 +5152,9 @@ Respond ONLY with this JSON:
             if (s.morale.overall === 'desperate' || s.morale.overall === 'low') {
                 lines.push(es ? `Moral: ${s.morale.overall === 'desperate' ? 'desesperada' : 'baja'}` : `Morale: ${s.morale.overall}`);
             }
+            if (s.morale.fear_level && s.morale.fear_level !== 'calm') {
+                lines.push(es ? `Miedo: ${s.morale.fear_level}` : `Fear: ${s.morale.fear_level}`);
+            }
 
             // Threat
             if (s.threats.level === 'extreme' || s.threats.level === 'high') {
@@ -4982,6 +5192,9 @@ Respond ONLY with this JSON:
                 threat_score: s.threats.score,
                 morale: s.morale.overall,
                 sanity_pct: s.morale.sanity_pct,
+                fear_level: s.morale.fear_level,
+                fear_score: s.morale.fear_score,
+                personality_drift: s.morale.personality_drift,
                 hunger: s.morale.hunger_level,
                 map: s.environment.map_name,
                 in_battle: s.environment.in_battle,
@@ -5694,6 +5907,8 @@ Respond ONLY with this JSON:
                 })),
                 threatNearby: threatNearby.length,
                 interestingNearby: interesting.length,
+                fear: FearState.getSnapshot(),
+                personalityDrift: PersonalityDrift.getSummary(),
                 frontiers: frontiers.slice(0, 4).map((point, index) => ({
                     index: index,
                     x: point.x,
@@ -5724,6 +5939,9 @@ Respond ONLY with this JSON:
                 threatNearby: snapshot.threatNearby,
                 interestingNearby: snapshot.interestingNearby,
                 hpPct: snapshot.hpPct,
+                fearLevel: snapshot.fear ? snapshot.fear.level : 'calm',
+                fearScore: snapshot.fear ? snapshot.fear.score : 0,
+                autonomyBias: PersonalityDrift.getAutonomyBias(),
                 scoutLimit: snapshot.scoutLimit,
                 detourLimit: snapshot.detourLimit,
                 allowNpc: snapshot.allowNpc,
@@ -5963,6 +6181,7 @@ Respond ONLY with this JSON:
                 'Shops, merchants, rituals, sacrifices, and risky prompts require player consent; choose INTERACT only if you want to ask first.',
                 'If there is no clear nearby task, choose FOLLOW.',
                 'If threat is high or distance from player is too large, choose RETURN.',
+                'Fear/personality bias is advisory: if fear is afraid/panicked, prefer safe nearby actions, RETURN, or HOLD over optional detours.',
                 'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
                 '',
                 'STATE:',
@@ -7761,6 +7980,7 @@ Respond ONLY with this JSON:
             const recent = this._buildPromptHistory();
             const memory = MemoryManager.getLongTermMemory();
             const sanity = SanityManager.getSanityLevel();
+            const fear = FearState.getSnapshot();
             const events = ShortTermMemory.getRecentEvents();
             const mapContext = MapContextHelper.getMapContext();
             const leader = $gameParty.leader ? $gameParty.leader() : $gameParty.battleMembers()[0];
@@ -7883,6 +8103,9 @@ Respond ONLY with this JSON:
                 raw_map_name: mapContext.rawDisplayName,
                 sanity_state: sanity.level,
                 sanity_modifier: sanity.modifier,
+                fear_state: fear,
+                personality_drift: PersonalityDrift.getState(),
+                personality_drift_summary: PersonalityDrift.getSummary(),
                 recent_events: events,
                 player_equipment: leader ? EquipmentHelper.getEquipment(leader) : {},
                 companion_equipment: companionActor ? EquipmentHelper.getEquipment(companionActor) : {},
@@ -7919,6 +8142,7 @@ Respond ONLY with this JSON:
             this.addToHistory('player', playerMessage, exchangeContext);
             this.addTranscriptMessage('player', playerMessage, exchangeContext);
             RelationshipTracker.onConversation();
+            PersonalityDrift.onConversation();
 
             if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) {
                 const approvalResponse = SupportApproval.handleChatApproval(playerMessage);
@@ -8098,6 +8322,8 @@ Respond ONLY with this JSON:
 ${CharacterPresets.getCurrentPersonality().backstory ? '\nCHARACTER BACKSTORY: ' + CharacterPresets.getCurrentPersonality().backstory + '\n' : ''}
 RELATIONSHIP: ${RelationshipTracker.getSummary()}
 Sanity: ${context.sanity_state} (${sanityMod})
+Fear: ${context.fear_state ? context.fear_state.level : 'calm'}${context.fear_state && context.fear_state.reasons && context.fear_state.reasons.length ? ' — ' + context.fear_state.reasons.join(', ') : ''}
+${PersonalityDrift.getPromptModifier()}
 
 CRITICAL GAME RULES (NEVER violate these):
 - Fear & Hunger has NO leveling system, NO XP, NO experience points. NEVER mention leveling up.
@@ -11063,6 +11289,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 if (state && state.name) {
                     ShortTermMemory.addEvent(`${this.name()} gained state: ${state.name}`);
                     Debug.log(`[State Hook] ${this.name()} +${state.name}`);
+                    PersonalityDrift.onSevereState(this.name(), state.name);
 
                     // Hunger sync: when PLAYER LEADER gets a hunger state, apply it to companion too
                     const hungerStateIds = [39, 40, 41, 42, 43]; // Hambre LVL 1-5
@@ -11265,6 +11492,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         AIState.playerActionHistory = [];
         AIState.currentStrategy = null;
         RelationshipTracker.onBattleWon();
+        PersonalityDrift.onBattleWon(enemyNames);
         _BattleManager_processVictory.call(this);
     };
 
@@ -11283,6 +11511,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         AIState.playerActionHistory = [];
         AIState.currentStrategy = null;
         RelationshipTracker.onBattleFled();
+        PersonalityDrift.onBattleFled(enemyNames);
         return _BattleManager_processEscape.call(this);
     };
 
@@ -11344,6 +11573,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     window.AI_Companion.ChatSystem = ChatSystem;
     window.AI_Companion.AmbientDialogue = AmbientDialogue;
     window.AI_Companion.SanityManager = SanityManager;
+    window.AI_Companion.FearState = FearState;
+    window.AI_Companion.PersonalityDrift = PersonalityDrift;
     window.AI_Companion.DialogueGovernor = DialogueGovernor;
     window.AI_Companion.CharacterPresets = CharacterPresets;
     window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
