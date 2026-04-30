@@ -8419,11 +8419,15 @@ CRITICAL GAME RULES (NEVER violate these):
         _lastSupportTime: 0,
         _lastReactiveTime: 0,
         _lastProactiveTime: 0,
+        _thoughtCache: {},
+        _lastThoughtRequestAt: 0,
         _gameStartTime: Date.now(),  // Track when the plugin loaded
         COOLDOWN: 30000,  // 30 seconds
         SUPPORT_COOLDOWN: 8000,
         REACTIVE_COOLDOWN: 6000,
         PROACTIVE_COOLDOWN: 90000,
+        THOUGHT_CACHE_TTL: 180000,
+        THOUGHT_LLM_MIN_INTERVAL: 3500,
         STARTUP_DELAY: 8000,  // 8 seconds — stay silent after game starts
 
         canSpeak() {
@@ -9476,6 +9480,59 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             return { speak: true, thought: 'passes local filters', source: 'heuristic' };
         },
 
+        _thoughtCacheKey(text, topic, context) {
+            const ctx = context || {};
+            const parts = [
+                topic || '',
+                String(text || '').replace(/\s+/g, ' ').trim().toLowerCase(),
+                $gameMap ? $gameMap.mapId() : 0,
+                ctx.action || '',
+                ctx.targetType || '',
+                ctx.targetSubtype || '',
+                ctx.targetLabel || '',
+                ctx.itemName || '',
+                ctx.memberName || ''
+            ];
+            return parts.join('|').substring(0, 500);
+        },
+
+        _getThoughtCache(key) {
+            if (!key || !this._thoughtCache) return null;
+            const entry = this._thoughtCache[key];
+            if (!entry) return null;
+            if (Date.now() - entry.at > this.THOUGHT_CACHE_TTL) {
+                delete this._thoughtCache[key];
+                return null;
+            }
+            return entry;
+        },
+
+        _setThoughtCache(key, speak, thought, source) {
+            if (!key) return;
+            if (!this._thoughtCache) this._thoughtCache = {};
+            const keys = Object.keys(this._thoughtCache);
+            if (keys.length > 80) {
+                keys.sort((a, b) => (this._thoughtCache[a].at || 0) - (this._thoughtCache[b].at || 0))
+                    .slice(0, keys.length - 80)
+                    .forEach(oldKey => delete this._thoughtCache[oldKey]);
+            }
+            this._thoughtCache[key] = {
+                at: Date.now(),
+                speak: !!speak,
+                thought: String(thought || '').slice(0, 160),
+                source: source || 'cacheable'
+            };
+        },
+
+        _logThought(meta, speak, thought, source) {
+            ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
+                speak: !!speak,
+                thought: thought || '',
+                source: source || ''
+            }));
+            console.log(`[Ambient Thought] speak=${!!speak} topic=${meta.topic} source=${source || ''} reason=${thought || ''}`);
+        },
+
         async _shouldSpeak(text, topic, context) {
             const local = this._heuristicShouldSpeak(text, topic);
             const meta = {
@@ -9485,14 +9542,23 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 context: context || {}
             };
             if (!local.speak || this._shouldAlwaysSpeak(topic) || Config.useMockAI) {
-                ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
-                    speak: local.speak,
-                    thought: local.thought,
-                    source: local.source
-                }));
-                console.log(`[Ambient Thought] speak=${local.speak} topic=${topic} reason=${local.thought}`);
+                this._logThought(meta, local.speak, local.thought, local.source);
                 return local.speak;
             }
+
+            const cacheKey = this._thoughtCacheKey(text, topic, context);
+            const cached = this._getThoughtCache(cacheKey);
+            if (cached) {
+                this._logThought(meta, cached.speak, cached.thought, 'cache');
+                return cached.speak;
+            }
+
+            if (Date.now() - this._lastThoughtRequestAt < this.THOUGHT_LLM_MIN_INTERVAL) {
+                this._setThoughtCache(cacheKey, local.speak, 'rate limited; using local filters', 'heuristic_rate_limit');
+                this._logThought(meta, local.speak, 'rate limited; using local filters', 'heuristic_rate_limit');
+                return local.speak;
+            }
+            this._lastThoughtRequestAt = Date.now();
 
             try {
                 const endpoint = Config.getEndpoint();
@@ -9533,20 +9599,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(String(raw));
                 const speak = parsed && parsed.speak === true;
                 const thought = String(parsed && parsed.thought || (speak ? 'approved' : 'suppressed')).slice(0, 160);
-                ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
-                    speak,
-                    thought,
-                    source: 'llm'
-                }));
-                console.log(`[Ambient Thought] speak=${speak} topic=${topic} reason=${thought}`);
+                this._setThoughtCache(cacheKey, speak, thought, 'llm');
+                this._logThought(meta, speak, thought, 'llm');
                 return speak;
             } catch (e) {
-                ThesisLogger.log('ambient_thought', Object.assign({}, meta, {
-                    speak: local.speak,
-                    thought: `${local.thought}; gate fallback: ${e.message}`,
-                    source: 'heuristic_fallback'
-                }));
-                console.log(`[Ambient Thought] speak=${local.speak} topic=${topic} reason=${local.thought}; gate fallback`);
+                const thought = `${local.thought}; gate fallback: ${e.message}`;
+                this._setThoughtCache(cacheKey, local.speak, thought, 'heuristic_fallback');
+                this._logThought(meta, local.speak, thought, 'heuristic_fallback');
                 return local.speak;
             }
         },
