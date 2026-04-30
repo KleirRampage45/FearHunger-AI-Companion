@@ -11806,14 +11806,23 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         async _requestRecommendation(scene, candidates) {
             const fallback = this._fallbackCandidate(candidates);
-            if (!fallback || Config.useMockAI) return Object.assign({}, fallback, { reason: Config.language === 'es' ? 'parece lo más útil ahora' : 'seems most useful now' });
+            if (!fallback) return null;
+            if (Config.useMockAI) {
+                Debug.log('[MerchantAdvisor] Mock AI enabled; using fallback merchant candidate:', fallback);
+                return Object.assign({}, fallback, { reason: Config.language === 'es' ? 'parece lo más útil ahora' : 'seems most useful now' });
+            }
             try {
                 const es = Config.language === 'es';
+                const gold = $gameParty.gold ? $gameParty.gold() : 0;
+                Debug.log('[MerchantAdvisor] Asking LLM what to buy:', {
+                    gold,
+                    affordable: candidates.map(c => ({ index: c.index, name: c.name, price: c.price, owned: c.owned }))
+                });
                 const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `Choose at most ONE item to buy from this merchant. Be conservative with money.\n` +
                     `Prefer healing, infection/bleed cures, food if hungry, or obviously useful gear. Avoid suspicious poison/trap purchases.\n` +
-                    `Gold available: ${$gameParty.gold ? $gameParty.gold() : 0}\n` +
+                    `Gold available: ${gold}\n` +
                     `Items: ${JSON.stringify(candidates.slice(0, 12))}\n` +
                     `Return JSON only: {"index":number,"reason":"short reason"}\n` +
                     `If nothing is worth buying, return {"index":null,"reason":"short reason"}.`;
@@ -11841,6 +11850,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const picked = decision && decision.index != null
                     ? candidates.find(c => c.index === Number(decision.index))
                     : null;
+                Debug.log('[MerchantAdvisor] LLM recommendation:', decision);
                 if (!picked) return null;
                 return Object.assign({}, picked, {
                     reason: String(decision.reason || '').slice(0, 120) || (es ? 'es una compra razonable' : 'reasonable purchase')
@@ -11916,7 +11926,6 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 } finally {
                     scene._aiMerchantExecutingPurchase = false;
                 }
-                ShortTermMemory.addEvent(`${Config.companionName} bought ${candidate.name} from merchant.`);
                 if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) AutonomySystem._clearMerchantSession();
                 scene.popScene();
             } catch (e) {
@@ -11973,7 +11982,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
     const _AICompanion_SceneShop_onBuyOk = Scene_Shop.prototype.onBuyOk;
     Scene_Shop.prototype.onBuyOk = function () {
-        if (typeof AutonomySystem !== 'undefined' && AutonomySystem._hasMerchantSession && AutonomySystem._hasMerchantSession() && !this._aiMerchantApprovalVisible) {
+        if (typeof AutonomySystem !== 'undefined' &&
+            AutonomySystem._hasMerchantSession &&
+            AutonomySystem._hasMerchantSession() &&
+            !this._aiMerchantExecutingPurchase) {
             if (this._buyWindow && this._buyWindow.deactivate) this._buyWindow.deactivate();
             if (Input && Input.clear) Input.clear();
             if (TouchInput && TouchInput.clear) TouchInput.clear();
@@ -11992,6 +12004,30 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return;
         }
         _AICompanion_SceneShop_onNumberOk.call(this);
+    };
+
+    const _AICompanion_SceneShop_doBuy = Scene_Shop.prototype.doBuy;
+    Scene_Shop.prototype.doBuy = function (number) {
+        const item = this._item;
+        const quantity = Number(number) || 1;
+        const unitPrice = this.buyingPrice ? Number(this.buyingPrice()) || 0 : 0;
+        const totalPrice = unitPrice * quantity;
+        const goldBefore = $gameParty && $gameParty.gold ? $gameParty.gold() : null;
+        _AICompanion_SceneShop_doBuy.call(this, number);
+        const isAiMerchantPurchase = this._aiMerchantExecutingPurchase ||
+            (typeof AutonomySystem !== 'undefined' && AutonomySystem._hasMerchantSession && AutonomySystem._hasMerchantSession());
+        if (!isAiMerchantPurchase || !item || !ShortTermMemory) return;
+        const now = Date.now();
+        const dedupeKey = `${item.id}:${quantity}:${totalPrice}`;
+        if (this._aiMerchantLastPurchaseKey === dedupeKey && now - (this._aiMerchantLastPurchaseAt || 0) < 1500) return;
+        this._aiMerchantLastPurchaseKey = dedupeKey;
+        this._aiMerchantLastPurchaseAt = now;
+        const goldAfter = $gameParty && $gameParty.gold ? $gameParty.gold() : null;
+        const goldText = goldBefore != null && goldAfter != null
+            ? ` (${goldBefore} -> ${goldAfter} silver)`
+            : '';
+        ShortTermMemory.addEvent(`${Config.companionName} bought ${quantity}x ${item.name} from merchant for ${totalPrice} silver${goldText}.`);
+        Debug.log('[MerchantAdvisor] Logged purchase memory:', item.name, quantity, totalPrice, goldText);
     };
 
     const _AICompanion_SceneShop_terminate = Scene_Shop.prototype.terminate;
