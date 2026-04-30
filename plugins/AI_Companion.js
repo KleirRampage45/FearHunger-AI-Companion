@@ -3217,6 +3217,7 @@ Reply with ONLY the category name, nothing else.`;
             const companion = battleState.companion;
             const memory = MemoryManager.getLongTermMemory();
             const enemyTactics = this._getEnemyTactics(battleState.enemies);
+            const riskSummary = RiskEvaluator.getPromptSummary(battleState);
 
             // Get enemy-specific knowledge from KB
             let knowledgeHints = '';
@@ -3320,6 +3321,9 @@ IMPORTANT: To ATTACK an enemy, use "Atacar" (the basic attack). Skills marked [s
 - Allies' equipped gear (for reference): ${(battleState.allies || []).map(a => a.name + ': ' + EquipmentHelper.formatEquipmentForPrompt(a.equipment || {})).join(' | ')}
 
 COMBAT KNOWLEDGE (from experience):${knowledgeHints || '\n  No specific knowledge of these enemies.'}
+
+RISK EVALUATION:
+${riskSummary}
 
 ${enemyTactics ? `LEARNED TACTICS:\n${enemyTactics}` : ''}
 
@@ -3586,6 +3590,7 @@ Respond ONLY with this JSON:
                     response_source: source,
                     model_used: modelUsed,
                     latency_ms: latency,
+                    risk: RiskEvaluator.getSnapshotForLog(battleState),
                     failure_chain: failureChain.slice()
                 };
                 ThesisLogger.log('combat_decision', snapshot);
@@ -5204,6 +5209,219 @@ Respond ONLY with this JSON:
     };
 
     //=========================================================================
+    // Risk Evaluator — deterministic inference over live state and KB (Branch 8)
+    //=========================================================================
+    const RiskEvaluator = {
+        _level(score) {
+            if (score >= 10) return 'critical';
+            if (score >= 7) return 'high';
+            if (score >= 4) return 'moderate';
+            return 'low';
+        },
+
+        _survivalChance(score) {
+            return Math.max(10, Math.min(95, 95 - (score * 8)));
+        },
+
+        _stateRisk(actor) {
+            const states = actor && actor.states ? actor.states() : [];
+            let score = 0;
+            const details = [];
+            states.forEach(state => {
+                const name = String(state && state.name || '');
+                if (!name) return;
+                if (/infecc|infect/i.test(name)) {
+                    score += 4;
+                    details.push(`${actor.name()}: ${name}`);
+                } else if (/sangr|bleed/i.test(name)) {
+                    score += 2;
+                    details.push(`${actor.name()}: ${name}`);
+                } else if (/poison|venen|t[oó]xic/i.test(name)) {
+                    score += 3;
+                    details.push(`${actor.name()}: ${name}`);
+                } else if (/curse|maldic|ruin/i.test(name)) {
+                    score += 4;
+                    details.push(`${actor.name()}: ${name}`);
+                } else if (/hambre|hunger/i.test(name)) {
+                    score += 1;
+                    details.push(`${actor.name()}: ${name}`);
+                }
+            });
+            return { score, details };
+        },
+
+        _partyRisk() {
+            const members = $gameParty && $gameParty.members ? $gameParty.members() : [];
+            let score = 0;
+            const details = [];
+            members.forEach(member => {
+                if (!member) return;
+                const hpPct = member.mhp > 0 ? member.hp / member.mhp : 1;
+                if (member.isDead && member.isDead()) {
+                    score += 6;
+                    details.push(`${member.name()}: caído`);
+                } else if (hpPct <= 0.2) {
+                    score += 5;
+                    details.push(`${member.name()}: HP crítico`);
+                } else if (hpPct <= 0.45) {
+                    score += 2;
+                    details.push(`${member.name()}: herido`);
+                }
+                const stateRisk = this._stateRisk(member);
+                score += stateRisk.score;
+                details.push(...stateRisk.details);
+            });
+            return { score, details };
+        },
+
+        _resourceRisk() {
+            const resources = WorldStateEngine && WorldStateEngine.getSnapshot
+                ? WorldStateEngine.getSnapshot().resources
+                : { healing: 0, food: 0 };
+            let score = 0;
+            const details = [];
+            if (resources.healing <= 0) {
+                score += 3;
+                details.push(Config.language === 'es' ? 'sin curación' : 'no healing');
+            }
+            if (resources.food <= 0) {
+                score += 1;
+                details.push(Config.language === 'es' ? 'sin comida' : 'no food');
+            }
+            return { score, details };
+        },
+
+        _nearbyRisk(origin) {
+            const nearby = EnvironmentScanner && EnvironmentScanner.scanAround
+                ? EnvironmentScanner.scanAround(origin || $gamePlayer, 6)
+                : [];
+            let score = 0;
+            const details = [];
+            nearby.forEach(item => {
+                if (!item) return;
+                if (item.type === 'enemy') {
+                    score += item.distance <= 2 ? 5 : 3;
+                    details.push(`${item.label || 'Enemigo'} ${item.distance}p ${item.direction}`);
+                } else if (item.type === 'trap') {
+                    score += item.distance <= 2 ? 4 : 2;
+                    details.push(`${item.label || 'Trampa'} ${item.distance}p ${item.direction}`);
+                } else if (item.type === 'hazard' && EnvironmentScanner._isWarningThreat && EnvironmentScanner._isWarningThreat(item)) {
+                    score += item.distance <= 2 ? 3 : 1;
+                    details.push(`${item.label || 'Peligro'} ${item.distance}p ${item.direction}`);
+                }
+            });
+            return { score, details };
+        },
+
+        _enemyKbRisk(enemy, turnNumber) {
+            let score = 0;
+            const details = [];
+            if (!enemy || !enemy.alive) return { score, details };
+            if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemyHints) {
+                const kb = FearHungerKB.getEnemyHints(enemy.name);
+                if (kb) {
+                    if (kb.dangerLevel >= 4) {
+                        score += 4;
+                        details.push(`${kb.name || enemy.name}: peligro alto`);
+                    } else if (kb.dangerLevel >= 2) {
+                        score += 2;
+                    }
+                    if (kb.coinFlipTurn) {
+                        if (turnNumber >= kb.coinFlipTurn) {
+                            score += 5;
+                            details.push(`${kb.name || enemy.name}: coin flip ahora`);
+                        } else if (turnNumber === kb.coinFlipTurn - 1) {
+                            score += 3;
+                            details.push(`${kb.name || enemy.name}: coin flip próximo`);
+                        }
+                    }
+                }
+            }
+            const aliveLimbs = Object.values(enemy.limbs || {}).filter(limb => limb && limb.alive).length;
+            if (aliveLimbs >= 3) score += 1;
+            return { score, details };
+        },
+
+        evaluateMap(origin) {
+            const party = this._partyRisk();
+            const resources = this._resourceRisk();
+            const nearby = this._nearbyRisk(origin || $gamePlayer);
+            const score = party.score + resources.score + nearby.score;
+            const level = this._level(score);
+            const es = Config.language === 'es';
+            let recommendedAction = es ? 'avanzar con cuidado' : 'advance carefully';
+            if (level === 'critical') recommendedAction = es ? 'detenerse y resolver heridas/peligros' : 'stop and resolve wounds/dangers';
+            else if (level === 'high') recommendedAction = es ? 'reagruparse y evitar riesgos' : 'regroup and avoid risks';
+            else if (nearby.details.length > 0) recommendedAction = es ? 'mirar el suelo y mantener distancia' : 'watch the floor and keep distance';
+            return {
+                mode: 'map',
+                level,
+                score,
+                survivalChance: this._survivalChance(score),
+                recommendedAction,
+                factors: party.details.concat(resources.details, nearby.details).slice(0, 8)
+            };
+        },
+
+        evaluateBattle(battleState) {
+            const state = battleState || (AIState && AIState.lastBattleStateCache) || null;
+            if (!state) return this.evaluateMap($gamePlayer);
+            const party = this._partyRisk();
+            const resources = this._resourceRisk();
+            let enemyScore = 0;
+            const enemyDetails = [];
+            (state.enemies || []).forEach(enemy => {
+                const risk = this._enemyKbRisk(enemy, state.turn_number || 0);
+                enemyScore += risk.score;
+                enemyDetails.push(...risk.details);
+            });
+            const aliveEnemies = (state.enemies || []).filter(e => e && e.alive).length;
+            if (aliveEnemies >= 2) enemyScore += 2;
+            else if (aliveEnemies === 1) enemyScore += 1;
+            const score = party.score + resources.score + enemyScore;
+            const level = this._level(score);
+            const es = Config.language === 'es';
+            let recommendedAction = es ? 'atacar con precisión' : 'attack precisely';
+            if (level === 'critical') recommendedAction = es ? 'defender o curar si el coin flip/HP lo exige' : 'guard or heal if coin flip/HP demands it';
+            else if (level === 'high') recommendedAction = es ? 'priorizar brazo/amenaza letal' : 'prioritize weapon arm/lethal threat';
+            return {
+                mode: 'battle',
+                level,
+                score,
+                survivalChance: this._survivalChance(score),
+                recommendedAction,
+                factors: enemyDetails.concat(party.details, resources.details).slice(0, 8)
+            };
+        },
+
+        getPromptSummary(battleState) {
+            const risk = (($gameParty && $gameParty.inBattle && $gameParty.inBattle()) || battleState)
+                ? this.evaluateBattle(battleState)
+                : this.evaluateMap($gamePlayer);
+            const es = Config.language === 'es';
+            const label = es ? ({ low: 'bajo', moderate: 'moderado', high: 'alto', critical: 'crítico' }[risk.level] || risk.level) : risk.level;
+            const factors = risk.factors && risk.factors.length > 0
+                ? (es ? ` Factores: ${risk.factors.join('; ')}.` : ` Factors: ${risk.factors.join('; ')}.`)
+                : '';
+            return es
+                ? `Riesgo ${label}. Supervivencia estimada ${risk.survivalChance}%. Acción recomendada: ${risk.recommendedAction}.${factors}`
+                : `Risk ${label}. Estimated survival ${risk.survivalChance}%. Recommended action: ${risk.recommendedAction}.${factors}`;
+        },
+
+        getSnapshotForLog(battleState) {
+            const risk = battleState ? this.evaluateBattle(battleState) : this.evaluateMap($gamePlayer);
+            return {
+                mode: risk.mode,
+                level: risk.level,
+                score: risk.score,
+                survival_chance: risk.survivalChance,
+                recommended_action: risk.recommendedAction,
+                factors: risk.factors
+            };
+        }
+    };
+
+    //=========================================================================
     // Autonomy System — Local-only overworld heartbeat controller (Branch 9)
     // Conservative beta: follower detours, rejoin logic, nearby interaction
     //=========================================================================
@@ -5905,6 +6123,7 @@ Respond ONLY with this JSON:
             const pointsOfInterest = EnvironmentScanner.getPointsOfInterestAround(follower, Math.max(6, Config.autonomyMaxScoutDistance + 2));
             const frontiers = EnvironmentScanner.getFrontierTargets(follower, Config.autonomyMaxScoutDistance);
             const world = WorldStateEngine.getSnapshot();
+            const risk = RiskEvaluator.evaluateMap(follower);
             const threatNearby = nearby.filter(n => n.danger === 'high');
             const interesting = pointsOfInterest.filter(n => n.type === 'container' || n.type === 'door' || n.type === 'loot' || n.type === 'npc');
 
@@ -5914,6 +6133,10 @@ Respond ONLY with this JSON:
                 companion: { x: follower.x, y: follower.y },
                 leashDistance: this._distance(player, follower),
                 threatLevel: world.threats.level,
+                riskLevel: risk.level,
+                riskScore: risk.score,
+                survivalChance: risk.survivalChance,
+                recommendedAction: risk.recommendedAction,
                 situation: world.situation,
                 nearby: nearby.map(item => ({
                     eventId: item.eventId != null ? item.eventId : item.id,
@@ -5962,6 +6185,10 @@ Respond ONLY with this JSON:
                 mapName: snapshot.mapName,
                 leashDistance: snapshot.leashDistance,
                 threatLevel: snapshot.threatLevel,
+                riskLevel: snapshot.riskLevel,
+                riskScore: snapshot.riskScore,
+                survivalChance: snapshot.survivalChance,
+                recommendedAction: snapshot.recommendedAction,
                 situation: snapshot.situation,
                 threatNearby: snapshot.threatNearby,
                 interestingNearby: snapshot.interestingNearby,
@@ -6208,6 +6435,7 @@ Respond ONLY with this JSON:
                 'Shops, merchants, rituals, sacrifices, and risky prompts require player consent; choose INTERACT only if you want to ask first.',
                 'If there is no clear nearby task, choose FOLLOW.',
                 'If threat is high or distance from player is too large, choose RETURN.',
+                'Use riskLevel/recommendedAction to decide caution. High or critical risk means avoid optional detours.',
                 'Fear/personality bias is advisory: if fear is afraid/panicked, prefer safe nearby actions, RETURN, or HOLD over optional detours.',
                 'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
                 '',
@@ -7297,6 +7525,7 @@ Respond ONLY with this JSON:
         RelationshipTracker,
         KBFallback,
         MapContextHelper,
+        RiskEvaluator,
         EquipmentHelper
     };
 
@@ -7944,6 +8173,10 @@ Respond ONLY with this JSON:
                 pushSection('WORLD SITUATION', context.world_state);
             }
 
+            if (context.risk_assessment && context.risk_assessment.length > 0) {
+                pushSection('RISK ASSESSMENT', context.risk_assessment);
+            }
+
             if (context.npc_dialogue && context.npc_dialogue.length > 0) {
                 pushSection('RECENT NPC DIALOGUE', `${context.npc_dialogue}\nYou may comment on what NPCs said, react to their words, or warn the player about untrustworthy characters.`);
             }
@@ -7962,7 +8195,7 @@ Respond ONLY with this JSON:
             if (recentCompanionMsgs.length > 0) {
                 playerSection += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
             }
-            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
             pushSection('RESPONSE CONTRACT', playerSection);
 
             return sections;
@@ -8047,6 +8280,7 @@ Respond ONLY with this JSON:
                 'partyInBattle=', $gameParty.inBattle && $gameParty.inBattle(),
                 'cachedState=', !!AIState.lastBattleStateCache);
 
+            let riskBattleState = null;
             if (isInBattle) {
                 let state = null;
                 try { state = BattleStateExtractor.extract(); } catch (e) { Debug.warn('[Chat] BattleStateExtractor failed:', e.message); }
@@ -8056,6 +8290,7 @@ Respond ONLY with this JSON:
                     Debug.log('[Chat] Using cached battle state');
                 }
                 if (state) {
+                    riskBattleState = state;
                     battleStateSummary = {
                         turn_number: state.turn_number,
                         enemies: state.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp, limbs: e.limbs })),
@@ -8176,6 +8411,8 @@ Respond ONLY with this JSON:
                 nearby_observation: EnvironmentScanner.observe(),
                 // Branch 6: World State Engine — aggregated situational summary
                 world_state: WorldStateEngine.getWorldSummary(),
+                // Branch 8: Risk Evaluator — explicit survival/risk inference
+                risk_assessment: RiskEvaluator.getPromptSummary(riskBattleState),
                 // Branch 7: NPC Intelligence — recent NPC dialogue
                 npc_dialogue: NPCIntelligence.getRecentDialogueSummary(),
                 npc_dialogue_entries: NPCIntelligence.getRecentDialogueEntries(),
@@ -8271,6 +8508,7 @@ Respond ONLY with this JSON:
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                         prompt_length: prompt.length,
                         prompt_sections: this._lastPromptSections || null,
+                        risk_assessment: context.risk_assessment,
                         response_text: fallback,
                         response_source: 'kb_fallback',
                         latency_ms: chatLatency,
@@ -8281,6 +8519,7 @@ Respond ONLY with this JSON:
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                         prompt_length: prompt.length,
                         prompt_sections: this._lastPromptSections || null,
+                        risk_assessment: context.risk_assessment,
                         response_text: fallback,
                         response_source: 'kb_fallback',
                         latency_ms: chatLatency,
@@ -8306,6 +8545,7 @@ Respond ONLY with this JSON:
                     prompt_length: prompt.length,
                     prompt_text: prompt,
                     prompt_sections: this._lastPromptSections || null,
+                    risk_assessment: context.risk_assessment,
                     response_text: finalResponse,
                     raw_response_text: response,
                     response_source: validation.changed ? 'llm_validated' : 'llm',
@@ -8319,6 +8559,7 @@ Respond ONLY with this JSON:
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
                     prompt_sections: this._lastPromptSections || null,
+                    risk_assessment: context.risk_assessment,
                     response_text: finalResponse,
                     raw_response_text: response,
                     response_source: validation.changed ? 'llm_validated' : 'llm',
@@ -8344,6 +8585,7 @@ Respond ONLY with this JSON:
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
                     prompt_sections: this._lastPromptSections || null,
+                    risk_assessment: context.risk_assessment,
                     response_text: fallback,
                     response_source: 'kb_fallback_error',
                     latency_ms: chatLatency,
@@ -11927,6 +12169,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     window.AI_Companion.CharacterPresets = CharacterPresets;
     window.AI_Companion.EnvironmentScanner = EnvironmentScanner;
     window.AI_Companion.WorldStateEngine = WorldStateEngine;
+    window.AI_Companion.RiskEvaluator = RiskEvaluator;
     window.AI_Companion.NPCIntelligence = NPCIntelligence;
     window.AI_Companion.AutonomySystem = AutonomySystem;
     window.AI_Companion.DebugState = DebugState;
