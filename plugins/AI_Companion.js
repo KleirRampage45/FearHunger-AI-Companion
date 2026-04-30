@@ -865,6 +865,7 @@
                 attachment: 0,
                 ruthlessness: 0,
                 trauma: 0,
+                eventMemory: [],
                 lastTrigger: '',
                 updatedAt: Date.now()
             };
@@ -888,6 +889,16 @@
             ['caution', 'protectiveness', 'attachment', 'ruthlessness', 'trauma'].forEach(key => {
                 if (delta[key]) state[key] = this._clamp((state[key] || 0) + delta[key]);
             });
+            state.eventMemory = Array.isArray(state.eventMemory) ? state.eventMemory : [];
+            if (trigger || detail) {
+                state.eventMemory.unshift({
+                    trigger: trigger || 'event',
+                    detail: detail || '',
+                    changes: Object.assign({}, delta),
+                    time: Date.now()
+                });
+                state.eventMemory = state.eventMemory.slice(0, 12);
+            }
             state.lastTrigger = detail || trigger || '';
             state.updatedAt = Date.now();
             try {
@@ -901,6 +912,20 @@
 
         onConversation() {
             this.record('conversation', { attachment: 0.25 }, 'regular talk');
+        },
+
+        onPlayerApprovedRisk(targetLabel) {
+            this.record('risk_approved', {
+                attachment: 0.35,
+                caution: 0.35
+            }, targetLabel || 'risky interaction approved');
+        },
+
+        onPlayerDeclinedRisk(targetLabel) {
+            this.record('risk_declined', {
+                caution: 0.75,
+                protectiveness: 0.25
+            }, targetLabel || 'risky interaction declined');
         },
 
         onBattleWon(enemyNames) {
@@ -946,9 +971,20 @@
             return traits.length ? traits.join(', ') : 'stable personality';
         },
 
+        getRecentMemorySummary() {
+            const s = this._state();
+            const memories = Array.isArray(s.eventMemory) ? s.eventMemory : [];
+            return memories
+                .filter(entry => Date.now() - (entry.time || 0) < 30 * 60 * 1000)
+                .slice(0, 3)
+                .map(entry => `${entry.trigger}: ${entry.detail}`)
+                .join('; ');
+        },
+
         getPromptModifier() {
             const s = this._state();
-            return `Personality drift: ${this.getSummary()} (caution ${Math.round(s.caution)}, protectiveness ${Math.round(s.protectiveness)}, attachment ${Math.round(s.attachment)}, ruthlessness ${Math.round(s.ruthlessness)}, trauma ${Math.round(s.trauma)}). Keep core loyalty and identity stable; this changes tone and risk tolerance, not moral anchors.`;
+            const memory = this.getRecentMemorySummary();
+            return `Personality drift: ${this.getSummary()} (caution ${Math.round(s.caution)}, protectiveness ${Math.round(s.protectiveness)}, attachment ${Math.round(s.attachment)}, ruthlessness ${Math.round(s.ruthlessness)}, trauma ${Math.round(s.trauma)}).${memory ? ' Recent emotional memory: ' + memory + '.' : ''} Keep core loyalty and identity stable; this changes tone and risk tolerance, not moral anchors.`;
         },
 
         getAutonomyBias() {
@@ -961,6 +997,62 @@
     };
 
     const FearState = {
+        _defaultMemory() {
+            return {
+                lastLevel: 'calm',
+                peakScore: 0,
+                pressureBonus: 0,
+                pressureUntil: 0,
+                recentTriggers: [],
+                updatedAt: Date.now()
+            };
+        },
+
+        _memory() {
+            if (!$gameSystem) return this._defaultMemory();
+            if (!$gameSystem._aiCompanionFearMemory) {
+                $gameSystem._aiCompanionFearMemory = this._defaultMemory();
+            }
+            const memory = $gameSystem._aiCompanionFearMemory;
+            memory.recentTriggers = Array.isArray(memory.recentTriggers) ? memory.recentTriggers : [];
+            return memory;
+        },
+
+        recordPressure(trigger, bonus, reason, ttlMs) {
+            const memory = this._memory();
+            const now = Date.now();
+            memory.pressureBonus = Math.max(memory.pressureBonus || 0, Number(bonus) || 0);
+            memory.pressureUntil = Math.max(memory.pressureUntil || 0, now + (ttlMs || 120000));
+            memory.recentTriggers.unshift({
+                trigger: trigger || 'pressure',
+                reason: reason || '',
+                bonus: Number(bonus) || 0,
+                time: now
+            });
+            memory.recentTriggers = memory.recentTriggers.slice(0, 8);
+            memory.updatedAt = now;
+        },
+
+        _recordLevel(level, score, reasons) {
+            const memory = this._memory();
+            const now = Date.now();
+            const changed = memory.lastLevel !== level;
+            const newPeak = score > (memory.peakScore || 0);
+            if (changed || newPeak) {
+                memory.lastLevel = level;
+                memory.peakScore = Math.max(memory.peakScore || 0, score);
+                memory.updatedAt = now;
+                try {
+                    ThesisLogger.log('fear_state', {
+                        level,
+                        score,
+                        reasons: (reasons || []).slice(0, 5),
+                        recent_triggers: memory.recentTriggers.slice(0, 4)
+                    });
+                } catch (e) { /* telemetry should never block gameplay */ }
+            }
+        },
+
         _phobiaWeight(states) {
             let score = 0;
             (states || []).forEach(state => {
@@ -974,6 +1066,8 @@
         getSnapshot() {
             let score = 0;
             const reasons = [];
+            const memory = this._memory();
+            const now = Date.now();
             try {
                 const members = $gameParty && $gameParty.members ? $gameParty.members() : [];
                 members.forEach(member => {
@@ -999,6 +1093,7 @@
                         const stateName = String(state && state.name || '');
                         if (/sangr|bleed|infecc|infect|poison|venen|toxic|maldic|curse/i.test(stateName)) {
                             score += 1;
+                            reasons.push(`${member.name()} ${stateName}`);
                         }
                     });
                 });
@@ -1016,7 +1111,17 @@
                 );
                 if (closeDanger.length > 0) {
                     score += closeDanger.length * 2;
-                    reasons.push('nearby danger');
+                    reasons.push(closeDanger.slice(0, 2).map(item => item.label || item.type || 'danger').join(', '));
+                }
+                const unlit = threats.filter(item =>
+                    item &&
+                    item.distance <= 5 &&
+                    item.type === 'container' &&
+                    item.subtype === 'light_source'
+                );
+                if (unlit.length > 0) {
+                    score += 1;
+                    reasons.push('dark area');
                 }
             } catch (e) { /* scanner may not be ready */ }
 
@@ -1028,15 +1133,35 @@
                 }
             } catch (e) { /* memory may not be ready */ }
 
+            if (memory.pressureUntil && now < memory.pressureUntil) {
+                const remainingRatio = Math.max(0, Math.min(1, (memory.pressureUntil - now) / 180000));
+                const pressure = Math.ceil((memory.pressureBonus || 0) * Math.max(0.35, remainingRatio));
+                if (pressure > 0) {
+                    score += pressure;
+                    const trigger = memory.recentTriggers && memory.recentTriggers[0];
+                    reasons.push(trigger && trigger.reason ? trigger.reason : 'recent stress');
+                }
+            } else if (memory.pressureBonus) {
+                memory.pressureBonus = 0;
+                memory.pressureUntil = 0;
+            }
+
             let level = 'calm';
             if (score >= 10) level = 'panicked';
             else if (score >= 7) level = 'afraid';
             else if (score >= 4) level = 'uneasy';
 
+            this._recordLevel(level, score, reasons);
+
             return {
                 score,
                 level,
                 reasons: reasons.slice(0, 4),
+                memory: {
+                    lastLevel: memory.lastLevel || level,
+                    peakScore: memory.peakScore || score,
+                    recentTriggers: (memory.recentTriggers || []).slice(0, 4)
+                },
                 prompt: this._promptFor(level, reasons)
             };
         },
@@ -6414,6 +6539,9 @@ Respond ONLY with this JSON:
                 this._state.lastUiAdvanceAt = Date.now();
                 if (choice === 0) {
                     this._approveConsent(target.eventId, target);
+                    if (typeof PersonalityDrift !== 'undefined' && PersonalityDrift.onPlayerApprovedRisk) {
+                        PersonalityDrift.onPlayerApprovedRisk(target.label || target.type || 'risk');
+                    }
                     this._applyDecision({
                         action: originalAction === 'LOOT' ? 'INTERACT' : (originalAction || 'INTERACT'),
                         eventId: target.eventId,
@@ -6424,6 +6552,9 @@ Respond ONLY with this JSON:
                 }
                 this._setEventCooldown(target.eventId, 120000);
                 this._clearConsentApproval();
+                if (typeof PersonalityDrift !== 'undefined' && PersonalityDrift.onPlayerDeclinedRisk) {
+                    PersonalityDrift.onPlayerDeclinedRisk(target.label || target.type || 'risk');
+                }
                 this._state.mode = 'follow';
                 this._state.targetEventId = null;
                 this._state.targetPoint = null;
@@ -6704,7 +6835,10 @@ Respond ONLY with this JSON:
                 hpPct: snapshot.hpPct,
                 fearLevel: snapshot.fear ? snapshot.fear.level : 'calm',
                 fearScore: snapshot.fear ? snapshot.fear.score : 0,
+                fearReasons: snapshot.fear && snapshot.fear.reasons ? snapshot.fear.reasons : [],
+                fearMemory: snapshot.fear && snapshot.fear.memory ? snapshot.fear.memory : null,
                 autonomyBias: PersonalityDrift.getAutonomyBias(),
+                personalityDrift: PersonalityDrift.getSummary(),
                 scoutLimit: snapshot.scoutLimit,
                 detourLimit: snapshot.detourLimit,
                 allowNpc: snapshot.allowNpc,
@@ -6858,6 +6992,13 @@ Respond ONLY with this JSON:
                         threatNearby: snapshot.threatNearby,
                         interestingNearby: snapshot.interestingNearby,
                         hpPct: snapshot.hpPct,
+                        fear: snapshot.fear ? {
+                            level: snapshot.fear.level,
+                            score: snapshot.fear.score,
+                            reasons: snapshot.fear.reasons,
+                            memory: snapshot.fear.memory
+                        } : null,
+                        personality_drift: PersonalityDrift.getSummary(),
                         nearby: snapshot.nearby
                     } : null
                 });
@@ -6946,6 +7087,7 @@ Respond ONLY with this JSON:
                 'If threat is high or distance from player is too large, choose RETURN.',
                 'Use riskLevel/recommendedAction to decide caution. High or critical risk means avoid optional detours.',
                 'Fear/personality bias is advisory: if fear is afraid/panicked, prefer safe nearby actions, RETURN, or HOLD over optional detours.',
+                'FearMemory is recent emotional pressure from events that may still affect caution even after the immediate danger passes.',
                 'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',
                 '',
                 'STATE:',
@@ -12590,6 +12732,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     ShortTermMemory.addEvent(`${this.name()} gained state: ${state.name}`);
                     Debug.log(`[State Hook] ${this.name()} +${state.name}`);
                     PersonalityDrift.onSevereState(this.name(), state.name);
+                    if (typeof FearState !== 'undefined' && FearState.recordPressure && /sangr|bleed|infecc|infect|poison|venen|toxic|maldic|curse|perd|lost|blind|ciego|paraly|par[aá]liz/i.test(String(state.name || ''))) {
+                        FearState.recordPressure('severe_state', 2, `${this.name()} ${state.name}`, 180000);
+                    }
 
                     // Hunger sync: when PLAYER LEADER gets a hunger state, apply it to companion too
                     const hungerStateIds = [39, 40, 41, 42, 43]; // Hambre LVL 1-5
@@ -12618,6 +12763,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         const isPlayer = this === $gameParty.leader();
                         ShortTermMemory.addEvent(`¡CRITICAL! ${victimName} LOST a ${limb}! (${state.name})`);
                         Debug.log(`[LIMB LOSS] ${victimName} lost ${limb}!`);
+                        if (typeof FearState !== 'undefined' && FearState.recordPressure) {
+                            FearState.recordPressure('limb_loss', 4, `${victimName} lost ${limb}`, 300000);
+                        }
 
                         // Trigger AI reaction if it's the player or a party member
                         if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue.canSpeak()) {
@@ -12757,6 +12905,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         AIState.combatActionHistory = [];
         AIState.playerActionHistory = [];
         AmbientDialogue.onBattleStart($gameTroop.members());
+        try {
+            const enemyNames = $gameTroop.members().map(enemy => enemy && enemy.name ? enemy.name() : '').filter(Boolean);
+            const dangerous = enemyNames.some(name => /guard|mauler|trortur|shakespeare|priest|sacerdote|moonless|ghoul|elite|boss/i.test(String(name || '')));
+            if (dangerous && typeof FearState !== 'undefined' && FearState.recordPressure) {
+                FearState.recordPressure('dangerous_battle', 2, enemyNames.slice(0, 2).join(', '), 180000);
+            }
+        } catch (e) { /* battle data may not be ready */ }
     };
 
     // Hook: Track player actions during combat for coordination
@@ -12809,6 +12964,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         AIState.currentStrategy = null;
         RelationshipTracker.onBattleWon();
         PersonalityDrift.onBattleWon(enemyNames);
+        if (typeof FearState !== 'undefined' && FearState.recordPressure) {
+            FearState.recordPressure('battle_victory', 1, `survived ${enemyNames.slice(0, 2).join(', ')}`, 90000);
+        }
         _BattleManager_processVictory.call(this);
     };
 
@@ -12828,6 +12986,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         AIState.currentStrategy = null;
         RelationshipTracker.onBattleFled();
         PersonalityDrift.onBattleFled(enemyNames);
+        if (typeof FearState !== 'undefined' && FearState.recordPressure) {
+            FearState.recordPressure('battle_escape', 3, `escaped ${enemyNames.slice(0, 2).join(', ')}`, 180000);
+        }
         return _BattleManager_processEscape.call(this);
     };
 
