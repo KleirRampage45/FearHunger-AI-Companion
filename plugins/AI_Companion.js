@@ -5241,6 +5241,8 @@ Respond ONLY with this JSON:
             consentApprovedEventId: null,
             consentApprovedUntil: 0,
             consentPromptPending: false,
+            merchantSessionEventId: null,
+            merchantSessionUntil: 0,
             eventCooldowns: {},
             searchedEvents: {}
         },
@@ -5354,6 +5356,8 @@ Respond ONLY with this JSON:
             this._state.consentApprovedEventId = null;
             this._state.consentApprovedUntil = 0;
             this._state.consentPromptPending = false;
+            this._state.merchantSessionEventId = null;
+            this._state.merchantSessionUntil = 0;
         },
 
         _distance(a, b) {
@@ -5551,15 +5555,38 @@ Respond ONLY with this JSON:
             return true;
         },
 
-        _approveConsent(eventId) {
+        _approveConsent(eventId, target) {
             this._state.consentApprovedEventId = Number(eventId);
             this._state.consentApprovedUntil = Date.now() + 45000;
+            if (target && this._targetNeedsConsent(target)) {
+                const type = String(target.type || '').toLowerCase();
+                const label = String(target.label || '').toLowerCase();
+                const subtype = String(target.subtype || '').toLowerCase();
+                if (type === 'shop' || /(merchant|mercader|comerciante|shop|tienda|pocketcat)/i.test(label + ' ' + subtype)) {
+                    this._state.merchantSessionEventId = Number(eventId);
+                    this._state.merchantSessionUntil = Date.now() + 120000;
+                }
+            }
         },
 
         _clearConsentApproval() {
             this._state.consentApprovedEventId = null;
             this._state.consentApprovedUntil = 0;
             this._state.consentPromptPending = false;
+        },
+
+        _hasMerchantSession() {
+            if (!this._state.merchantSessionEventId) return false;
+            if (Date.now() > (this._state.merchantSessionUntil || 0)) {
+                this._clearMerchantSession();
+                return false;
+            }
+            return true;
+        },
+
+        _clearMerchantSession() {
+            this._state.merchantSessionEventId = null;
+            this._state.merchantSessionUntil = 0;
         },
 
         _wrapLines(text, maxLineLen, maxLines) {
@@ -5669,7 +5696,7 @@ Respond ONLY with this JSON:
                 this._state.consentPromptPending = false;
                 this._state.lastUiAdvanceAt = Date.now();
                 if (choice === 0) {
-                    this._approveConsent(target.eventId);
+                    this._approveConsent(target.eventId, target);
                     this._applyDecision({
                         action: originalAction === 'LOOT' ? 'INTERACT' : (originalAction || 'INTERACT'),
                         eventId: target.eventId,
@@ -5723,7 +5750,7 @@ Respond ONLY with this JSON:
             const joined = ((choices || []).join(' | ') + ' ' + (messageText || '')).toLowerCase();
             if (!joined.trim()) return false;
             if (/(cara|cruz|heads|tails|coin|moneda)/i.test(joined)) return false;
-            if (/(compr|buy|sell|vender|trade|merchant|mercader|shop|tienda)/i.test(joined)) return true;
+            if (/(compr|buy|sell|vender|trade|merchant|mercader|shop|tienda)/i.test(joined) && !this._hasMerchantSession()) return true;
             if (/(sacrific|ofrec|offering|altar|gro-goroth|grogoroth|god|dios|ritual|niña|nina|girl|companion|party member|ally)/i.test(joined)) return true;
             if (/(le'garde|legarde|enki|darce|cahara|ragnvaldr|moonless|buckman|trortur)/i.test(joined)) return true;
             return false;
@@ -5732,7 +5759,7 @@ Respond ONLY with this JSON:
         _interactionTextNeedsConsent(messageText) {
             const text = String(messageText || '').toLowerCase();
             if (!text.trim()) return false;
-            if (/(compr|buy|sell|vender|trade|merchant|mercader|comerciante|shop|tienda|intercambias|monedas de plata|qué te gustaría comprar|que te gustaria comprar)/i.test(text)) return true;
+            if (/(compr|buy|sell|vender|trade|merchant|mercader|comerciante|shop|tienda|intercambias|monedas de plata|qué te gustaría comprar|que te gustaria comprar)/i.test(text) && !this._hasMerchantSession()) return true;
             if (/(sacrific|ofrec|offering|altar|gro-goroth|grogoroth|god|dios|ritual|niña|nina|girl|companion|party member|ally)/i.test(text)) return true;
             return false;
         },
@@ -6622,7 +6649,7 @@ Respond ONLY with this JSON:
             } else {
                 this._state.postDoorPoint = null;
             }
-            if (this._isConsentApproved(eventId)) {
+            if (this._isConsentApproved(eventId) && interactionType !== 'shop') {
                 this._clearConsentApproval();
             }
             Debug.log('[Autonomy] Interacted with event via ' + channel + ':', eventId, event && event.event ? event.event().name : '');
@@ -10998,6 +11025,199 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return Math.max(96, Math.min(480, longest * 12 + this.textPadding() * 2));
         }
         return _AICompanion_WindowChoiceList_maxChoiceWidth.call(this);
+    };
+
+    function Window_AIMerchantApproval() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Window_AIMerchantApproval.prototype = Object.create(Window_Command.prototype);
+    Window_AIMerchantApproval.prototype.constructor = Window_AIMerchantApproval;
+    Window_AIMerchantApproval.prototype.windowWidth = function () {
+        return 260;
+    };
+    Window_AIMerchantApproval.prototype.makeCommandList = function () {
+        const es = Config.language === 'es';
+        this.addCommand(es ? 'Sí, comprar' : 'Yes, buy it', 'yes');
+        this.addCommand(es ? 'No, salir' : 'No, leave', 'no');
+    };
+
+    //=========================================================================
+    // Merchant Shop Advisor — consented AI purchase flow inside Scene_Shop
+    //=========================================================================
+    const MerchantShopAdvisor = {
+        _candidateList(scene) {
+            if (!scene || !scene._buyWindow || !scene._buyWindow._data) return [];
+            return scene._buyWindow._data.map((item, index) => {
+                if (!item) return null;
+                const price = scene._buyWindow.price ? scene._buyWindow.price(item) : (item.price || 0);
+                const enabled = scene._buyWindow.isEnabled ? scene._buyWindow.isEnabled(item) : price <= $gameParty.gold();
+                return {
+                    index,
+                    id: item.id,
+                    name: item.name,
+                    type: DataManager.isWeapon(item) ? 'weapon' : (DataManager.isArmor(item) ? 'armor' : 'item'),
+                    price,
+                    owned: $gameParty.numItems ? $gameParty.numItems(item) : 0,
+                    enabled
+                };
+            }).filter(entry => entry && entry.enabled && entry.price <= ($gameParty.gold ? $gameParty.gold() : 0));
+        },
+
+        _fallbackCandidate(candidates) {
+            const useful = candidates.find(c => /hierba|herb|vial|cloth|fragment|pan|bread|meat|carne|cheese|queso|food|comida|whiskey|wine|ale|tobacco|opium/i.test(c.name));
+            return useful || candidates[0] || null;
+        },
+
+        async _requestRecommendation(scene, candidates) {
+            const fallback = this._fallbackCandidate(candidates);
+            if (!fallback || Config.useMockAI) return Object.assign({}, fallback, { reason: Config.language === 'es' ? 'parece lo más útil ahora' : 'seems most useful now' });
+            try {
+                const es = Config.language === 'es';
+                const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                    `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `Choose at most ONE item to buy from this merchant. Be conservative with money.\n` +
+                    `Prefer healing, infection/bleed cures, food if hungry, or obviously useful gear. Avoid suspicious poison/trap purchases.\n` +
+                    `Gold available: ${$gameParty.gold ? $gameParty.gold() : 0}\n` +
+                    `Items: ${JSON.stringify(candidates.slice(0, 12))}\n` +
+                    `Return JSON only: {"index":number,"reason":"short reason"}\n` +
+                    `If nothing is worth buying, return {"index":null,"reason":"short reason"}.`;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1800);
+                let resp;
+                try {
+                    resp = await fetch(Config.getEndpoint(), {
+                        method: 'POST',
+                        headers: Config.getHeaders(),
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model: Config.getChatModel(),
+                            messages: [{ role: 'system', content: prompt }],
+                            max_tokens: 60,
+                            temperature: 0.4
+                        })
+                    });
+                } finally {
+                    clearTimeout(timer);
+                }
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const decision = GeminiAPIHandler._parseResponse(data);
+                const picked = decision && decision.index != null
+                    ? candidates.find(c => c.index === Number(decision.index))
+                    : null;
+                if (!picked) return null;
+                return Object.assign({}, picked, {
+                    reason: String(decision.reason || '').slice(0, 120) || (es ? 'es una compra razonable' : 'reasonable purchase')
+                });
+            } catch (e) {
+                Debug.warn('[MerchantAdvisor] Recommendation failed:', e.message);
+                return Object.assign({}, fallback, { reason: Config.language === 'es' ? 'falló el análisis, pero parece útil' : 'analysis failed, but it seems useful' });
+            }
+        },
+
+        _showApproval(scene, candidate) {
+            if (!scene || !candidate || scene._aiMerchantApprovalWindow) return;
+            const es = Config.language === 'es';
+            const text = es
+                ? `${Config.companionName}: comprar ${candidate.name} por ${candidate.price}? ${candidate.reason || ''}`
+                : `${Config.companionName}: buy ${candidate.name} for ${candidate.price}? ${candidate.reason || ''}`;
+            Debug.log('[MerchantAdvisor] Purchase approval:', {
+                item: candidate.name,
+                price: candidate.price,
+                reason: candidate.reason || ''
+            });
+            if (scene._helpWindow && scene._helpWindow.setText) scene._helpWindow.setText(text);
+
+            const win = new Window_AIMerchantApproval(Math.floor((Graphics.boxWidth - 260) / 2), Math.floor((Graphics.boxHeight - 116) / 2));
+            win.setHandler('yes', () => {
+                scene._aiMerchantApprovalWindow = null;
+                if (scene._windowLayer) scene._windowLayer.removeChild(win);
+                this._buyAndLeave(scene, candidate);
+            });
+            win.setHandler('no', () => {
+                scene._aiMerchantApprovalWindow = null;
+                if (scene._windowLayer) scene._windowLayer.removeChild(win);
+                if (scene._helpWindow && scene._helpWindow.clear) scene._helpWindow.clear();
+                if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) AutonomySystem._clearMerchantSession();
+                scene.popScene();
+            });
+            scene._aiMerchantApprovalWindow = win;
+            scene.addWindow(win);
+            win.activate();
+        },
+
+        _buyAndLeave(scene, candidate) {
+            if (!scene || !candidate || !scene._buyWindow) return;
+            try {
+                scene._buyWindow.select(candidate.index);
+                scene._item = scene._buyWindow.item();
+                if (!scene._item) throw new Error('No item selected');
+                const maxBuy = Math.max(1, scene.maxBuy ? scene.maxBuy() : 1);
+                scene._buyWindow.hide();
+                scene._numberWindow.setup(scene._item, Math.min(1, maxBuy), scene.buyingPrice());
+                scene._numberWindow.setCurrencyUnit(scene.currencyUnit());
+                scene._numberWindow.show();
+                scene._numberWindow.activate();
+                scene.onNumberOk();
+                ShortTermMemory.addEvent(`${Config.companionName} bought ${candidate.name} from merchant.`);
+                if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) AutonomySystem._clearMerchantSession();
+                scene.popScene();
+            } catch (e) {
+                Debug.warn('[MerchantAdvisor] Purchase failed:', e.message);
+                if (scene._helpWindow && scene._helpWindow.setText) {
+                    scene._helpWindow.setText(Config.language === 'es' ? 'No pude completar la compra.' : 'Could not complete purchase.');
+                }
+                if (scene._buyWindow && scene._buyWindow.activate) scene._buyWindow.activate();
+            }
+        },
+
+        update(scene) {
+            if (!scene || typeof AutonomySystem === 'undefined' || !AutonomySystem._hasMerchantSession || !AutonomySystem._hasMerchantSession()) return;
+            if (scene._aiMerchantAdvisorDone || scene._aiMerchantAdvisorPending || scene._aiMerchantApprovalWindow) return;
+            if (scene._commandWindow && scene._commandWindow.active && scene.commandBuy) {
+                scene._aiMerchantOpenedBuy = true;
+                scene.commandBuy();
+                return;
+            }
+            if (scene._buyWindow && scene._buyWindow.active && scene._buyWindow.visible) {
+                const candidates = this._candidateList(scene);
+                if (candidates.length === 0) {
+                    scene._aiMerchantAdvisorDone = true;
+                    if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) AutonomySystem._clearMerchantSession();
+                    scene.popScene();
+                    return;
+                }
+                scene._aiMerchantAdvisorPending = true;
+                this._requestRecommendation(scene, candidates).then(candidate => {
+                    scene._aiMerchantAdvisorPending = false;
+                    scene._aiMerchantAdvisorDone = true;
+                    if (!candidate) {
+                        if (scene._helpWindow && scene._helpWindow.setText) {
+                            scene._helpWindow.setText(Config.language === 'es' ? `${Config.companionName}: no compraría nada aquí.` : `${Config.companionName}: I would not buy anything here.`);
+                        }
+                        if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) AutonomySystem._clearMerchantSession();
+                        setTimeout(() => { if (SceneManager._scene === scene) scene.popScene(); }, 900);
+                        return;
+                    }
+                    this._showApproval(scene, candidate);
+                });
+            }
+        }
+    };
+
+    const _AICompanion_SceneShop_update = Scene_Shop.prototype.update;
+    Scene_Shop.prototype.update = function () {
+        _AICompanion_SceneShop_update.call(this);
+        MerchantShopAdvisor.update(this);
+    };
+
+    const _AICompanion_SceneShop_terminate = Scene_Shop.prototype.terminate;
+    Scene_Shop.prototype.terminate = function () {
+        if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) {
+            AutonomySystem._clearMerchantSession();
+        }
+        _AICompanion_SceneShop_terminate.call(this);
     };
 
     //=========================================================================
