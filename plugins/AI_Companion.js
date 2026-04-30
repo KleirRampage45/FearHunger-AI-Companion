@@ -8527,6 +8527,12 @@ Respond ONLY with this JSON:
                 }
             }
 
+            const nearbyObservation = EnvironmentScanner.observe();
+            const dynamicHazards = (nearbyObservation.hazards || [])
+                .filter(h => h.distance <= 4)
+                .map(h => `${h.label} a ${h.distance} pasos al ${h.direction} (${h.source})`)
+                .join('; ');
+
             const ctx = {
                 player_name: leader ? leader.name() : 'Player',
                 is_player_speaking: true,
