@@ -1522,6 +1522,9 @@ Reply with ONLY the category name, nothing else.`;
         SCAN_RADIUS: 6,  // tiles around the player
         LOCAL_GRID_RADIUS: 4,
         MAX_NEARBY_EVENTS: 16,
+        HAZARD_SCAN_RADIUS: 4,
+        HAZARD_REGION_IDS: [51, 52, 53, 54, 55, 60, 61, 62, 63],
+        HAZARD_TERRAIN_TAGS: [7],
         _cache: null,
         _cacheMapId: -1,
         _cachePlayerPos: '',
@@ -2047,6 +2050,106 @@ Reply with ONLY the category name, nothing else.`;
             }
         },
 
+        _tileFlags(x, y) {
+            if (!this._mapReady() || !$gameMap.isValid(x, y) || !$gameMap.tilesetFlags) return [];
+            const flags = $gameMap.tilesetFlags();
+            const tiles = $gameMap.allTiles ? $gameMap.allTiles(x, y) : [];
+            return (tiles || []).map(tileId => flags[tileId] || 0);
+        },
+
+        _isDamageFloorTile(x, y) {
+            if (!$gameMap || !$gameMap.isValid(x, y)) return false;
+            if ($gameMap.isDamageFloor && $gameMap.isDamageFloor(x, y)) return true;
+            return this._tileFlags(x, y).some(flag => (flag & 0x100) !== 0);
+        },
+
+        _terrainTagAt(x, y) {
+            if (!$gameMap || !$gameMap.isValid(x, y)) return 0;
+            if ($gameMap.terrainTag) return Number($gameMap.terrainTag(x, y)) || 0;
+            return 0;
+        },
+
+        _regionHazardType(regionId) {
+            const map = {
+                51: 'trap_region',
+                52: 'pit_region',
+                53: 'spike_region',
+                54: 'arrow_region',
+                55: 'poison_region',
+                60: 'ambush_region',
+                61: 'unsafe_floor',
+                62: 'ritual_region',
+                63: 'organic_hazard'
+            };
+            return map[Number(regionId)] || null;
+        },
+
+        _dynamicHazardAt(x, y, origin) {
+            if (!this._mapReady() || !$gameMap.isValid(x, y)) return null;
+            const regionId = $gameMap.regionId ? Number($gameMap.regionId(x, y)) || 0 : 0;
+            const terrainTag = this._terrainTagAt(x, y);
+            const isDamageFloor = this._isDamageFloorTile(x, y);
+            const regionType = this._regionHazardType(regionId);
+            const terrainHazard = this.HAZARD_TERRAIN_TAGS.indexOf(terrainTag) >= 0;
+            if (!regionType && !terrainHazard && !isDamageFloor) return null;
+
+            const dx = x - origin.x;
+            const dy = y - origin.y;
+            const distance = Math.abs(dx) + Math.abs(dy);
+            const subtype = regionType || (isDamageFloor ? 'damage_floor' : 'terrain_hazard');
+            const labelMap = {
+                damage_floor: 'Suelo dañino',
+                terrain_hazard: 'Suelo sospechoso',
+                trap_region: 'Zona de trampa',
+                pit_region: 'Agujero peligroso',
+                spike_region: 'Suelo con pinchos',
+                arrow_region: 'Zona de flechas',
+                poison_region: 'Suelo tóxico',
+                ambush_region: 'Zona de emboscada',
+                unsafe_floor: 'Suelo inseguro',
+                ritual_region: 'Zona ritual',
+                organic_hazard: 'Crecimiento orgánico'
+            };
+            return {
+                type: 'hazard',
+                subtype,
+                label: labelMap[subtype] || 'Peligro del suelo',
+                x,
+                y,
+                position: [x, y],
+                distance,
+                direction: this._getDirection(dx, dy),
+                danger: distance <= 1 ? 'high' : 'medium',
+                detected: true,
+                source: regionType ? 'region' : (isDamageFloor ? 'damage_floor' : 'terrain_tag'),
+                regionId,
+                terrainTag
+            };
+        },
+
+        getDynamicHazards(origin, radius) {
+            if (!this._mapReady()) return [];
+            const actor = origin || $gamePlayer;
+            if (!actor) return [];
+            const scanRadius = radius === undefined ? this.HAZARD_SCAN_RADIUS : Number(radius) || this.HAZARD_SCAN_RADIUS;
+            const hazards = [];
+            for (let x = actor.x - scanRadius; x <= actor.x + scanRadius; x++) {
+                for (let y = actor.y - scanRadius; y <= actor.y + scanRadius; y++) {
+                    const distance = Math.abs(actor.x - x) + Math.abs(actor.y - y);
+                    if (distance === 0 || distance > scanRadius) continue;
+                    const hazard = this._dynamicHazardAt(x, y, actor);
+                    if (hazard) hazards.push(hazard);
+                }
+            }
+            return hazards.sort((a, b) => {
+                const danger = { high: 0, medium: 1, low: 2 };
+                const da = danger[a.danger] || 2;
+                const db = danger[b.danger] || 2;
+                if (da !== db) return da - db;
+                return a.distance - b.distance;
+            }).slice(0, 8);
+        },
+
         _isTouchDoorEvent(event) {
             const page = this._safeEventPage(event);
             const data = this._safeEventData(event);
@@ -2285,6 +2388,8 @@ Reply with ONLY the category name, nothing else.`;
             const nearby = this.scan();
             const eventsByKey = {};
             nearby.forEach(entry => { eventsByKey[entry.x + ',' + entry.y] = entry; });
+            const hazardsByKey = {};
+            this.getDynamicHazards($gamePlayer, scanRadius).forEach(entry => { hazardsByKey[entry.x + ',' + entry.y] = entry; });
 
             const rows = [];
             for (let y = $gamePlayer.y - scanRadius; y <= $gamePlayer.y + scanRadius; y++) {
@@ -2297,6 +2402,8 @@ Reply with ONLY the category name, nothing else.`;
                         text += '@';
                     } else if (eventsByKey[key]) {
                         text += this._symbolForEventType(eventsByKey[key].type);
+                    } else if (hazardsByKey[key]) {
+                        text += '!';
                     } else {
                         text += this._tileStandable(x, y) ? '.' : '#';
                     }
@@ -2312,12 +2419,14 @@ Reply with ONLY the category name, nothing else.`;
         },
 
         observe() {
+            const dynamicHazards = this.getDynamicHazards($gamePlayer, this.HAZARD_SCAN_RADIUS);
             return {
                 map: {
                     id: $gameMap ? $gameMap.mapId() : null,
                     name: $gameMap && $gameMap.displayName ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null
                 },
                 nearbyEvents: this.scan(),
+                hazards: dynamicHazards,
                 pointsOfInterest: this.getPointsOfInterest(),
                 frontiers: this.getFrontierTargets($gamePlayer, this.SCAN_RADIUS),
                 localGrid: this.getLocalGrid()
@@ -2330,13 +2439,18 @@ Reply with ONLY the category name, nothing else.`;
          */
         getSummary() {
             const nearby = this.getPointsOfInterest();
-            if (nearby.length === 0) return '';
+            const dynamicHazards = this.getDynamicHazards($gamePlayer, this.HAZARD_SCAN_RADIUS);
+            if (nearby.length === 0 && dynamicHazards.length === 0) return '';
 
             const lines = [];
             const dangerItems = nearby.filter(n => n.danger === 'high' || n.type === 'trap');
             const otherItems = nearby.filter(n => !(n.danger === 'high' || n.type === 'trap'));
+            const hazardItems = dynamicHazards.filter(n => n.distance <= 3);
 
             for (const item of dangerItems) {
+                lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
+            }
+            for (const item of hazardItems.slice(0, 2)) {
                 lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
             }
             for (const item of otherItems.slice(0, 4)) {
@@ -2351,11 +2465,15 @@ Reply with ONLY the category name, nothing else.`;
          * Used by AmbientDialogue for proactive warnings.
          */
         getImmediateThreats() {
-            const nearby = this.scan();
-            return nearby.filter(n =>
+            const nearby = this.scan().filter(n =>
                 this._isWarningThreat(n) &&
                 n.distance <= 2
             );
+            const dynamicHazards = this.getDynamicHazards($gamePlayer, 2).filter(n =>
+                this._isWarningThreat(n) &&
+                n.distance <= 2
+            );
+            return nearby.concat(dynamicHazards);
         },
 
         _isWarningThreat(item) {
@@ -4989,6 +5107,9 @@ Respond ONLY with this JSON:
         _getThreatAssessment() {
             const recentEvents = ShortTermMemory.getRecentEvents();
             const lastBattle = ShortTermMemory.getLastBattle();
+            const nearbyObservation = EnvironmentScanner.observe();
+            const dynamicHazards = (nearbyObservation.hazards || [])
+                .filter(h => h.distance <= 4);
 
             let threatScore = 0;
             let recentDeaths = 0;
@@ -5015,6 +5136,9 @@ Respond ONLY with this JSON:
                     threatScore += lastBattle.victory ? 0 : 2;
                 }
             }
+            dynamicHazards.forEach(hazard => {
+                threatScore += hazard.distance <= 2 ? 2 : 1;
+            });
 
             let level;
             if (threatScore >= 6) level = 'extreme';
@@ -5026,7 +5150,14 @@ Respond ONLY with this JSON:
                 level,
                 score: threatScore,
                 recent_deaths: recentDeaths,
-                recent_battles: recentBattles
+                recent_battles: recentBattles,
+                dynamic_hazards: dynamicHazards.map(h => ({
+                    label: h.label,
+                    subtype: h.subtype,
+                    distance: h.distance,
+                    direction: h.direction,
+                    source: h.source
+                }))
             };
         },
 
@@ -5165,6 +5296,10 @@ Respond ONLY with this JSON:
             if (s.threats.level === 'extreme' || s.threats.level === 'high') {
                 lines.push(es ? `Amenaza: ${s.threats.level === 'extreme' ? 'extrema' : 'alta'}` : `Threat: ${s.threats.level}`);
             }
+            if (s.threats.dynamic_hazards && s.threats.dynamic_hazards.length > 0) {
+                const hazards = s.threats.dynamic_hazards.slice(0, 2).map(h => `${h.label} ${h.distance}p ${h.direction}`).join('; ');
+                lines.push(es ? `Suelo peligroso: ${hazards}` : `Floor hazard: ${hazards}`);
+            }
 
             return lines.length > 1 ? lines.join(' | ') : '';
         },
@@ -5195,6 +5330,7 @@ Respond ONLY with this JSON:
                 total_items: s.resources.total_items,
                 threat_level: s.threats.level,
                 threat_score: s.threats.score,
+                dynamic_hazards: s.threats.dynamic_hazards || [],
                 morale: s.morale.overall,
                 sanity_pct: s.morale.sanity_pct,
                 fear_level: s.morale.fear_level,
@@ -5295,6 +5431,9 @@ Respond ONLY with this JSON:
             const nearby = EnvironmentScanner && EnvironmentScanner.scanAround
                 ? EnvironmentScanner.scanAround(origin || $gamePlayer, 6)
                 : [];
+            const dynamicHazards = EnvironmentScanner && EnvironmentScanner.getDynamicHazards
+                ? EnvironmentScanner.getDynamicHazards(origin || $gamePlayer, 4)
+                : [];
             let score = 0;
             const details = [];
             nearby.forEach(item => {
@@ -5309,6 +5448,11 @@ Respond ONLY with this JSON:
                     score += item.distance <= 2 ? 3 : 1;
                     details.push(`${item.label || 'Peligro'} ${item.distance}p ${item.direction}`);
                 }
+            });
+            dynamicHazards.forEach(item => {
+                if (!item) return;
+                score += item.distance <= 2 ? 3 : 1;
+                details.push(`${item.label || 'Peligro'} ${item.distance}p ${item.direction}`);
             });
             return { score, details };
         },
@@ -8169,6 +8313,10 @@ Respond ONLY with this JSON:
                 }
             }
 
+            if (context.dynamic_hazards && context.dynamic_hazards.length > 0) {
+                pushSection('LIVE TILE HAZARDS', context.dynamic_hazards);
+            }
+
             if (context.world_state && context.world_state.length > 0) {
                 pushSection('WORLD SITUATION', context.world_state);
             }
@@ -8408,7 +8556,8 @@ Respond ONLY with this JSON:
                 })),
                 // NEW: spatial awareness — nearby objects from EnvironmentScanner
                 nearby_objects: EnvironmentScanner.getSummary(),
-                nearby_observation: EnvironmentScanner.observe(),
+                nearby_observation: nearbyObservation,
+                dynamic_hazards: dynamicHazards,
                 // Branch 6: World State Engine — aggregated situational summary
                 world_state: WorldStateEngine.getWorldSummary(),
                 // Branch 8: Risk Evaluator — explicit survival/risk inference
@@ -9760,6 +9909,16 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                         warning = es
                             ? ['¡Cuidado! Trampa de oso adelante.', '¡Para! Hay una trampa en el suelo.', '¡Ojo! Trampa de oso al ${DIR}.']
                             : ['Watch out! Bear trap ahead.', 'Stop! Trap on the ground.', 'Careful! Bear trap to the ${DIR}.'];
+                        break;
+                    case 'damage_floor':
+                    case 'terrain_hazard':
+                    case 'unsafe_floor':
+                    case 'pit_region':
+                    case 'spike_region':
+                    case 'poison_region':
+                        warning = es
+                            ? ['Pisa con cuidado. El suelo al ${DIR} no me gusta.', 'Para. Hay algo raro en el suelo al ${DIR}.']
+                            : ['Step carefully. The floor to the ${DIR} feels wrong.', 'Stop. Something is wrong with the floor to the ${DIR}.'];
                         break;
                     case 'arrow_trap':
                         warning = es
