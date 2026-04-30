@@ -1396,7 +1396,7 @@ Reply with ONLY the category name, nothing else.`;
                 add(mapId, [309], 'hazard', 'rest', 'Cama', { danger: 'medium' });
             });
             add(51, [313], 'container', 'furniture_loot', 'Mesa');
-            add(51, [46, 65, 66, 155, 156, 157, 158, 159, 160, 161, 162, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 232], 'hazard', 'collapsed_passage', 'Pasillo derrumbado', { danger: 'medium' });
+            add(51, [46, 65, 66, 155, 156, 157, 158, 159, 160, 161, 162, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 232], 'obstruction', 'collapsed_passage', 'Pasillo bloqueado', { danger: 'none' });
             add(1, [287, 288], 'trap', 'floor_trap', 'Suelo peligroso', { danger: 'medium' });
 
             add(3, [14, 98], 'npc', 'buckman', 'Buckman');
@@ -1693,6 +1693,7 @@ Reply with ONLY the category name, nothing else.`;
             if (tags.includes('save_point')) return 'save_point';
             if (tags.includes('npc')) return 'npc';
             if (tags.includes('hazard')) return 'hazard';
+            if (tags.includes('obstruction')) return 'obstruction';
             if (tags.includes('corpse')) return 'corpse';
             return 'event';
         },
@@ -1701,6 +1702,7 @@ Reply with ONLY the category name, nothing else.`;
             if (type === 'enemy') return 'high';
             if (type === 'combat_trigger') return 'none';
             if (type === 'trap') return subtype === 'bear_trap' ? 'high' : 'medium';
+            if (type === 'obstruction') return 'none';
             if (type === 'hazard') return subtype === 'demon_seed' ? 'medium' : 'low';
             return 'none';
         },
@@ -1734,6 +1736,7 @@ Reply with ONLY the category name, nothing else.`;
                 return 'chest';
             }
             if (type === 'save_point') return 'ritual_circle';
+            if (type === 'obstruction') return 'collapsed_passage';
             if (type === 'hazard') {
                 if (name.includes('demonseed') || sprite.includes('seed')) return 'demon_seed';
                 return 'organic';
@@ -1794,6 +1797,9 @@ Reply with ONLY the category name, nothing else.`;
                 if (sprite.includes('beartrap') || lowerRawName.includes('beartrap')) return 'Trampa de oso';
                 if (lowerRawName.includes('hole') || lowerRawName.includes('pit') || lowerRawName.includes('agujero') || lowerRawName.includes('pozo') || (metadata && metadata.textHints && /hole|pit|agujero|pozo|caida|caída/.test(metadata.textHints))) return 'Agujero peligroso';
                 return 'Suelo peligroso';
+            }
+            if (type === 'obstruction') {
+                return 'Pasillo bloqueado';
             }
             if (type === 'hazard') {
                 if (lowerRawName.includes('demonseed') || sprite.includes('seed')) return 'Semilla demoníaca';
@@ -2021,10 +2027,11 @@ Reply with ONLY the category name, nothing else.`;
                 door: 60,
                 npc: 50,
                 hazard: 40,
+                obstruction: 20,
                 corpse: 10
             };
             return nearby
-                .filter(entry => ['trap', 'enemy', 'container', 'save_point', 'door', 'npc', 'hazard'].includes(entry.type))
+                .filter(entry => ['trap', 'enemy', 'container', 'save_point', 'door', 'npc', 'hazard', 'obstruction'].includes(entry.type))
                 .sort((a, b) => {
                     const pa = priority[a.type] || 0;
                     const pb = priority[b.type] || 0;
@@ -2151,10 +2158,19 @@ Reply with ONLY the category name, nothing else.`;
         getImmediateThreats() {
             const nearby = this.scan();
             return nearby.filter(n =>
-                (n.type === 'enemy' || n.type === 'trap' || n.type === 'hazard') &&
-                (n.danger === 'high' || n.danger === 'medium') &&
+                this._isWarningThreat(n) &&
                 n.distance <= 2
             );
+        },
+
+        _isWarningThreat(item) {
+            if (!item) return false;
+            if (item.type === 'enemy' || item.type === 'trap') {
+                return item.danger === 'high' || item.danger === 'medium';
+            }
+            if (item.type !== 'hazard') return false;
+            if (item.subtype === 'collapsed_passage' || item.subtype === 'rest') return false;
+            return item.danger === 'high' || item.danger === 'medium';
         }
     };
 
@@ -5230,7 +5246,10 @@ Respond ONLY with this JSON:
             return nearby.find(item => {
                 if (!item || item.distance > 1) return false;
                 if (item.type === 'enemy') return item.danger === 'high' || item.danger === 'medium';
-                if ((item.type === 'trap' || item.type === 'hazard') && item.distance <= 0) return true;
+                if (item.type === 'trap' && item.distance <= 0) return true;
+                if (item.type === 'hazard' && item.distance <= 0) {
+                    return EnvironmentScanner._isWarningThreat ? EnvironmentScanner._isWarningThreat(item) : false;
+                }
                 return false;
             }) || null;
         },
@@ -5570,8 +5589,9 @@ Respond ONLY with this JSON:
             const limit = maxDistance != null ? maxDistance : 2;
             return nearby.find(item =>
                 item &&
-                (item.type === 'enemy' || item.type === 'trap' || item.type === 'hazard') &&
-                (item.danger === 'high' || item.danger === 'medium') &&
+                (EnvironmentScanner._isWarningThreat
+                    ? EnvironmentScanner._isWarningThreat(item)
+                    : ((item.type === 'enemy' || item.type === 'trap') && (item.danger === 'high' || item.danger === 'medium'))) &&
                 item.distance <= limit
             ) || null;
         },
