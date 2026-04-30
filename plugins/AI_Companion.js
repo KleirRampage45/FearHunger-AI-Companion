@@ -3347,6 +3347,7 @@ Reply with ONLY the category name, nothing else.`;
         static _buildPrompt(battleState, retryContext) {
             const companion = battleState.companion;
             const memory = MemoryManager.getLongTermMemory();
+            const memoryBeliefs = MemoryManager.getPromptSummary();
             const enemyTactics = this._getEnemyTactics(battleState.enemies);
             const riskSummary = RiskEvaluator.getPromptSummary(battleState);
 
@@ -3458,7 +3459,7 @@ ${riskSummary}
 
 ${enemyTactics ? `LEARNED TACTICS:\n${enemyTactics}` : ''}
 
-${memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : ''}${coinFlipWarning}${healingAlert}`;
+${memoryBeliefs ? `MEMORY AND BELIEFS:\n${memoryBeliefs}\n` : (memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : '')}${coinFlipWarning}${healingAlert}`;
 
             if (retryContext) {
                 // Branch 3: Include explicit available actions for better retry
@@ -4070,10 +4071,38 @@ Respond ONLY with this JSON:
                     player_promises: [],
                     shared_knowledge: [],
                     enemy_tactics: {},
-                    conversation_history: []
+                    conversation_history: [],
+                    weighted_memories: [],
+                    beliefs: {}
                 };
             }
-            return $gameSystem._aiCompanionMemory;
+            const memory = $gameSystem._aiCompanionMemory;
+            memory.player_promises = memory.player_promises || [];
+            memory.shared_knowledge = memory.shared_knowledge || [];
+            memory.enemy_tactics = memory.enemy_tactics || {};
+            memory.conversation_history = memory.conversation_history || [];
+            memory.weighted_memories = memory.weighted_memories || [];
+            memory.beliefs = memory.beliefs || {};
+            memory.conversation_history = memory.conversation_history.map(entry => {
+                if (entry && typeof entry === 'object') return entry;
+                return { summary: String(entry || ''), category: 'conversation' };
+            });
+            memory.weighted_memories = memory.weighted_memories.map(entry => {
+                if (entry && typeof entry === 'object') return entry;
+                return { summary: String(entry || ''), category: 'event' };
+            });
+            memory.conversation_history.forEach(entry => {
+                if (entry.importance == null) entry.importance = this._scoreImportance(entry.summary || '');
+                if (entry.decayRate == null) entry.decayRate = this._decayForImportance(entry.importance);
+                if (!entry.category) entry.category = 'conversation';
+                if (!entry.createdAt) entry.createdAt = entry.time || Date.now();
+            });
+            memory.weighted_memories.forEach(entry => {
+                if (entry.importance == null) entry.importance = this._scoreImportance(entry.summary || '');
+                if (entry.decayRate == null) entry.decayRate = this._decayForImportance(entry.importance);
+                if (!entry.createdAt) entry.createdAt = entry.time || Date.now();
+            });
+            return memory;
         }
 
         static getLongTermMemory() {
@@ -4096,10 +4125,18 @@ Respond ONLY with this JSON:
 
         static addConversation(summary) {
             const memory = this._getMemoryObject();
-            memory.conversation_history.push({
+            const importance = this._scoreImportance(summary, 'conversation');
+            const entry = {
                 turn: Graphics.frameCount,
-                summary: summary
-            });
+                summary: summary,
+                category: 'conversation',
+                importance: importance,
+                decayRate: this._decayForImportance(importance),
+                createdAt: Date.now(),
+                lastAccessedAt: Date.now()
+            };
+            memory.conversation_history.push(entry);
+            this.addWeightedMemory(summary, 'conversation', { importance: importance });
             // Keep only last 20 conversations
             if (memory.conversation_history.length > 20) {
                 memory.conversation_history.shift();
@@ -4109,6 +4146,183 @@ Respond ONLY with this JSON:
         static updateRelationship(description) {
             const memory = this._getMemoryObject();
             memory.relationship = description;
+        }
+
+        static addWeightedMemory(summary, category, meta) {
+            if (!summary) return null;
+            const memory = this._getMemoryObject();
+            const now = Date.now();
+            const normalized = this._normalize(summary);
+            const importance = meta && meta.importance != null
+                ? Math.max(0.1, Math.min(1, Number(meta.importance) || 0.4))
+                : this._scoreImportance(summary, category);
+            const existing = memory.weighted_memories.find(entry => entry.normalized === normalized && entry.category === (category || 'event'));
+            if (existing) {
+                existing.summary = summary;
+                existing.importance = Math.min(1, Math.max(existing.importance || 0, importance) + 0.04);
+                existing.lastAccessedAt = now;
+                existing.count = (existing.count || 1) + 1;
+                return existing;
+            }
+            const entry = {
+                summary: String(summary).slice(0, 220),
+                normalized: normalized,
+                category: category || 'event',
+                importance: importance,
+                decayRate: this._decayForImportance(importance),
+                createdAt: now,
+                lastAccessedAt: now,
+                mapId: meta && meta.mapId != null ? meta.mapId : ($gameMap ? $gameMap.mapId() : null),
+                count: 1
+            };
+            memory.weighted_memories.push(entry);
+            this._pruneWeightedMemories(memory);
+            return entry;
+        }
+
+        static observeEvent(description, meta) {
+            if (!description) return;
+            const category = this._categoryForEvent(description);
+            const importance = this._scoreImportance(description, category);
+            this.addWeightedMemory(description, category, {
+                importance: importance,
+                mapId: meta && meta.mapId != null ? meta.mapId : ($gameMap ? $gameMap.mapId() : null)
+            });
+            this._updateBeliefsFromEvent(description, category);
+        }
+
+        static getPromptSummary() {
+            const memory = this._getMemoryObject();
+            const memories = this.getWeightedMemoriesForPrompt(5);
+            const beliefs = this.getBeliefsForPrompt(4);
+            const lines = [];
+            if (memories.length > 0) {
+                lines.push('PAST WEIGHTED MEMORY (not current inventory, not proof of ownership):');
+                memories.forEach(entry => {
+                    lines.push(`- Past event: ${entry.summary} (importance ${entry.currentImportance.toFixed(2)}, ${entry.category})`);
+                });
+            }
+            if (beliefs.length > 0) {
+                lines.push('MUTABLE BELIEFS:');
+                beliefs.forEach(entry => {
+                    lines.push(`- ${entry.label} (confidence ${entry.confidence.toFixed(2)})`);
+                });
+            }
+            if (memory.relationship) lines.push(`RELATIONSHIP: ${memory.relationship}`);
+            return lines.join('\n');
+        }
+
+        static getWeightedMemoriesForPrompt(limit) {
+            const memory = this._getMemoryObject();
+            this._pruneWeightedMemories(memory);
+            return (memory.weighted_memories || [])
+                .map(entry => Object.assign({}, entry, { currentImportance: this._currentImportance(entry) }))
+                .filter(entry => entry.category !== 'loot' || entry.currentImportance >= 0.7)
+                .filter(entry => entry.currentImportance >= 0.18)
+                .sort((a, b) => b.currentImportance - a.currentImportance)
+                .slice(0, limit || 5);
+        }
+
+        static getBeliefsForPrompt(limit) {
+            const memory = this._getMemoryObject();
+            return Object.keys(memory.beliefs || {})
+                .map(key => Object.assign({ key: key }, memory.beliefs[key]))
+                .filter(entry => (entry.confidence || 0) >= 0.35)
+                .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+                .slice(0, limit || 4);
+        }
+
+        static _normalize(text) {
+            return String(text || '').toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 120);
+        }
+
+        static _categoryForEvent(text) {
+            const value = String(text || '').toLowerCase();
+            if (/critical|lost a|perd[ií]o|bleed|sangr|infect|poison|venen|muerte|died|mur[ií]o|dead|ca[ií]do/.test(value)) return 'trauma';
+            if (/bought|compr[oó]|merchant|mercader|shop|tienda/.test(value)) return 'trade';
+            if (/equipped|equip[oó]|weapon|armor|helmet|casco|arma|armadura/.test(value)) return 'equipment';
+            if (/used|us[oó]|bandage|vendaje|herb|hierba|healed|cur[oó]/.test(value)) return 'care';
+            if (/trap|trampa|hazard|peligro|arrow|flecha|pit|agujero/.test(value)) return 'hazard';
+            if (/spoke|said|habl[oó]|dijo|npc|joined|uni[oó]/.test(value)) return 'social';
+            if (/searched|found|loot|recogi|recog[ií]|encontr[oó]|obtuvo/.test(value)) return 'loot';
+            if (/battle|combat|pelea|victory|defeat|derrota/.test(value)) return 'combat';
+            return 'event';
+        }
+
+        static _scoreImportance(text, category) {
+            const value = String(text || '').toLowerCase();
+            let score = 0.32;
+            const cat = category || this._categoryForEvent(value);
+            if (cat === 'trauma') score = 0.92;
+            else if (cat === 'hazard') score = 0.78;
+            else if (cat === 'combat') score = 0.68;
+            else if (cat === 'care' || cat === 'equipment' || cat === 'trade') score = 0.58;
+            else if (cat === 'social') score = 0.48;
+            else if (cat === 'loot') score = 0.34;
+            if (/girl|niña|sacrifice|sacrific|buckman|trortur|legarde|crow mauler|cuervo/.test(value)) score += 0.14;
+            if (/critical|cr[ií]tic|coin flip|moneda|instant death|muerte/.test(value)) score += 0.12;
+            return Math.max(0.1, Math.min(1, score));
+        }
+
+        static _decayForImportance(importance) {
+            if (importance >= 0.85) return 0.02;
+            if (importance >= 0.65) return 0.05;
+            if (importance >= 0.45) return 0.1;
+            return 0.2;
+        }
+
+        static _currentImportance(entry) {
+            const ageHours = Math.max(0, Date.now() - (entry.lastAccessedAt || entry.createdAt || Date.now())) / 3600000;
+            const decay = Math.max(0.01, Number(entry.decayRate) || 0.1);
+            const base = Math.max(0.1, Number(entry.importance) || 0.3);
+            return Math.max(0, Math.min(1, base * Math.exp(-decay * ageHours)));
+        }
+
+        static _pruneWeightedMemories(memory) {
+            memory.weighted_memories = (memory.weighted_memories || [])
+                .map(entry => Object.assign(entry, { currentImportance: this._currentImportance(entry) }))
+                .filter(entry => entry.currentImportance >= 0.08 || (entry.importance || 0) >= 0.8)
+                .sort((a, b) => b.currentImportance - a.currentImportance)
+                .slice(0, 40)
+                .map(entry => {
+                    delete entry.currentImportance;
+                    return entry;
+                });
+        }
+
+        static _bumpBelief(key, label, delta, evidence) {
+            const memory = this._getMemoryObject();
+            const now = Date.now();
+            const belief = memory.beliefs[key] || {
+                label: label,
+                confidence: 0,
+                evidence: [],
+                createdAt: now
+            };
+            belief.label = label;
+            belief.confidence = Math.max(0, Math.min(1, (belief.confidence || 0) + delta));
+            belief.updatedAt = now;
+            belief.evidence = (belief.evidence || []).concat(String(evidence || '').slice(0, 120)).slice(-4);
+            memory.beliefs[key] = belief;
+        }
+
+        static _updateBeliefsFromEvent(text, category) {
+            const value = String(text || '').toLowerCase();
+            if (category === 'hazard' || /trap|trampa|peligro|hazard/.test(value)) {
+                this._bumpBelief('area_requires_floor_caution', 'El suelo de esta zona puede esconder trampas; avanzar con cuidado.', 0.16, text);
+            }
+            if (/critical|lost a|perd[ií]o|bleed|sangr|infect|poison|venen/.test(value)) {
+                this._bumpBelief('party_survival_is_fragile', 'El grupo se deteriora rápido si ignoramos heridas y estados.', 0.14, text);
+            }
+            if (/used|us[oó]|bandage|vendaje|herb|hierba|healed|cur[oó]/.test(value)) {
+                this._bumpBelief('care_items_matter', 'Conviene vigilar vendajes, hierbas y curación antes de seguir.', 0.1, text);
+            }
+            if (/bought|compr[oó]|merchant|mercader/.test(value)) {
+                this._bumpBelief('spending_needs_consent', 'Las compras deben consultarse antes de gastar recursos.', 0.12, text);
+            }
+            if (/searched|found|loot|recogi|recog[ií]|encontr[oó]|obtuvo/.test(value)) {
+                this._bumpBelief('nearby_supplies_are_worth_checking', 'Los muebles y contenedores cercanos pueden sostener al grupo.', 0.05, text);
+            }
         }
     }
 
@@ -4968,6 +5182,11 @@ Respond ONLY with this JSON:
                 time: now,
                 turn: $gameParty.inBattle() ? $gameTroop.turnCount() : 'map'
             });
+            if (typeof MemoryManager !== 'undefined') {
+                MemoryManager.observeEvent(description, {
+                    mapId: $gameMap ? $gameMap.mapId() : null
+                });
+            }
             if (this._events.length > this.MAX_EVENTS) {
                 this._events.shift();
             }
@@ -8292,6 +8511,9 @@ Respond ONLY with this JSON:
             }
 
             pushSection('EVENT MEMORY', this._buildEventContext(context, intent));
+            if (context.memory_beliefs && context.memory_beliefs.length > 0) {
+                pushSection('LONG-TERM MEMORY AND BELIEFS', context.memory_beliefs);
+            }
 
             const pickupLines = this._getRecentPickupLines(context, playerMessage, intent);
             if (pickupLines.length > 0) pushSection('RECENT PICKUPS', pickupLines);
@@ -8552,6 +8774,7 @@ Respond ONLY with this JSON:
                 recent_exchanges: recent,
                 older_chat_memory: this._buildOlderChatMemory(),
                 memory_summary: memory.relationship || 'New companion',
+                memory_beliefs: MemoryManager.getPromptSummary(),
                 current_map: mapContext.displayName,
                 current_map_tips: mapContext.tips,
                 raw_map_name: mapContext.rawDisplayName,
