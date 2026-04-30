@@ -5634,7 +5634,7 @@ Respond ONLY with this JSON:
 
         async _requestTargetConsent(target, originalAction, reason, snapshot) {
             if (!target || target.eventId == null || this._state.consentPromptPending) return;
-            if (!$gameMessage || $gameMessage.isBusy()) return;
+            if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) return;
             this._state.consentPromptPending = true;
             this._state.mode = 'hold';
             this._state.targetEventId = null;
@@ -7968,7 +7968,32 @@ Respond ONLY with this JSON:
             SceneManager.push(Scene_AIChat);
         },
 
+        isChatSceneActive() {
+            const scene = SceneManager && SceneManager._scene;
+            return !!(scene && scene.constructor && scene.constructor.name === 'Scene_AIChat');
+        },
+
+        canQueueGameMessage() {
+            if (!$gameMessage || ($gameMessage.isBusy && $gameMessage.isBusy())) return false;
+            if ($gameTemp && $gameTemp._chatLocked) return false;
+            if (this.isChatSceneActive()) return false;
+            const scene = SceneManager && SceneManager._scene;
+            const sceneName = scene && scene.constructor ? scene.constructor.name : '';
+            return sceneName === 'Scene_Map' || sceneName === 'Scene_Battle';
+        },
+
+        _clearQueuedAiMessages() {
+            if (!$gameMessage) return;
+            if ($gameMessage.clear && ($gameMessage.isBusy && $gameMessage.isBusy())) {
+                $gameMessage.clear();
+            }
+            if ($gameMessage.setChoiceHelps) $gameMessage.setChoiceHelps([]);
+            if ($gameMessage.setChoiceMessages) $gameMessage.setChoiceMessages([]);
+            if ($gameMessage.setChoiceFaces) $gameMessage.setChoiceFaces([]);
+        },
+
         close() {
+            this._clearQueuedAiMessages();
             this._active = false;
             // Restore player movement
             $gamePlayer._moveSpeed = 4;
@@ -8743,6 +8768,7 @@ CRITICAL GAME RULES (NEVER violate these):
 
         canSpeakSupport() {
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
+            if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) return false;
             const scene = SceneManager._scene;
             if (!scene) return false;
             const sceneName = scene.constructor.name;
@@ -9903,6 +9929,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         },
 
         _speak(text, topic) {
+            if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) {
+                Debug.log('[Ambient] Suppressed message while chat/message scene unavailable:', topic);
+                return;
+            }
             const meta = { mapId: $gameMap ? $gameMap.mapId() : null };
             if (DialogueMemory.wasLineRecent(text, topic, 180000)) {
                 Debug.log('[Ambient] Suppressed repeated line:', topic, text);
@@ -10048,7 +10078,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         },
 
         _showPrompt(text) {
-            if (!text || !$gameMessage || $gameMessage.isBusy()) return false;
+            if (!text || (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage())) return false;
             const appearance = CharacterPresets.getCurrentAppearance();
             const es = Config.language === 'es';
             const namePrefix = `\\c[6]${Config.companionName}\\c[0]: `;
@@ -10316,7 +10346,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         },
 
         _showPrompt(candidate, promptText) {
-            if (!candidate || !$gameMessage || $gameMessage.isBusy()) return false;
+            if (!candidate || (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage())) return false;
             if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) return false;
             const es = Config.language === 'es';
             const appearance = CharacterPresets.getCurrentAppearance();
@@ -10955,6 +10985,19 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         }
         ChatSystem.close();
         this.popScene();
+    };
+
+    // ChoiceHelp/YEP can ask Window_ChoiceList for widths during construction.
+    // If any plugin queues choices while the chat scene is closing, contents may
+    // not exist yet. Return a safe width instead of crashing the scene stack.
+    const _AICompanion_WindowChoiceList_maxChoiceWidth = Window_ChoiceList.prototype.maxChoiceWidth;
+    Window_ChoiceList.prototype.maxChoiceWidth = function () {
+        if (!this._windowContentsSprite || !this._windowContentsSprite.bitmap) {
+            const choices = $gameMessage && $gameMessage.choices ? $gameMessage.choices() : [];
+            const longest = (choices || []).reduce((max, choice) => Math.max(max, String(choice || '').length), 0);
+            return Math.max(96, Math.min(480, longest * 12 + this.textPadding() * 2));
+        }
+        return _AICompanion_WindowChoiceList_maxChoiceWidth.call(this);
     };
 
     //=========================================================================
