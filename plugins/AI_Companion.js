@@ -1431,6 +1431,87 @@ Reply with ONLY the category name, nothing else.`;
     }
 
     //=========================================================================
+    // KBLookupCache — small TTL cache around expensive KB normalization/lookups
+    //=========================================================================
+    const KBLookupCache = {
+        _cache: new Map(),
+        MAX_ENTRIES: 160,
+        TTL_MS: 10 * 60 * 1000,
+
+        _key(kind, value) {
+            return `${kind}:${String(value || '').toLowerCase().replace(/\s+/g, ' ').trim()}`;
+        },
+
+        get(kind, value, producer, ttlMs) {
+            if (typeof FearHungerKB === 'undefined' || !producer) return null;
+            const key = this._key(kind, value);
+            const now = Date.now();
+            const cached = this._cache.get(key);
+            if (cached && now - cached.time < (ttlMs || this.TTL_MS)) {
+                cached.hits = (cached.hits || 0) + 1;
+                return cached.value;
+            }
+            let result = null;
+            try {
+                result = producer();
+            } catch (e) {
+                Debug.warn('[KBLookupCache] lookup failed:', kind, value, e.message);
+            }
+            this._cache.set(key, { value: result, time: now, hits: 0 });
+            if (this._cache.size > this.MAX_ENTRIES) {
+                const entries = Array.from(this._cache.entries()).sort((a, b) => {
+                    const ah = a[1].hits || 0;
+                    const bh = b[1].hits || 0;
+                    if (ah !== bh) return ah - bh;
+                    return a[1].time - b[1].time;
+                });
+                entries.slice(0, Math.ceil(this.MAX_ENTRIES / 4)).forEach(([oldKey]) => this._cache.delete(oldKey));
+            }
+            return result;
+        },
+
+        enemy(name) {
+            return this.get('enemy', name, () => FearHungerKB.getEnemy ? FearHungerKB.getEnemy(name) : null);
+        },
+
+        enemyHints(name) {
+            return this.get('enemy_hints', name, () => FearHungerKB.getEnemyHints ? FearHungerKB.getEnemyHints(name) : null);
+        },
+
+        item(name) {
+            return this.get('item', name, () => FearHungerKB.getItem ? FearHungerKB.getItem(name) : null);
+        },
+
+        itemInfo(name) {
+            return this.get('item_info', name, () => FearHungerKB.getItemInfo ? FearHungerKB.getItemInfo(name) : null);
+        },
+
+        itemLore(name) {
+            return this.get('item_lore', name, () => FearHungerKB.askAboutItem ? FearHungerKB.askAboutItem(name) : '');
+        },
+
+        combatPrompt(name) {
+            return this.get('combat_prompt', name, () => FearHungerKB.getCombatPrompt ? FearHungerKB.getCombatPrompt(name) : null);
+        },
+
+        statusEffect(name) {
+            return this.get('status_effect', name, () => FearHungerKB.getStatusEffect ? FearHungerKB.getStatusEffect(name) : null);
+        },
+
+        statusEffectsPrompt() {
+            return this.get('status_effects_prompt', 'all', () => FearHungerKB.getStatusEffectsForPrompt ? FearHungerKB.getStatusEffectsForPrompt() : '', 30 * 60 * 1000);
+        },
+
+        stats() {
+            return { entries: this._cache.size };
+        },
+
+        clear() {
+            this._cache.clear();
+        }
+    };
+
+    //=========================================================================
     // KBFallback — LLM-free responses from KB data (Phase 6 safety net)
     //=========================================================================
     const KBFallback = {
@@ -1452,7 +1533,18 @@ Reply with ONLY the category name, nothing else.`;
             if (intent.primary === 'tactical' && intent.entities.length > 0) {
                 const entity = intent.entities.find(e => e.type === 'enemy');
                 if (entity && entity.match && typeof FearHungerKB !== 'undefined') {
-                    return FearHungerKB.getCombatPrompt(entity.name) || (Config.language === 'es' ? 'No sé mucho de ese enemigo.' : "I don't know much about that enemy.");
+                    const enemy = entity.match;
+                    const prompt = KBLookupCache.combatPrompt(entity.name);
+                    if (prompt) return prompt;
+                    const priority = enemy.limbPriority || enemy.priority || [];
+                    const hints = enemy.hints || [];
+                    const lines = [];
+                    lines.push(`${enemy.displayNameEs || enemy.displayName || entity.name}:`);
+                    if (enemy.tactics) lines.push(enemy.tactics);
+                    if (priority.length > 0) lines.push(`Prioridad: ${priority.join(' > ')}`);
+                    if (enemy.coinFlipTurn) lines.push(`Coin flip en turno ${enemy.coinFlipTurn}: hay que matar o defender antes.`);
+                    if (hints.length > 0) lines.push(`Notas: ${hints.slice(0, 2).join('; ')}`);
+                    return lines.join(' ') || (Config.language === 'es' ? 'No sé mucho de ese enemigo.' : "I don't know much about that enemy.");
                 }
             }
 
@@ -1460,10 +1552,12 @@ Reply with ONLY the category name, nothing else.`;
                 // Try to find the status from entities or keywords
                 if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffect) {
                     for (const word of intent.entities.map(e => e.name).concat(intent.types)) {
-                        const effect = FearHungerKB.getStatusEffect(word);
-                        if (effect) return `${effect.name}: ${effect.effect} ${effect.cure}`;
+                        const effect = KBLookupCache.statusEffect(word);
+                        if (effect) return `${effect.name}: ${effect.effect} Cura: ${effect.cure}`;
                     }
                 }
+                const statusReference = KBLookupCache.statusEffectsPrompt();
+                if (statusReference) return statusReference.split('\n').slice(0, 6).join('\n');
             }
 
             return Config.language === 'es' ? 'No puedo pensar claramente ahora.' : "I can't think clearly right now.";
@@ -1817,7 +1911,7 @@ Reply with ONLY the category name, nothing else.`;
                 if (normalizedSprite.includes(key)) {
                     const fallbackLabel = this._enemySpriteLabels[key];
                     if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
-                        const enemy = FearHungerKB.getEnemy(key);
+                        const enemy = KBLookupCache.enemy(key);
                         if (enemy && enemy.displayNameEs) return enemy.displayNameEs;
                     }
                     return fallbackLabel;
@@ -1833,7 +1927,7 @@ Reply with ONLY the category name, nothing else.`;
 
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
                 for (const candidate of lookupCandidates) {
-                    const enemy = FearHungerKB.getEnemy(candidate);
+                    const enemy = KBLookupCache.enemy(candidate);
                     if (enemy) return enemy.displayNameEs || enemy.displayName || 'Enemigo';
                 }
             }
@@ -1967,7 +2061,7 @@ Reply with ONLY the category name, nothing else.`;
             if (type === 'enemy') {
                 if (metadata.battleTroopName) {
                     if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
-                        const troopEnemy = FearHungerKB.getEnemy(metadata.battleTroopName);
+                        const troopEnemy = KBLookupCache.enemy(metadata.battleTroopName);
                         if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || metadata.battleTroopName;
                     }
                     return metadata.battleTroopName;
@@ -1979,7 +2073,7 @@ Reply with ONLY the category name, nothing else.`;
             }
             if (type === 'combat_trigger') {
                 if (metadata.battleTroopName && typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
-                    const troopEnemy = FearHungerKB.getEnemy(metadata.battleTroopName);
+                    const troopEnemy = KBLookupCache.enemy(metadata.battleTroopName);
                     if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || 'Emboscada';
                 }
                 return 'Emboscada';
@@ -3074,7 +3168,7 @@ Reply with ONLY the category name, nothing else.`;
                 return normalized;
             }
 
-            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? FearHungerKB.getEnemy(enemy.name) : null;
+            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? KBLookupCache.enemy(enemy.name) : null;
             const requestedLimb = this._normalizeLimbName(normalized.limb).replace(/_/g, ' ');
             let chosenLimb = null;
             const preferredAliveLimbs = [];
@@ -3358,7 +3452,7 @@ Reply with ONLY the category name, nothing else.`;
             const seenKnowledge = {};
             if (typeof FearHungerKB !== 'undefined') {
                 for (const enemy of battleState.enemies) {
-                    const kb = FearHungerKB.getEnemyHints(enemy.name);
+                    const kb = KBLookupCache.enemyHints(enemy.name);
                     if (kb) {
                         const kbKey = (kb.name || enemy.name || '').toLowerCase();
                         if (seenKnowledge[kbKey]) continue;
@@ -3416,7 +3510,7 @@ Reply with ONLY the category name, nothing else.`;
             if (typeof FearHungerKB !== 'undefined') {
                 for (const enemy of battleState.enemies) {
                     if (!enemy.alive) continue;
-                    const kb = FearHungerKB.getEnemyHints(enemy.name);
+                    const kb = KBLookupCache.enemyHints(enemy.name);
                     if (kb && kb.coinFlipTurn && battleState.turn_number === kb.coinFlipTurn) {
                         coinFlipWarning = `\n⚠️ COIN FLIP WARNING: ${enemy.name} has a LETHAL coin flip attack on turn ${kb.coinFlipTurn}! You MUST Defend this turn. Warn ${playerName} in your dialog.`;
                     }
@@ -5723,7 +5817,7 @@ Respond ONLY with this JSON:
             const details = [];
             if (!enemy || !enemy.alive) return { score, details };
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemyHints) {
-                const kb = FearHungerKB.getEnemyHints(enemy.name);
+                const kb = KBLookupCache.enemyHints(enemy.name);
                 if (kb) {
                     if (kb.dangerLevel >= 4) {
                         score += 4;
@@ -7939,6 +8033,7 @@ Respond ONLY with this JSON:
         IntentDetector,
         RelationshipTracker,
         KBFallback,
+        KBLookupCache,
         MapContextHelper,
         RiskEvaluator,
         EquipmentHelper
@@ -8262,7 +8357,7 @@ Respond ONLY with this JSON:
             context.nearby_observation.nearbyEvents
                 .filter(entry => entry && entry.type === 'enemy')
                 .forEach(entry => {
-                    const enemy = FearHungerKB.getEnemy(entry.label);
+                    const enemy = KBLookupCache.enemy(entry.label);
                     if (!enemy || seenKeys[enemy.key]) return;
                     seenKeys[enemy.key] = true;
                     resolved.push({ snapshot: entry, enemy: enemy });
@@ -8763,7 +8858,7 @@ Respond ONLY with this JSON:
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffectsForPrompt) {
                 if (askingAboutStatus) {
                     // Full dump only when player is asking about a status
-                    statusEffectsSummary = FearHungerKB.getStatusEffectsForPrompt();
+                    statusEffectsSummary = KBLookupCache.statusEffectsPrompt();
                 } else {
                     // Collect all active states from ALL party members
                     const activeEffects = new Map(); // name -> Set of affected members
@@ -9137,7 +9232,7 @@ CRITICAL GAME RULES (NEVER violate these):
                             }
 
                             // Try to find this item in KB (use getItem for proper matching)
-                            const kbItem = FearHungerKB.getItem(nameMatch[1].trim());
+                            const kbItem = KBLookupCache.item(nameMatch[1].trim());
                             if (kbItem) {
                                 itemEntities.push({ name: kbItem.displayNameEs || kbItem.displayName || kbItem.key, key: kbItem.key, type: 'item', status: 'inferred', match: kbItem, score: 0.8 });
                             }
@@ -9184,7 +9279,7 @@ CRITICAL GAME RULES (NEVER violate these):
                     } else if (context.in_battle && context.battle_state && typeof FearHungerKB !== 'undefined') {
                         // No entity matched — look up ALL enemies from battle state using proper getEnemy() with Spanish translation
                         for (const enemy of context.battle_state.enemies) {
-                            const lookup = FearHungerKB.getEnemy ? FearHungerKB.getEnemy(enemy.name) : null;
+                            const lookup = FearHungerKB.getEnemy ? KBLookupCache.enemy(enemy.name) : null;
                             const data = lookup || null;
                             if (data) {
                                 block += `\n=== ${(data.displayNameEs || data.displayName || enemy.name).toUpperCase()} ===\n`;
@@ -9280,7 +9375,7 @@ CRITICAL GAME RULES (NEVER violate these):
                     let block = '';
                     if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffectsForPrompt) {
                         // Include full status KB when asking about statuses
-                        block += `\nSTATUS EFFECTS REFERENCE:\n${FearHungerKB.getStatusEffectsForPrompt()}\n`;
+                        block += `\nSTATUS EFFECTS REFERENCE:\n${KBLookupCache.statusEffectsPrompt()}\n`;
                     }
                     return block;
                 }
@@ -9564,7 +9659,7 @@ CRITICAL GAME RULES (NEVER violate these):
             const isArmor = DataManager.isArmor(item);
             let kbItem = null;
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItemInfo) {
-                kbItem = FearHungerKB.getItemInfo(item.name);
+                kbItem = KBLookupCache.itemInfo(item.name);
             }
             const itemType = kbItem ? kbItem.type : null;
 
@@ -9718,7 +9813,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             if (!$gameParty) return [];
             return $gameParty.items().filter(item => {
                 if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItemInfo) {
-                    const kb = FearHungerKB.getItemInfo(item.name);
+                    const kb = KBLookupCache.itemInfo(item.name);
                     return kb && kb.type === 'food';
                 }
                 return /comida|carne|pan|queso|champiñ|tomate|manzana|zanahoria/i.test(item.name);
@@ -9734,7 +9829,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 if (count <= 0) continue;
                 const name = String(item.name || '');
                 const lower = name.toLowerCase();
-                const kb = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItemInfo) ? FearHungerKB.getItemInfo(name) : null;
+                const kb = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItemInfo) ? KBLookupCache.itemInfo(name) : null;
                 const effects = kb && Array.isArray(kb.effects) ? kb.effects : [];
                 if (kb && kb.type === 'food') {
                     buckets.food.push({ item, count });
@@ -12817,7 +12912,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         buildItemPrompt(item) {
             if (!item || !item.name) return '';
-            const lore = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItem) ? FearHungerKB.askAboutItem(item.name) : '';
+            const lore = (typeof FearHungerKB !== 'undefined' && FearHungerKB.askAboutItem) ? KBLookupCache.itemLore(item.name) : '';
             let gameDesc = item.description || '';
             if (item.atk !== undefined) gameDesc += ` [ATK: ${item.atk}]`;
             if (item.def !== undefined) gameDesc += ` [DEF: ${item.def}]`;
