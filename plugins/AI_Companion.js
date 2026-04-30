@@ -4193,6 +4193,17 @@ Respond ONLY with this JSON:
             this._updateBeliefsFromEvent(description, category);
         }
 
+        static rememberTrade(description, meta) {
+            if (!description) return;
+            const entry = this.addWeightedMemory(description, 'trade', {
+                importance: meta && meta.importance != null ? meta.importance : 0.82,
+                mapId: meta && meta.mapId != null ? meta.mapId : ($gameMap ? $gameMap.mapId() : null)
+            });
+            this._updateBeliefsFromEvent(description, 'trade');
+            Debug.log('[MemoryManager] Trade memory stored:', entry);
+            return entry;
+        }
+
         static getPromptSummary() {
             const memory = this._getMemoryObject();
             const memories = this.getWeightedMemoriesForPrompt(5);
@@ -11781,6 +11792,28 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     // Merchant Shop Advisor — consented AI purchase flow inside Scene_Shop
     //=========================================================================
     const MerchantShopAdvisor = {
+        _rememberPurchase(item, quantity, totalPrice, goldBefore, goldAfter, source) {
+            if (!item) return;
+            const now = Date.now();
+            const qty = Math.max(1, Number(quantity) || 1);
+            const price = Math.max(0, Number(totalPrice) || 0);
+            const dedupeKey = `${item.id || item.name}:${qty}:${price}`;
+            if (this._lastRememberedPurchaseKey === dedupeKey && now - (this._lastRememberedPurchaseAt || 0) < 2000) return;
+            this._lastRememberedPurchaseKey = dedupeKey;
+            this._lastRememberedPurchaseAt = now;
+            const goldText = goldBefore != null && goldAfter != null
+                ? ` (${goldBefore} -> ${goldAfter} silver)`
+                : '';
+            const description = `${Config.companionName} bought ${qty}x ${item.name} from merchant for ${price} silver${goldText}.`;
+            if (typeof MemoryManager !== 'undefined' && MemoryManager.rememberTrade) {
+                MemoryManager.rememberTrade(description, { importance: 0.9 });
+            }
+            if (typeof ShortTermMemory !== 'undefined') {
+                ShortTermMemory.addEvent(description);
+            }
+            Debug.log('[MerchantAdvisor] Purchase remembered:', { source: source || 'unknown', description });
+        },
+
         _candidateList(scene) {
             if (!scene || !scene._buyWindow || !scene._buyWindow._data) return [];
             return scene._buyWindow._data.map((item, index) => {
@@ -11915,8 +11948,21 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 scene._item = scene._buyWindow.item();
                 if (!scene._item) throw new Error('No item selected');
                 const maxBuy = Math.max(1, scene.maxBuy ? scene.maxBuy() : 1);
+                const quantity = Math.min(1, maxBuy);
+                const unitPrice = scene.buyingPrice ? Number(scene.buyingPrice()) || Number(candidate.price) || 0 : Number(candidate.price) || 0;
+                const goldBefore = $gameParty && $gameParty.gold ? $gameParty.gold() : null;
+                if ($gameTemp) {
+                    $gameTemp._aiMerchantPurchaseContext = {
+                        itemId: scene._item.id,
+                        itemName: scene._item.name,
+                        quantity,
+                        totalPrice: unitPrice * quantity,
+                        goldBefore,
+                        until: Date.now() + 5000
+                    };
+                }
                 scene._buyWindow.hide();
-                scene._numberWindow.setup(scene._item, Math.min(1, maxBuy), scene.buyingPrice());
+                scene._numberWindow.setup(scene._item, quantity, scene.buyingPrice());
                 scene._numberWindow.setCurrencyUnit(scene.currencyUnit());
                 scene._numberWindow.show();
                 scene._numberWindow.activate();
@@ -11926,9 +11972,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 } finally {
                     scene._aiMerchantExecutingPurchase = false;
                 }
+                const goldAfter = $gameParty && $gameParty.gold ? $gameParty.gold() : null;
+                this._rememberPurchase(scene._item, quantity, unitPrice * quantity, goldBefore, goldAfter, 'approved_path');
+                if ($gameTemp) $gameTemp._aiMerchantPurchaseContext = null;
                 if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) AutonomySystem._clearMerchantSession();
                 scene.popScene();
             } catch (e) {
+                if ($gameTemp) $gameTemp._aiMerchantPurchaseContext = null;
                 Debug.warn('[MerchantAdvisor] Purchase failed:', e.message);
                 if (scene._helpWindow && scene._helpWindow.setText) {
                     scene._helpWindow.setText(Config.language === 'es' ? 'No pude completar la compra.' : 'Could not complete purchase.');
@@ -12023,11 +12073,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         this._aiMerchantLastPurchaseKey = dedupeKey;
         this._aiMerchantLastPurchaseAt = now;
         const goldAfter = $gameParty && $gameParty.gold ? $gameParty.gold() : null;
-        const goldText = goldBefore != null && goldAfter != null
-            ? ` (${goldBefore} -> ${goldAfter} silver)`
-            : '';
-        ShortTermMemory.addEvent(`${Config.companionName} bought ${quantity}x ${item.name} from merchant for ${totalPrice} silver${goldText}.`);
-        Debug.log('[MerchantAdvisor] Logged purchase memory:', item.name, quantity, totalPrice, goldText);
+        MerchantShopAdvisor._rememberPurchase(item, quantity, totalPrice, goldBefore, goldAfter, 'doBuy_hook');
     };
 
     const _AICompanion_SceneShop_terminate = Scene_Shop.prototype.terminate;
@@ -12428,6 +12474,22 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _Game_Party_gainItem.call(this, item, amount, includeEquip);
         if ($gameTemp && $gameTemp._aiSuppressItemPickupHooks) return;
         if (item && amount > 0) {
+            if ($gameTemp && $gameTemp._aiMerchantPurchaseContext) {
+                const ctx = $gameTemp._aiMerchantPurchaseContext;
+                if (ctx.until && Date.now() <= ctx.until && (!ctx.itemId || ctx.itemId === item.id)) {
+                    const goldAfter = $gameParty && $gameParty.gold ? $gameParty.gold() : null;
+                    if (typeof MerchantShopAdvisor !== 'undefined' && MerchantShopAdvisor._rememberPurchase) {
+                        MerchantShopAdvisor._rememberPurchase(
+                            item,
+                            ctx.quantity || amount,
+                            ctx.totalPrice || 0,
+                            ctx.goldBefore,
+                            goldAfter,
+                            'gainItem_hook'
+                        );
+                    }
+                }
+            }
             // Only trigger ambient dialogue when actually playing on the map
             const scene = SceneManager._scene;
             const isGameplay = scene && (scene.constructor.name === 'Scene_Map' || scene.constructor.name === 'Scene_Battle');
