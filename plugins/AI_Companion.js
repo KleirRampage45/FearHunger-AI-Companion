@@ -1055,6 +1055,7 @@
     const IntentDetector = {
         // Keyword patterns for each intent type (Spanish + English)
         _patterns: {
+            trade_recall: /(?:que|qué|what).{0,32}(?:compraste|compr[oó]|comprado|buy|bought|purchase|purchased)|(?:compraste|compr[oó]|bought|purchased).{0,32}(?:que|qué|what)|(?:(?:que|qué) hiciste|what did you do).{0,48}(?:mercader|merchant|tienda|shop|comerciante)/i,
             item_info: /(?:que es|what is|para que sirve|what does|donde encuentro|where.*find|como usar|how.*use|tengo un[oa]?|hierba|herb|vial|pocion|potion|soul stone|piedra|cloth|fragmento|pinecone|dagger|espada|escudo|shield|ring|anillo|armor|armadura|weapon|arma)/i,
             tactical: /(?:que hago|what.*do|como.*mato|how.*kill|como.*peleo|how.*fight|estrategia|strategy|debilidad|weakness|vulnerab|atacar|attack|defender|defend|guard|guardia|coin flip|moneda|limb|miembro|brazo|arm|pierna|leg|cabeza|head|prioridad|priority|enemigo|enemy|pelea|pelear|combate|combat|monstruo|monster|criatura|creature)/i,
             npc_recall: /(?:con quien acabamos de hablar|con quién acabamos de hablar|con quien hablamos|con quién hablamos|con quien hable|con quién hablé|quien era ese npc|quién era ese npc|quien nos hablo|quién nos habló|que dijo ese npc|qué dijo ese npc|who did we just talk to|who was that npc|what did that npc say)/i,
@@ -1224,6 +1225,7 @@
 
 Categories:
 - item_info: asking about items, weapons, armor, potions, herbs
+- trade_recall: asking what was bought, purchased, or done at a merchant/shop
 - tactical: asking about combat, enemies, strategy, how to fight
 - recent_battle: talking about a fight that just happened
 - lore: asking about game world, gods, characters, story
@@ -4221,6 +4223,22 @@ Respond ONLY with this JSON:
                 .filter(entry => entry.currentImportance >= 0.18)
                 .sort((a, b) => b.currentImportance - a.currentImportance)
                 .slice(0, limit || 5);
+        }
+
+        static getMemoriesByCategoryForPrompt(categories, limit) {
+            const wanted = (Array.isArray(categories) ? categories : [categories]).filter(Boolean);
+            const memory = this._getMemoryObject();
+            this._pruneWeightedMemories(memory);
+            return (memory.weighted_memories || [])
+                .map(entry => Object.assign({}, entry, { currentImportance: this._currentImportance(entry) }))
+                .filter(entry => wanted.indexOf(entry.category) >= 0)
+                .sort((a, b) => {
+                    if ((b.lastAccessedAt || b.createdAt || 0) !== (a.lastAccessedAt || a.createdAt || 0)) {
+                        return (b.lastAccessedAt || b.createdAt || 0) - (a.lastAccessedAt || a.createdAt || 0);
+                    }
+                    return b.currentImportance - a.currentImportance;
+                })
+                .slice(0, limit || 6);
         }
 
         static getBeliefsForPrompt(limit) {
@@ -8285,6 +8303,7 @@ Respond ONLY with this JSON:
 
         _getRecentPickupLines(context, playerMessage, intent) {
             if (!context || !context.recent_events) return [];
+            if (this._isTradeRecallQuery(playerMessage, intent)) return [];
             const message = String(playerMessage || '').toLowerCase();
             const asksAboutLoot = intent && intent.primary === 'item_info' ||
                 /(?:que|qué|what).{0,24}(?:encontr|recog|agar|loot|found|picked|got)|(?:item|objeto|inventario|loot|bot[ií]n|cosas|suministros)/i.test(message);
@@ -8292,6 +8311,34 @@ Respond ONLY with this JSON:
             return context.recent_events
                 .filter(e => e && /picked up|found|recogi|recogió|encontr[oó]|obtuvo/i.test(e.desc))
                 .map(e => `- ${e.desc}`);
+        },
+
+        _isTradeRecallQuery(playerMessage, intent) {
+            if (intent && (intent.primary === 'trade_recall' || (intent.types || []).includes('trade_recall'))) return true;
+            return /(?:que|qué|what).{0,32}(?:compraste|compr[oó]|comprado|buy|bought|purchase|purchased)|(?:compraste|compr[oó]|bought|purchased).{0,32}(?:que|qué|what)|(?:(?:que|qué) hiciste|what did you do).{0,48}(?:mercader|merchant|tienda|shop|comerciante)/i.test(String(playerMessage || ''));
+        },
+
+        _buildMemoryBeliefContext(context, intent, playerMessage) {
+            if (this._isTradeRecallQuery(playerMessage, intent)) {
+                const trades = MemoryManager.getMemoriesByCategoryForPrompt(['trade'], 6);
+                if (trades.length === 0) {
+                    return 'No purchase/trade memory is stored for this save yet. Do not answer from pickups, equipped gear, or inventory.';
+                }
+                return [
+                    'PURCHASE/TRADING MEMORY ONLY:',
+                    ...trades.map(entry => `- ${entry.summary}`)
+                ].join('\n');
+            }
+            if (!context || !context.memory_beliefs) return '';
+            if (intent && intent.primary === 'item_info') {
+                const relevant = MemoryManager.getMemoriesByCategoryForPrompt(['care', 'trade', 'hazard', 'combat'], 4);
+                if (relevant.length === 0) return '';
+                return [
+                    'RELEVANT PAST MEMORY (not current inventory, not proof of ownership):',
+                    ...relevant.map(entry => `- Past event: ${entry.summary} (${entry.category})`)
+                ].join('\n');
+            }
+            return context.memory_beliefs;
         },
 
         _normalizeLookupText(text) {
@@ -8511,8 +8558,9 @@ Respond ONLY with this JSON:
             }
 
             pushSection('EVENT MEMORY', this._buildEventContext(context, intent));
-            if (context.memory_beliefs && context.memory_beliefs.length > 0) {
-                pushSection('LONG-TERM MEMORY AND BELIEFS', context.memory_beliefs);
+            const memoryBeliefContext = this._buildMemoryBeliefContext(context, intent, playerMessage);
+            if (memoryBeliefContext && memoryBeliefContext.length > 0) {
+                pushSection(this._isTradeRecallQuery(playerMessage, intent) ? 'PURCHASE MEMORY' : 'LONG-TERM MEMORY AND BELIEFS', memoryBeliefContext);
             }
 
             const pickupLines = this._getRecentPickupLines(context, playerMessage, intent);
@@ -9280,7 +9328,13 @@ CRITICAL GAME RULES (NEVER violate these):
                 return anchors + 'MODE: CONTAINER JUDGMENT — The player is asking what might be inside nearby containers. You do NOT have exact loot data unless it is explicitly shown above. Do NOT invent specific item names, rare artifacts, enemies, rituals, or stat gains. Speak only in broad terms like supplies, scraps, something useful, or say we need to open the container to know for sure.\n';
             }
 
+            if (intent && intent.primary === 'trade_recall') {
+                return anchors + 'MODE: PURCHASE RECALL — The player is asking what you bought or did at a merchant/shop. Answer ONLY from PURCHASE MEMORY above. Do NOT mention found items, pickups, equipped gear, starting equipment, or inventory unless PURCHASE MEMORY explicitly says it was bought. If PURCHASE MEMORY says no trade memory is stored, admit you do not remember buying anything.\n';
+            }
+
             switch (intent.primary) {
+                case 'trade_recall':
+                    return anchors + 'MODE: PURCHASE RECALL — Answer ONLY from PURCHASE MEMORY above. Do NOT answer from pickups or equipment.\n';
                 case 'item_info':
                     return anchors + 'MODE: ITEM KNOWLEDGE — You MUST answer ONLY from the ITEM DATA section above. State each item\'s effect exactly as described in the data. Do NOT invent, guess, or assume any item effects. If an item is NOT listed in ITEM DATA above, say you don\'t recognize it. NEVER claim an item heals, cures, or does something that is not explicitly stated in the provided data. This is a horror game — items have SPECIFIC effects that differ from typical RPGs.\n';
                 case 'tactical':
