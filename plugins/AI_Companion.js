@@ -6373,10 +6373,20 @@ Respond ONLY with this JSON:
             const joined = ((choices || []).join(' | ') + ' ' + (messageText || '')).toLowerCase();
             if (!joined.trim()) return false;
             if (/(cara|cruz|heads|tails|coin|moneda)/i.test(joined)) return false;
+            if (this._isMerchantPurchaseChoice(choices, messageText)) return true;
             if (/(compr|buy|sell|vender|trade|merchant|mercader|shop|tienda)/i.test(joined) && !this._hasMerchantSession()) return true;
             if (/(sacrific|ofrec|offering|altar|gro-goroth|grogoroth|god|dios|ritual|niña|nina|girl|companion|party member|ally)/i.test(joined)) return true;
             if (/(le'garde|legarde|enki|darce|cahara|ragnvaldr|moonless|buckman|trortur)/i.test(joined)) return true;
             return false;
+        },
+
+        _isMerchantPurchaseChoice(choices, messageText) {
+            const joined = ((choices || []).join(' | ') + ' ' + (messageText || '')).toLowerCase();
+            if (!joined.trim()) return false;
+            const hasCurrency = /monedas? de plata|silver|\\c\[2\]|\[\d+\]/i.test(joined);
+            const hasPurchaseItem = /poci[oó]n|potion|curaci[oó]n|cordura|vida|hierba|herb|vial|comida|food|arma|weapon|armadura|armor/i.test(joined);
+            const hasMerchantText = /compr|buy|intercamb|qu[eé] te gustar[ií]a comprar|mercader|merchant|comerciante|shop|tienda/i.test(joined);
+            return hasMerchantText && hasCurrency && hasPurchaseItem;
         },
 
         _interactionTextNeedsConsent(messageText) {
@@ -11814,6 +11824,44 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             Debug.log('[MerchantAdvisor] Purchase remembered:', { source: source || 'unknown', description });
         },
 
+        _detectScriptedPurchase(interpreter, item, quantity) {
+            if (!interpreter || !item || quantity <= 0 || !interpreter._list) return null;
+            const list = interpreter._list || [];
+            const index = Number(interpreter._index) || 0;
+            let price = 0;
+            for (let i = index + 1; i < Math.min(list.length, index + 8); i++) {
+                const command = list[i];
+                if (!command || command.code !== 126 || !command.parameters) continue;
+                const params = command.parameters;
+                const changedItemId = Number(params[0]);
+                if (changedItemId !== 59) continue; // Fear & Hunger silver coins.
+                const op = Number(params[1]);
+                const operandType = Number(params[2]);
+                const operand = Number(params[3]);
+                const value = interpreter.operateValue
+                    ? interpreter.operateValue(op, operandType, operand)
+                    : (op === 0 ? operand : -operand);
+                if (value < 0) {
+                    price = Math.abs(value);
+                    break;
+                }
+            }
+            if (price <= 0) return null;
+            const textWindow = ($gameMessage && $gameMessage._texts) ? $gameMessage._texts.join(' ') : '';
+            const nearbyText = list.slice(Math.max(0, index - 8), Math.min(list.length, index + 8))
+                .filter(command => command && (command.code === 401 || command.code === 102 || command.code === 402))
+                .map(command => JSON.stringify(command.parameters || []))
+                .join(' ');
+            const contextText = `${textWindow} ${nearbyText}`.toLowerCase();
+            if (!/(intercamb|monedas? de plata|qu[eé] te gustar[ií]a comprar|mercader|merchant|comerciante|compr|buy|poci[oó]n|potion)/i.test(contextText)) {
+                return null;
+            }
+            const silver = $dataItems && $dataItems[59] ? $dataItems[59] : null;
+            const silverBefore = silver && $gameParty && $gameParty.numItems ? $gameParty.numItems(silver) : null;
+            const silverAfter = silverBefore != null ? Math.max(0, silverBefore - price) : null;
+            return { price, silverBefore, silverAfter };
+        },
+
         _candidateList(scene) {
             if (!scene || !scene._buyWindow || !scene._buyWindow._data) return [];
             return scene._buyWindow._data.map((item, index) => {
@@ -12074,6 +12122,36 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         this._aiMerchantLastPurchaseAt = now;
         const goldAfter = $gameParty && $gameParty.gold ? $gameParty.gold() : null;
         MerchantShopAdvisor._rememberPurchase(item, quantity, totalPrice, goldBefore, goldAfter, 'doBuy_hook');
+    };
+
+    const _AICompanion_GameInterpreter_command126 = Game_Interpreter.prototype.command126;
+    Game_Interpreter.prototype.command126 = function () {
+        const itemId = this._params ? Number(this._params[0]) : 0;
+        const value = this.operateValue ? this.operateValue(this._params[1], this._params[2], this._params[3]) : 0;
+        const item = $dataItems ? $dataItems[itemId] : null;
+        const scriptedPurchase = value > 0 ? MerchantShopAdvisor._detectScriptedPurchase(this, item, value) : null;
+        const result = _AICompanion_GameInterpreter_command126.call(this);
+        if (scriptedPurchase) {
+            MerchantShopAdvisor._rememberPurchase(
+                item,
+                value,
+                scriptedPurchase.price,
+                scriptedPurchase.silverBefore,
+                scriptedPurchase.silverAfter,
+                'scripted_merchant_event'
+            );
+            ThesisLogger.log('game_event', {
+                event: 'scripted_merchant_purchase',
+                item: item ? item.name : null,
+                amount: value,
+                price: scriptedPurchase.price,
+                silver_before: scriptedPurchase.silverBefore,
+                silver_after: scriptedPurchase.silverAfter,
+                event_id: this._eventId || null,
+                map_id: this._mapId || ($gameMap ? $gameMap.mapId() : null)
+            });
+        }
+        return result;
     };
 
     const _AICompanion_SceneShop_terminate = Scene_Shop.prototype.terminate;
