@@ -1386,7 +1386,7 @@ Reply with ONLY the category name, nothing else.`;
                 add(mapId, [39, 40, 44, 45, 54, 81, 82, 96, 97, 99, 101, 103, 112, 114, 115, 116, 117, 118, 119, 120, 132, 175, 190, 193, 251], 'container', 'crate', 'Caja');
                 add(mapId, [47, 98, 134, 140, 171, 172, 173, 174, 248, 250, 253], 'container', 'barrel', 'Barril');
                 add(mapId, [19, 37, 48, 53, 57, 69, 70, 71, 72, 85, 305], 'container', 'furniture_loot', 'Mesa');
-                add(mapId, [33, 34, 35, 36, 38, 50], 'container', 'light_source', 'Vela', { tags: ['container', 'light_source'] });
+                add(mapId, [33, 34, 35, 36, 38, 50], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
                 add(mapId, [55], 'container', 'light_source', 'Horno', { tags: ['container', 'light_source'] });
                 add(mapId, [51, 52, 67], 'hazard', 'liquid', 'Líquido extraño', { danger: 'medium' });
                 add(mapId, [84, 106, 107, 108, 109, 232], 'hazard', 'ritual', 'Ritual', { danger: 'high' });
@@ -1401,7 +1401,7 @@ Reply with ONLY the category name, nothing else.`;
 
             add(3, [14, 98], 'npc', 'buckman', 'Buckman');
             add(3, [15], 'hazard', 'pit_hole', 'Retrete ensangrentado', { danger: 'medium' });
-            add(3, [41, 43, 50, 52, 54, 55], 'container', 'light_source', 'Vela', { tags: ['container', 'light_source'] });
+            add(3, [41, 43, 50, 52, 54, 55], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
             add(3, [62, 96], 'container', 'crate', 'Caja');
             add(3, [97, 99, 100, 103, 104, 192], 'container', 'barrel', 'Barril');
             add(3, [106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 119, 120, 125, 126, 149, 150, 152, 153], 'container', 'bookshelf', 'Estantería');
@@ -1418,7 +1418,7 @@ Reply with ONLY the category name, nothing else.`;
             add(6, [7, 10, 11, 12, 13, 14, 79], 'door', 'cell_door', 'Puerta de celda');
             add(6, [31, 32, 43, 68, 72, 73, 80, 81], 'container', 'crate', 'Caja');
             add(6, [34, 42, 74], 'container', 'barrel', 'Barril');
-            add(6, [35, 37, 38, 45], 'container', 'light_source', 'Vela', { tags: ['container', 'light_source'] });
+            add(6, [35, 37, 38, 45], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
             add(6, [8, 9, 83, 84, 85, 86, 87], 'hazard', 'rest', 'Cama', { danger: 'medium' });
             add(6, [16], 'enemy', 'ghoul', 'Ghoul', { danger: 'high' });
 
@@ -1429,7 +1429,7 @@ Reply with ONLY the category name, nothing else.`;
             add(74, [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87], 'npc', 'legarde', "Le'garde");
             add(74, [102, 113, 114], 'enemy', 'moonless', 'Moonless', { danger: 'high' });
             add(74, [108, 109], 'container', 'hidden_loot', 'Contenedor');
-            add(74, [156], 'container', 'light_source', 'Antorcha', { tags: ['container', 'light_source'] });
+            add(74, [156], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
 
             return registry;
         },
@@ -5708,7 +5708,14 @@ Respond ONLY with this JSON:
                 detourLimit: snapshot.detourLimit,
                 allowNpc: snapshot.allowNpc,
                 allowDoors: snapshot.allowDoors,
-                nearby: (snapshot.nearby || []).slice(0, 10).map(item => ({
+                nearby: (snapshot.nearby || []).filter(item => {
+                    if (!item || item.eventId == null) return false;
+                    const type = String(item.type || '').toLowerCase();
+                    const isReusableWorldObject = type === 'container' || type === 'door' || type === 'npc' || type === 'shop';
+                    if (isReusableWorldObject && this._isEventOnCooldown(item.eventId)) return false;
+                    if (isReusableWorldObject && this._isEventSearched(item.eventId)) return false;
+                    return true;
+                }).slice(0, 10).map(item => ({
                     eventId: item.eventId,
                     label: item.label,
                     type: item.type,
@@ -8916,6 +8923,10 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             const subtype = String(target && target.subtype || '').toLowerCase();
             if (type === 'npc' && /(cofre|caja|mesa|barril|estante|chest|crate|table|shelf|barrel)/i.test(lower)) return fallback;
             if (type === 'container') {
+                if (subtype === 'light_source') {
+                    if (/(vela|candle|torch|antorcha|farol|lantern)/i.test(lower)) return fallback;
+                    if (!/(oscur|encend|luz|yesquero|dark|light)/i.test(lower)) return fallback;
+                }
                 if (subtype === 'bookshelf' && !/(libro|book|estante|shelf|biblioteca|leer)/i.test(lower)) return fallback;
                 if (subtype === 'crate' && !/(caja|crate|box)/i.test(lower)) return fallback;
                 if (subtype === 'barrel' && !/(barril|barrel)/i.test(lower)) return fallback;
@@ -8940,6 +8951,9 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 return fallback;
             }
             if (isLight && !/(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower)) {
+                return fallback;
+            }
+            if (isLight && /(vela|candle|torch|antorcha|farol|lantern)/i.test(lower)) {
                 return fallback;
             }
             if (subtype !== 'chest' && /(cofre|chest)/i.test(lower)) {
@@ -8968,6 +8982,10 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
         async _generateAutonomyComment(action, target, factKey) {
             const es = Config.language === 'es';
+            const isLightTarget = target && target.subtype === 'light_source';
+            const targetLabel = isLightTarget
+                ? (es ? 'luz apagada de la sala' : 'unlit room light')
+                : (target.label || 'object');
             const show = async text => {
                 const clean = String(text || '').trim();
                 if (!clean) return;
@@ -9000,10 +9018,10 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     `Do not say generic filler like "I am here", "still here", or your own name.\n` +
                     `Target type: ${target.type}\n` +
                     `Target subtype: ${target.subtype || 'none'}\n` +
-                    `Target label: ${target.label || 'object'}\n` +
+                    `Target label: ${targetLabel}\n` +
                     `NPC name: ${target.npcName || target.speakerName || 'none'}\n` +
                     `Hints: ${target.textHints || 'none'}\n` +
-                    `If this is a light source, mention darkness naturally.\n` +
+                    `If this is a light source, you are using a yesquero to light the room. Do NOT say you are picking up or holding a candle, torch, lantern, or object.\n` +
                     `No lists. No extra explanation.`;
                 const controller = new AbortController();
                 const timer = setTimeout(() => controller.abort(), 1200);
