@@ -11042,10 +11042,16 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         this.addCommand(es ? 'Sí, comprar' : 'Yes, buy it', 'yes');
     };
     Window_AIMerchantApproval.prototype.processOk = function () {
-        if (this._aiEnabledAt && Date.now() < this._aiEnabledAt) {
+        if ((this._aiEnabledAt && Date.now() < this._aiEnabledAt) || !this._aiSawOkRelease) {
             return;
         }
         Window_Command.prototype.processOk.call(this);
+    };
+    Window_AIMerchantApproval.prototype.update = function () {
+        Window_Command.prototype.update.call(this);
+        if (!Input.isPressed('ok') && (!TouchInput || !TouchInput.isPressed || !TouchInput.isPressed())) {
+            this._aiSawOkRelease = true;
+        }
     };
 
     //=========================================================================
@@ -11124,6 +11130,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         _showApproval(scene, candidate) {
             if (!scene || !candidate || scene._aiMerchantApprovalWindow) return;
+            scene._aiMerchantApprovalVisible = true;
             const es = Config.language === 'es';
             const text = es
                 ? `${Config.companionName}: comprar ${candidate.name} por ${candidate.price}? ${candidate.reason || ''}`
@@ -11137,11 +11144,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
             const win = new Window_AIMerchantApproval(Math.floor((Graphics.boxWidth - 260) / 2), Math.floor((Graphics.boxHeight - 116) / 2));
             win.setHandler('yes', () => {
+                scene._aiMerchantApprovalVisible = false;
                 scene._aiMerchantApprovalWindow = null;
                 if (scene._windowLayer) scene._windowLayer.removeChild(win);
                 this._buyAndLeave(scene, candidate);
             });
             win.setHandler('no', () => {
+                scene._aiMerchantApprovalVisible = false;
                 scene._aiMerchantApprovalWindow = null;
                 if (scene._windowLayer) scene._windowLayer.removeChild(win);
                 if (scene._helpWindow && scene._helpWindow.clear) scene._helpWindow.clear();
@@ -11150,7 +11159,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             });
             scene._aiMerchantApprovalWindow = win;
             scene.addWindow(win);
+            win.z = 9999;
             win._aiEnabledAt = Date.now() + 650;
+            win._aiSawOkRelease = false;
             win.select(0);
             win.deactivate();
             if (Input && Input.clear) Input.clear();
@@ -11176,7 +11187,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 scene._numberWindow.setCurrencyUnit(scene.currencyUnit());
                 scene._numberWindow.show();
                 scene._numberWindow.activate();
-                scene.onNumberOk();
+                scene._aiMerchantExecutingPurchase = true;
+                try {
+                    scene.onNumberOk();
+                } finally {
+                    scene._aiMerchantExecutingPurchase = false;
+                }
                 ShortTermMemory.addEvent(`${Config.companionName} bought ${candidate.name} from merchant.`);
                 if (typeof AutonomySystem !== 'undefined' && AutonomySystem._clearMerchantSession) AutonomySystem._clearMerchantSession();
                 scene.popScene();
@@ -11195,9 +11211,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (scene._commandWindow && scene._commandWindow.active && scene.commandBuy) {
                 scene._aiMerchantOpenedBuy = true;
                 scene.commandBuy();
+                if (scene._buyWindow && scene._buyWindow.deactivate) scene._buyWindow.deactivate();
+                if (Input && Input.clear) Input.clear();
+                if (TouchInput && TouchInput.clear) TouchInput.clear();
                 return;
             }
-            if (scene._buyWindow && scene._buyWindow.active && scene._buyWindow.visible) {
+            if (scene._aiMerchantOpenedBuy && scene._buyWindow && scene._buyWindow.visible && !scene._aiMerchantAdvisorPending) {
                 const candidates = this._candidateList(scene);
                 if (candidates.length === 0) {
                     scene._aiMerchantAdvisorDone = true;
@@ -11227,6 +11246,29 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     Scene_Shop.prototype.update = function () {
         _AICompanion_SceneShop_update.call(this);
         MerchantShopAdvisor.update(this);
+    };
+
+    const _AICompanion_SceneShop_onBuyOk = Scene_Shop.prototype.onBuyOk;
+    Scene_Shop.prototype.onBuyOk = function () {
+        if (typeof AutonomySystem !== 'undefined' && AutonomySystem._hasMerchantSession && AutonomySystem._hasMerchantSession() && !this._aiMerchantApprovalVisible) {
+            if (this._buyWindow && this._buyWindow.deactivate) this._buyWindow.deactivate();
+            if (Input && Input.clear) Input.clear();
+            if (TouchInput && TouchInput.clear) TouchInput.clear();
+            Debug.log('[MerchantAdvisor] Blocked native shop buy until approval.');
+            return;
+        }
+        _AICompanion_SceneShop_onBuyOk.call(this);
+    };
+
+    const _AICompanion_SceneShop_onNumberOk = Scene_Shop.prototype.onNumberOk;
+    Scene_Shop.prototype.onNumberOk = function () {
+        if (typeof AutonomySystem !== 'undefined' && AutonomySystem._hasMerchantSession && AutonomySystem._hasMerchantSession() && !this._aiMerchantExecutingPurchase) {
+            if (Input && Input.clear) Input.clear();
+            if (TouchInput && TouchInput.clear) TouchInput.clear();
+            Debug.log('[MerchantAdvisor] Blocked native shop quantity confirm until approval.');
+            return;
+        }
+        _AICompanion_SceneShop_onNumberOk.call(this);
     };
 
     const _AICompanion_SceneShop_terminate = Scene_Shop.prototype.terminate;
