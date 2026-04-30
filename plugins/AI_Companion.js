@@ -5763,6 +5763,50 @@ Respond ONLY with this JSON:
                 };
             }
 
+            if (finalDecision.action === 'FOLLOW' && finalDecision.eventId != null) {
+                const target = nearby.find(item => item.eventId === Number(finalDecision.eventId));
+                if (target &&
+                    !this._isEventSearched(target.eventId) &&
+                    !this._isEventOnCooldown(target.eventId) &&
+                    target.type !== 'enemy' &&
+                    target.type !== 'trap' &&
+                    target.type !== 'hazard') {
+                    if (target.type === 'door' && (!snapshot.allowDoors || this._isRecentTransfer(4000))) {
+                        finalDecision.eventId = null;
+                    } else if (target.type === 'npc' && !snapshot.allowNpc) {
+                        finalDecision.eventId = null;
+                    } else if (this._targetNeedsConsent(target) && !this._isConsentApproved(target.eventId)) {
+                        return {
+                            action: 'CONSENT',
+                            eventId: target.eventId,
+                            originalAction: 'INTERACT',
+                            reason: finalDecision.reason || 'target requires player consent',
+                            _autonomySource: finalDecision._autonomySource || 'local_follow_target'
+                        };
+                    } else if (target.type === 'container' && target.subtype === 'light_source') {
+                        finalDecision.action = 'INTERACT';
+                        finalDecision.eventId = target.eventId;
+                        finalDecision.reason = finalDecision.reason || 'target-bearing follow corrected to interact';
+                        finalDecision._autonomySource = finalDecision._autonomySource || 'local_follow_target';
+                        Debug.log('[Autonomy] Corrected FOLLOW+eventId to INTERACT:', target.eventId, target.label);
+                    } else if (target.type === 'container' || target.type === 'loot') {
+                        finalDecision.action = 'LOOT';
+                        finalDecision.eventId = target.eventId;
+                        finalDecision.reason = finalDecision.reason || 'target-bearing follow corrected to loot';
+                        finalDecision._autonomySource = finalDecision._autonomySource || 'local_follow_target';
+                        Debug.log('[Autonomy] Corrected FOLLOW+eventId to LOOT:', target.eventId, target.label);
+                    } else if (target.type === 'door' || target.type === 'npc' || target.type === 'shop') {
+                        finalDecision.action = 'INTERACT';
+                        finalDecision.eventId = target.eventId;
+                        finalDecision.reason = finalDecision.reason || 'target-bearing follow corrected to interact';
+                        finalDecision._autonomySource = finalDecision._autonomySource || 'local_follow_target';
+                        Debug.log('[Autonomy] Corrected FOLLOW+eventId to INTERACT:', target.eventId, target.label);
+                    }
+                } else {
+                    finalDecision.eventId = null;
+                }
+            }
+
             if ((finalDecision.action === 'INTERACT' || finalDecision.action === 'LOOT') && finalDecision.eventId != null) {
                 if (this._isEventSearched(Number(finalDecision.eventId))) {
                     return Object.assign({ _autonomySource: 'fallback' }, fallback);
@@ -5894,6 +5938,8 @@ Respond ONLY with this JSON:
                 'Move with purpose. Do not wander or scout empty frontiers.',
                 'Never choose enemies as targets. Never start fights.',
                 'Only choose LOOT or INTERACT for nearby containers, bookshelves, doors, NPCs, or shops that are actually listed.',
+                'FOLLOW means stay near the player and must use "eventId":null. If you choose a listed eventId, use LOOT or INTERACT, not FOLLOW.',
+                'If a safe listed target is close enough and useful, prefer LOOT or INTERACT over FOLLOW.',
                 'Shops, merchants, rituals, sacrifices, and risky prompts require player consent; choose INTERACT only if you want to ask first.',
                 'If there is no clear nearby task, choose FOLLOW.',
                 'If threat is high or distance from player is too large, choose RETURN.',
