@@ -1857,13 +1857,14 @@ Reply with ONLY the category name, nothing else.`;
             const commands = this._pageCommands(event);
             const commandCodes = {};
             commands.forEach(command => { if (command) commandCodes[command.code] = true; });
+            const callsFearEffect = this._callsCommonEvent(commands, [278]);
             const hasText = !!commandCodes[101] || !!commandCodes[401] || !!commandCodes[102];
             const hasShop = !!commandCodes[302] || hasKeyword(/merchant|mercader|comerciante|shop|tienda|pocketcat/);
             const bookcaseHint = hasKeyword(/bookshelf|bookcase|book shelf|books|libro|libros|estante|estanteria|estantería|biblioteca|shelf|tome|leer|read/);
             const furnitureLootHint = hasKeyword(/crate|barrel|box|boxes|caja|cajas|barril|baul|baúl|armario|cabinet|drawer|desk|table|mesa|mapa|bottle|botella|supply|supplies|food|bread|meat|cheese|apple|papers|notes|documents/);
             const pitHint = hasKeyword(/hole|pit|bloodpit|blood pit|agujero|pozo|hoyo|caida|caída|fall|drop/);
 
-            if (hasKeyword(/beartrap/) || hasKeyword(/fear_floor|spike/) || hasKeyword(/arrow_check|arrow/) || pitHint) tags.push('trap');
+            if (callsFearEffect || hasKeyword(/beartrap/) || hasKeyword(/fear_floor|spike/) || hasKeyword(/arrow_check|arrow/) || pitHint) tags.push('trap');
             if (hasKeyword(/circle|ritual/) || sprite.includes('portal')) tags.push('save_point');
             if (hasTransfer || hasKeyword(/door|gate|stairs|stair|ladder|warp|exit|entrance|passage/)) tags.push('door');
             if (hasLoot || sprite.includes('chest') || sprite.includes('$boxes') || hasKeyword(/coin|chest|crate|barrel|treasure|loot/) || bookcaseHint || furnitureLootHint) tags.push('container');
@@ -1878,6 +1879,15 @@ Reply with ONLY the category name, nothing else.`;
             if (hasKeyword(/flesh|growth|demonseed|seed/) || sprite.includes('flesh') || sprite.includes('growth')) tags.push('hazard');
 
             return tags.filter((tag, index, list) => list.indexOf(tag) === index);
+        },
+
+        _callsCommonEvent(commands, ids) {
+            const wanted = Array.isArray(ids) ? ids.map(Number) : [Number(ids)];
+            return (commands || []).some(command => {
+                if (!command || command.code !== 117) return false;
+                const commonEventId = Number(command.parameters && command.parameters[0]);
+                return wanted.indexOf(commonEventId) >= 0;
+            });
         },
 
         _eventType(tags) {
@@ -1899,7 +1909,7 @@ Reply with ONLY the category name, nothing else.`;
         _dangerFor(type, subtype) {
             if (type === 'enemy') return 'high';
             if (type === 'combat_trigger') return 'none';
-            if (type === 'trap') return subtype === 'bear_trap' ? 'high' : 'medium';
+            if (type === 'trap') return subtype === 'bear_trap' || subtype === 'arrow_trap' ? 'high' : 'medium';
             if (type === 'obstruction') return 'none';
             if (type === 'hazard') return subtype === 'demon_seed' ? 'medium' : 'low';
             return 'none';
@@ -1909,6 +1919,7 @@ Reply with ONLY the category name, nothing else.`;
             const name = this._normalize(data.name);
             const sprite = this._normalize(page && page.image ? page.image.characterName : '');
             if (type === 'trap') {
+                if (this._callsCommonEvent(page && page.list ? page.list : [], [278])) return 'arrow_trap';
                 if (sprite.includes('beartrap') || name.includes('beartrap')) return 'bear_trap';
                 if (name.includes('arrow_check') || name.includes('arrow')) return 'arrow_trap';
                 if (name.includes('hole') || name.includes('pit') || name.includes('bloodpit') || name.includes('agujero') || name.includes('pozo')) return 'pit_hole';
@@ -1991,7 +2002,7 @@ Reply with ONLY the category name, nothing else.`;
             }
             if (type === 'corpse') return 'Cadáver';
             if (type === 'trap') {
-                if (lowerRawName.includes('arrow')) return 'Trampa de flechas';
+                if (this._callsCommonEvent(this._pageCommands(event), [278]) || lowerRawName.includes('arrow')) return 'Trampa de flechas';
                 if (sprite.includes('beartrap') || lowerRawName.includes('beartrap')) return 'Trampa de oso';
                 if (lowerRawName.includes('hole') || lowerRawName.includes('pit') || lowerRawName.includes('agujero') || lowerRawName.includes('pozo') || (metadata && metadata.textHints && /hole|pit|agujero|pozo|caida|caída/.test(metadata.textHints))) return 'Agujero peligroso';
                 return 'Suelo peligroso';
@@ -2018,6 +2029,7 @@ Reply with ONLY the category name, nothing else.`;
          * Get cardinal direction from player to target.
          */
         _getDirection(dx, dy) {
+            if (dx === 0 && dy === 0) return 'aquí';
             if (Math.abs(dx) > Math.abs(dy)) {
                 return dx > 0 ? 'este' : 'oeste';
             } else if (Math.abs(dy) > Math.abs(dx)) {
@@ -2280,10 +2292,11 @@ Reply with ONLY the category name, nothing else.`;
                 const dx = event.x - px;
                 const dy = event.y - py;
                 const dist = Math.abs(dx) + Math.abs(dy);
-                if (dist > radius || dist === 0) continue;
+                if (dist > radius) continue;
 
                 const snapshot = this._eventSnapshot(event, origin);
                 if (!snapshot) continue;
+                if (dist === 0 && snapshot.type !== 'trap' && snapshot.type !== 'hazard') continue;
                 results.push(snapshot);
             }
 
