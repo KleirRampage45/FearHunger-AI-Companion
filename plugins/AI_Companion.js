@@ -955,6 +955,23 @@
             }, `${actorName || 'party'}: ${stateName || 'state'}`);
         },
 
+        onRecovery(actorName, stateName, remainingAffected) {
+            const remaining = remainingAffected || [];
+            if (remaining.length > 0) {
+                this.record('recovery_worry', {
+                    caution: 0.25,
+                    protectiveness: 0.5,
+                    trauma: -0.25
+                }, `${actorName || 'party'} recovered from ${stateName || 'state'}; others still hurt`);
+                return;
+            }
+            this.record('recovery_relief', {
+                caution: -0.5,
+                protectiveness: -0.25,
+                trauma: -0.75
+            }, `${actorName || 'party'} recovered from ${stateName || 'state'}`);
+        },
+
         getState() {
             return Object.assign({}, this._state());
         },
@@ -1033,6 +1050,70 @@
             memory.updatedAt = now;
         },
 
+        _severeStateName(stateName) {
+            return /sangr|bleed|infecc|infect|poison|venen|toxic|maldic|curse|perd|lost|blind|ciego|paraly|par[aá]liz/i.test(String(stateName || ''));
+        },
+
+        _partyMembersWithSevereStates() {
+            const affected = [];
+            try {
+                const members = $gameParty && $gameParty.members ? $gameParty.members() : [];
+                members.forEach(member => {
+                    if (!member || !member.states) return;
+                    const severeStates = member.states()
+                        .map(state => state && state.name ? state.name : '')
+                        .filter(name => this._severeStateName(name));
+                    if (severeStates.length > 0) {
+                        affected.push({
+                            actorId: member.actorId ? member.actorId() : null,
+                            name: member.name ? member.name() : 'party',
+                            states: severeStates
+                        });
+                    }
+                });
+            } catch (e) { /* party may not be ready */ }
+            return affected;
+        },
+
+        recordRecovery(actorName, stateName, actorId) {
+            if (!this._severeStateName(stateName)) return null;
+            const memory = this._memory();
+            const now = Date.now();
+            const remaining = this._partyMembersWithSevereStates().filter(entry => entry.actorId !== actorId);
+            const isCompanion = actorId === Config.companionActorId || String(actorName || '') === String(Config.companionName || '');
+            const trigger = remaining.length > 0 ? 'recovery_worry' : 'recovery_relief';
+            const reason = remaining.length > 0
+                ? `${actorName || 'party'} recovered from ${stateName}; still worried for ${remaining.map(entry => entry.name).slice(0, 3).join(', ')}`
+                : `${actorName || 'party'} recovered from ${stateName}`;
+            const reduction = remaining.length > 0 ? 1 : (isCompanion ? 2 : 1);
+            memory.pressureBonus = Math.max(0, (memory.pressureBonus || 0) - reduction);
+            if (memory.pressureBonus <= 0) memory.pressureUntil = 0;
+            memory.recentTriggers.unshift({
+                trigger,
+                reason,
+                bonus: -reduction,
+                time: now
+            });
+            memory.recentTriggers = memory.recentTriggers.slice(0, 8);
+            memory.updatedAt = now;
+            try {
+                ThesisLogger.log('fear_recovery', {
+                    actor: actorName || '',
+                    actor_id: actorId || null,
+                    state: stateName || '',
+                    result: remaining.length > 0 ? 'worried_for_others' : 'relief',
+                    remaining_afflicted: remaining,
+                    pressure_bonus: memory.pressureBonus || 0
+                });
+            } catch (e) { /* telemetry should never block gameplay */ }
+            return {
+                trigger,
+                reason,
+                remaining,
+                pressureBonus: memory.pressureBonus || 0
+            };
+        },
+
         _recordLevel(level, score, reasons) {
             const memory = this._memory();
             const now = Date.now();
@@ -1091,7 +1172,7 @@
                     }
                     states.forEach(state => {
                         const stateName = String(state && state.name || '');
-                        if (/sangr|bleed|infecc|infect|poison|venen|toxic|maldic|curse/i.test(stateName)) {
+                        if (this._severeStateName(stateName)) {
                             score += 1;
                             reasons.push(`${member.name()} ${stateName}`);
                         }
@@ -12732,7 +12813,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     ShortTermMemory.addEvent(`${this.name()} gained state: ${state.name}`);
                     Debug.log(`[State Hook] ${this.name()} +${state.name}`);
                     PersonalityDrift.onSevereState(this.name(), state.name);
-                    if (typeof FearState !== 'undefined' && FearState.recordPressure && /sangr|bleed|infecc|infect|poison|venen|toxic|maldic|curse|perd|lost|blind|ciego|paraly|par[aá]liz/i.test(String(state.name || ''))) {
+                    if (typeof FearState !== 'undefined' && FearState.recordPressure && FearState._severeStateName && FearState._severeStateName(state.name)) {
                         FearState.recordPressure('severe_state', 2, `${this.name()} ${state.name}`, 180000);
                     }
 
@@ -12785,6 +12866,31 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 }
             }
         }
+    };
+
+    const _Game_Battler_removeState = Game_Battler.prototype.removeState;
+    Game_Battler.prototype.removeState = function (stateId) {
+        const hadState = this.isStateAffected(stateId);
+        const state = $dataStates ? $dataStates[stateId] : null;
+        _Game_Battler_removeState.call(this, stateId);
+        if (!hadState || !state || !state.name || !this.isActor || !this.isActor()) return;
+        if (!$gameParty || !$gameParty.members || !$gameParty.members().includes(this)) return;
+        if (typeof FearState === 'undefined' || !FearState.recordRecovery || !FearState._severeStateName || !FearState._severeStateName(state.name)) return;
+
+        const actorName = this.name ? this.name() : 'party';
+        const actorId = this.actorId ? this.actorId() : null;
+        const recovery = FearState.recordRecovery(actorName, state.name, actorId);
+        if (!recovery) return;
+        if (typeof PersonalityDrift !== 'undefined' && PersonalityDrift.onRecovery) {
+            PersonalityDrift.onRecovery(actorName, state.name, recovery.remaining);
+        }
+
+        const remainingNames = recovery.remaining.map(entry => entry.name).slice(0, 3).join(', ');
+        const memoryLine = recovery.remaining.length > 0
+            ? `${actorName} recovered from ${state.name}, but ${remainingNames} still need care.`
+            : `${actorName} recovered from ${state.name}.`;
+        ShortTermMemory.addEvent(memoryLine);
+        Debug.log('[Fear Recovery]', memoryLine);
     };
 
     //=========================================================================
