@@ -5292,7 +5292,8 @@ Respond ONLY with this JSON:
 
     Scene_AIConfig.prototype.createCommandWindow = function () {
         const wy = this._helpWindow.height + this._statusWindow.height;
-        this._commandWindow = new Window_AIConfigCommand(0, wy);
+        const wh = Math.max(160, Graphics.boxHeight - wy);
+        this._commandWindow = new Window_AIConfigCommand(0, wy, wh);
         this._commandWindow.setHelpWindow(this._helpWindow);
         this._commandWindow.setHandler('apiKey', this.commandApiKey.bind(this));
         this._commandWindow.setHandler('toggleMock', this.commandToggleMock.bind(this));
@@ -5725,7 +5726,8 @@ Respond ONLY with this JSON:
     Window_AIConfigCommand.prototype = Object.create(Window_Command.prototype);
     Window_AIConfigCommand.prototype.constructor = Window_AIConfigCommand;
 
-    Window_AIConfigCommand.prototype.initialize = function (x, y) {
+    Window_AIConfigCommand.prototype.initialize = function (x, y, height) {
+        this._forcedHeight = height || 0;
         Window_Command.prototype.initialize.call(this, x, y);
     };
 
@@ -5733,8 +5735,19 @@ Respond ONLY with this JSON:
         return Graphics.boxWidth;
     };
 
+    Window_AIConfigCommand.prototype.windowHeight = function () {
+        return this._forcedHeight || Window_Command.prototype.windowHeight.call(this);
+    };
+
     Window_AIConfigCommand.prototype.numVisibleRows = function () {
-        return 12;
+        const reserved = this.standardPadding ? this.standardPadding() * 2 : 36;
+        const available = Math.max(120, (this._forcedHeight || Graphics.boxHeight) - reserved);
+        return Math.max(5, Math.floor(available / this.itemHeight()));
+    };
+
+    Window_AIConfigCommand.prototype.processWheel = function () {
+        Window_Selectable.prototype.processWheel.call(this);
+        this.ensureCursorVisible();
     };
 
     Window_AIConfigCommand.prototype.makeCommandList = function () {
