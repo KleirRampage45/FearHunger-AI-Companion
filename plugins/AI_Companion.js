@@ -10604,17 +10604,22 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             if (!raw) return fallback;
             const lower = raw.toLowerCase();
             const subtype = String(target && target.subtype || '').toLowerCase();
+            const type = String(target && target.type || '').toLowerCase();
             const hints = String(target && target.textHints || '').toLowerCase();
             const isLight = /light|torch|lantern|candle|dark|oscur|yesquero|encend|farol|vela|antorcha/.test(hints) ||
                 /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(String(target && target.label || '').toLowerCase()) ||
                 subtype === 'light_source';
+            const mentionsLighting = /(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower);
             if (/soy\s+marcoh|i am\s+marcoh/i.test(lower)) {
                 return fallback;
             }
             if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) {
                 return fallback;
             }
-            if (isLight && !/(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower)) {
+            if (!isLight && mentionsLighting && type !== 'hazard') {
+                return fallback;
+            }
+            if (isLight && !mentionsLighting) {
                 return fallback;
             }
             if (isLight && /(vela|candle|torch|antorcha|farol|lantern)/i.test(lower)) {
@@ -10635,10 +10640,10 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             if (subtype === 'bookshelf' && !/(libro|book|estante|shelf|biblioteca)/i.test(lower)) {
                 return fallback;
             }
-            if (target && target.type === 'door' && !/(puerta|door|abrir|open)/i.test(lower)) {
+            if (type === 'door' && !/(puerta|door|abrir|open)/i.test(lower)) {
                 return fallback;
             }
-            if (target && target.type === 'npc' && /(cofre|caja|mesa|door|puerta|book|libro)/i.test(lower)) {
+            if (type === 'npc' && /(cofre|caja|mesa|door|puerta|book|libro)/i.test(lower)) {
                 return fallback;
             }
             return raw;
