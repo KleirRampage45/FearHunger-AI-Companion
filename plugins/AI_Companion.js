@@ -5252,7 +5252,7 @@ Respond ONLY with this JSON:
 
     Scene_AIConfig.prototype.createStatusWindow = function () {
         const wy = this._helpWindow.height;
-        this._statusWindow = new Window_Base(0, wy, Graphics.boxWidth, 180);
+        this._statusWindow = new Window_Base(0, wy, Graphics.boxWidth, 132);
         this.addWindow(this._statusWindow);
         this.refreshStatus();
     };
@@ -5260,26 +5260,29 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.refreshStatus = function () {
         this._statusWindow.contents.clear();
         const es = Config.language === 'es';
-        const lineH = 24;
+        this._statusWindow.contents.fontSize = 22;
+        const lineH = this._statusWindow.lineHeight ? this._statusWindow.lineHeight() - 6 : 28;
+        const short = (value, max) => {
+            const text = String(value || '');
+            return text.length > max ? text.substring(0, Math.max(0, max - 3)) + '...' : text;
+        };
         const drawLine = (text, row) => this._statusWindow.drawText(text, 10, row * lineH, Graphics.boxWidth - 40, 'left');
         const apiStatus = Config.apiKey
             ? (es ? 'API key: OK' : 'API key: OK') + ' (' + Config.apiKey.substring(0, 8) + '...)'
             : (es ? 'API key: no configurada' : 'API key: not set');
-        const chatModel = (Config.apiProvider === 'local' ? Config.localModel : (Config.chatModel || Config.getProvider().defaultModels[0] || 'auto')).split('/').pop();
-        const autonomyModel = String(Config.getAutonomyModel() || 'local-current').split('/').pop();
+        const chatModel = short((Config.apiProvider === 'local' ? Config.localModel : (Config.chatModel || Config.getProvider().defaultModels[0] || 'auto')).split('/').pop(), 28);
+        const autonomyModel = short(String(Config.getAutonomyModel() || 'local-current').split('/').pop(), 28);
         const autonomyRisk = Config.getAutonomyModel() === Config.localModel
             ? (es ? 'local preferido' : 'local preferred')
             : (es ? 'posible uso cloud' : 'may use cloud');
+        const loadout = STARTING_LOADOUTS[Config.companionClass];
+        const className = loadout ? (es ? loadout.nameEs : loadout.name) : Config.companionClass;
 
-        drawLine((es ? 'Compañero: ' : 'Companion: ') + Config.companionName + '  |  ' + (es ? 'Aspecto: ' : 'Look: ') + CharacterPresets.getCurrentPresetName(), 0);
-        drawLine((es ? 'Personalidad: ' : 'Personality: ') + CharacterPresets.getCurrentPersonalityName() + '  |  ' + (es ? 'Clase: ' : 'Class: ') + (STARTING_LOADOUTS[Config.companionClass] ? STARTING_LOADOUTS[Config.companionClass].nameEs : Config.companionClass), 1);
-        drawLine((es ? 'Chat: ' : 'Chat: ') + (PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider) + ' / ' + chatModel, 2);
-        drawLine((es ? 'Modo: ' : 'Mode: ') + (Config.useMockAI ? (es ? 'mock / prueba' : 'mock / test') : (es ? 'API real' : 'live API')) + '  |  ' + apiStatus, 3);
-        drawLine((es ? 'Autonomía beta: ' : 'Beta autonomy: ') + (Config.autonomyEnabled ? (es ? 'ACTIVA' : 'ON') : (es ? 'apagada' : 'OFF')) + '  |  ' + (es ? 'perfil: ' : 'profile: ') + Config.autonomyBehaviorProfile, 4);
-        drawLine((es ? 'Modelo auto.: ' : 'Auto model: ') + autonomyModel + ' (' + autonomyRisk + ')', 5);
-        drawLine((es ? 'Pulso: ' : 'Heartbeat: ') + Config.autonomyTickSeconds + 's  |  ' + (es ? 'explorar: ' : 'scout: ') + Config.autonomyMaxScoutDistance + '  |  ' + (es ? 'desvío: ' : 'detour: ') + Config.autonomyMaxDetourDistance + '  |  ' + (es ? 'botín: ' : 'loot: ') + Config.autonomyLootRadius, 6);
-        drawLine((es ? 'Muestreo: ' : 'Sampling: ') + `temp ${Config.chatTemperature} / top_p ${Config.chatTopP} / top_k ${Config.chatTopK || 'off'}`, 7);
-        drawLine((es ? 'Debug: ' : 'Debug: ') + (Config.debugMode ? 'ON' : 'OFF') + '  |  ' + (es ? 'Overlay: ' : 'Overlay: ') + (Config.debugOverlay ? 'ON' : 'OFF'), 8);
+        drawLine(`${es ? 'Compañero' : 'Companion'}: ${Config.companionName} | ${es ? 'Aspecto' : 'Look'}: ${CharacterPresets.getCurrentPresetName()} | ${es ? 'Clase' : 'Class'}: ${className}`, 0);
+        drawLine(`${es ? 'Persona' : 'Persona'}: ${CharacterPresets.getCurrentPersonalityName()} | ${es ? 'Custom' : 'Custom'}: ${Config.customPersonaEnabled ? 'ON' : 'OFF'} | ${es ? 'Modo' : 'Mode'}: ${Config.useMockAI ? 'mock' : 'API'}`, 1);
+        drawLine(`Chat: ${(PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider)} / ${chatModel} | ${apiStatus}`, 2);
+        drawLine(`${es ? 'Auto' : 'Auto'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'} ${Config.autonomyBehaviorProfile} / ${autonomyModel} (${autonomyRisk}) | temp ${Config.chatTemperature} top_p ${Config.chatTopP} top_k ${Config.chatTopK || 'off'}`, 3);
+        this._statusWindow.resetFontSettings();
     };
 
     Scene_AIConfig.prototype._refreshConfigScene = function (helpText) {
@@ -5443,14 +5446,20 @@ Respond ONLY with this JSON:
         this._commandWindow.deactivate();
         if (!this._inputWindow) {
             const ww = Graphics.boxWidth - 100;
-            const wh = 110;
+            const wh = 120;
             const wx = (Graphics.boxWidth - ww) / 2;
-            const wy = this._commandWindow.y + Math.min(this._commandWindow.height, 260) + 8;
+            const wy = Math.max(this._helpWindow.height + 12, Math.floor((Graphics.boxHeight - wh) / 2));
             this._inputWindow = new Window_AIKeyInput(wx, wy, ww, wh);
             this._inputWindow.setHandler('ok', this.onInputOk.bind(this));
             this._inputWindow.setHandler('cancel', this.onInputCancel.bind(this));
             this.addWindow(this._inputWindow);
         } else {
+            const ww = Graphics.boxWidth - 100;
+            const wh = 120;
+            const wx = (Graphics.boxWidth - ww) / 2;
+            const wy = Math.max(this._helpWindow.height + 12, Math.floor((Graphics.boxHeight - wh) / 2));
+            this._inputWindow.move(wx, wy, ww, wh);
+            this._inputWindow.createContents();
             this._inputWindow.show();
         }
         this._inputWindow.setTextMode(title, current || '', false);
