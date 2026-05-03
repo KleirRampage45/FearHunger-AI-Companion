@@ -4656,6 +4656,290 @@ Respond ONLY with this JSON:
     }
 
     //=========================================================================
+    // StoryGoalMemory — save-tied story progress without omniscience
+    //=========================================================================
+    const StoryGoalMemory = {
+        _defaultState() {
+            return {
+                visitedMaps: {},
+                knownEvents: [],
+                knownCharacters: {},
+                knownPlaces: {},
+                knownItems: {},
+                knownGoals: [],
+                suspectedGoals: [],
+                personalGoals: [
+                    { key: 'protect_party', text: 'Protect the party and avoid needless cruelty.', confidence: 0.9 },
+                    { key: 'survive_escape', text: 'Find a way through the dungeon and survive.', confidence: 0.75 },
+                    { key: 'preserve_allies', text: 'Do not sacrifice allies or the girl without explicit player consent.', confidence: 0.9 },
+                    { key: 'seek_redemption', text: 'Act with restraint; violence should serve survival, not pride.', confidence: 0.7 }
+                ],
+                areaStatus: {},
+                lastUpdatedAt: Date.now()
+            };
+        },
+
+        _state() {
+            if (!$gameSystem) return this._defaultState();
+            if (!$gameSystem._aiCompanionStoryGoals) {
+                $gameSystem._aiCompanionStoryGoals = this._defaultState();
+            }
+            const state = $gameSystem._aiCompanionStoryGoals;
+            state.visitedMaps = state.visitedMaps || {};
+            state.knownEvents = Array.isArray(state.knownEvents) ? state.knownEvents : [];
+            state.knownCharacters = state.knownCharacters || {};
+            state.knownPlaces = state.knownPlaces || {};
+            state.knownItems = state.knownItems || {};
+            state.knownGoals = Array.isArray(state.knownGoals) ? state.knownGoals : [];
+            state.suspectedGoals = Array.isArray(state.suspectedGoals) ? state.suspectedGoals : [];
+            state.personalGoals = Array.isArray(state.personalGoals) && state.personalGoals.length > 0
+                ? state.personalGoals
+                : this._defaultState().personalGoals;
+            state.areaStatus = state.areaStatus || {};
+            return state;
+        },
+
+        _normalizeKey(text) {
+            return String(text || '').toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'unknown';
+        },
+
+        _mapKey(mapId) {
+            return String(mapId != null ? mapId : ($gameMap ? $gameMap.mapId() : 0));
+        },
+
+        _now() {
+            return Date.now();
+        },
+
+        _rememberEvent(type, text, meta) {
+            if (!text) return null;
+            const state = this._state();
+            const now = this._now();
+            const key = `${type}:${this._normalizeKey(text)}`;
+            const existing = state.knownEvents.find(entry => entry.key === key);
+            if (existing) {
+                existing.lastSeenAt = now;
+                existing.count = (existing.count || 1) + 1;
+                existing.meta = Object.assign(existing.meta || {}, meta || {});
+                return existing;
+            }
+            const entry = {
+                key,
+                type: type || 'event',
+                text: String(text).slice(0, 180),
+                meta: Object.assign({ mapId: $gameMap ? $gameMap.mapId() : null }, meta || {}),
+                firstSeenAt: now,
+                lastSeenAt: now,
+                count: 1
+            };
+            state.knownEvents.unshift(entry);
+            state.knownEvents = state.knownEvents.slice(0, 80);
+            state.lastUpdatedAt = now;
+            return entry;
+        },
+
+        _upsertGoal(collectionName, key, text, confidence, evidence) {
+            const state = this._state();
+            const list = state[collectionName];
+            const normalizedKey = key || this._normalizeKey(text);
+            let goal = list.find(entry => entry.key === normalizedKey);
+            if (!goal) {
+                goal = {
+                    key: normalizedKey,
+                    text: text,
+                    confidence: Math.max(0.1, Math.min(1, Number(confidence) || 0.4)),
+                    evidence: [],
+                    createdAt: this._now()
+                };
+                list.push(goal);
+            }
+            goal.text = text || goal.text;
+            goal.confidence = Math.max(goal.confidence || 0, Math.max(0.1, Math.min(1, Number(confidence) || 0.4)));
+            goal.updatedAt = this._now();
+            if (evidence) goal.evidence = (goal.evidence || []).concat(String(evidence).slice(0, 120)).slice(-5);
+            list.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+            state[collectionName] = list.slice(0, 12);
+            state.lastUpdatedAt = this._now();
+            return goal;
+        },
+
+        onMapTransfer(mapId, mapName) {
+            const state = this._state();
+            const key = this._mapKey(mapId);
+            const now = this._now();
+            const entry = state.visitedMaps[key] || {
+                mapId: Number(mapId) || mapId,
+                name: mapName || `Map ${key}`,
+                visits: 0,
+                firstVisitedAt: now,
+                storyTouchpoints: [],
+                status: 'unexplored'
+            };
+            entry.name = mapName || entry.name;
+            entry.visits = (entry.visits || 0) + 1;
+            entry.lastVisitedAt = now;
+            if (entry.visits >= 2 && entry.status === 'unexplored') entry.status = 'partially_explored';
+            state.visitedMaps[key] = entry;
+            state.knownPlaces[key] = { mapId: entry.mapId, name: entry.name, status: entry.status, visits: entry.visits };
+            this._inferAreaGoal(entry);
+            this._rememberEvent('map_visit', `Visited ${entry.name}`, { mapId: entry.mapId, visits: entry.visits });
+        },
+
+        onNpcDialogue(speaker, text, mapName) {
+            if (!speaker || speaker === 'Narrator') return;
+            const state = this._state();
+            const key = this._normalizeKey(speaker);
+            const now = this._now();
+            const profile = state.knownCharacters[key] || {
+                name: speaker,
+                firstMetAt: now,
+                dialogueCount: 0,
+                knownFrom: []
+            };
+            profile.name = speaker;
+            profile.dialogueCount = (profile.dialogueCount || 0) + 1;
+            profile.lastMetAt = now;
+            profile.lastMap = mapName || ($gameMap ? $gameMap.displayName() : '');
+            if (text) profile.lastLine = String(text).slice(0, 180);
+            profile.knownFrom = (profile.knownFrom || []).concat(mapName || '').filter(Boolean).slice(-5);
+            state.knownCharacters[key] = profile;
+            this._rememberEvent('npc_dialogue', `${speaker} spoke to the party`, { speaker, text: String(text || '').slice(0, 160), mapName });
+            this._inferGoalsFromText(speaker, text);
+        },
+
+        onItemGained(item, amount, source) {
+            if (!item || amount <= 0) return;
+            const name = item.name || 'item';
+            const key = this._normalizeKey(name);
+            const state = this._state();
+            const known = state.knownItems[key] || { name, firstSeenAt: this._now(), countSeen: 0 };
+            known.name = name;
+            known.countSeen = (known.countSeen || 0) + amount;
+            known.lastSeenAt = this._now();
+            known.source = source || known.source || 'party';
+            state.knownItems[key] = known;
+            this._rememberEvent('item_known', `Found ${amount}x ${name}`, { item: name, amount, source });
+            this._inferGoalsFromText('item', name);
+        },
+
+        onBattleResult(enemyNames, victory) {
+            const names = (enemyNames || []).filter(Boolean);
+            if (names.length === 0) return;
+            this._rememberEvent(victory ? 'battle_victory' : 'battle_escape', `${victory ? 'Defeated' : 'Escaped'} ${names.slice(0, 3).join(', ')}`, { enemies: names });
+            names.forEach(name => this._inferGoalsFromText('enemy', name));
+        },
+
+        onPartyJoin(actorName) {
+            if (!actorName) return;
+            this._rememberEvent('party_join', `${actorName} joined the party`, { actorName });
+            if (/niña|girl/i.test(actorName)) {
+                this._upsertGoal('knownGoals', 'protect_girl', 'Keep the girl alive and do not use her as a resource.', 0.85, actorName);
+            }
+        },
+
+        onSupportItemUsed(itemName, targetName) {
+            this._rememberEvent('care', `Used ${itemName} on ${targetName}`, { itemName, targetName });
+            this._upsertGoal('knownGoals', 'maintain_party_health', 'Keep serious injuries treated before pushing deeper.', 0.65, itemName);
+        },
+
+        _inferAreaGoal(entry) {
+            const name = String(entry && entry.name || '').toLowerCase();
+            if (/entrada|entrance|level 1|nivel 1|hall|pasillo/.test(name)) {
+                this._upsertGoal('suspectedGoals', 'move_deeper', 'Find a safe route deeper into the dungeon.', 0.55, entry.name);
+            }
+            if (/prison|prisi[oó]n|cell|celda/.test(name)) {
+                this._upsertGoal('suspectedGoals', 'check_prisoners', 'Check prisoners and locked cells carefully before leaving.', 0.55, entry.name);
+            }
+            if (/mahab|ma'hab|tower|torre|void|vacio|altar|ritual/.test(name)) {
+                this._upsertGoal('suspectedGoals', 'understand_rituals', 'Treat ritual places as important but dangerous story points.', 0.5, entry.name);
+            }
+        },
+
+        _inferGoalsFromText(source, text) {
+            const value = String(text || '').toLowerCase();
+            if (!value) return;
+            if (/le'?garde|legarde/.test(value)) {
+                this._upsertGoal('suspectedGoals', 'learn_about_legarde', "Le'garde seems important; learn what happened before trusting any conclusion.", 0.62, source);
+            }
+            if (/buckman|buckmann/.test(value)) {
+                this._upsertGoal('knownGoals', 'remember_buckman', 'Remember Buckman and what he said before judging the prison situation.', 0.58, source);
+            }
+            if (/trortur/.test(value)) {
+                this._upsertGoal('knownGoals', 'trortur_danger', 'Treat Trortur as a dangerous prisoner interaction, not a normal guard.', 0.72, source);
+            }
+            if (/girl|niña|nina/.test(value)) {
+                this._upsertGoal('knownGoals', 'protect_girl', 'Keep the girl alive and do not use her as a resource.', 0.82, source);
+            }
+            if (/crow mauler|cuervo|mauler/.test(value)) {
+                this._upsertGoal('knownGoals', 'fear_crow_mauler', 'If the ominous hunter is nearby, survival comes before optional goals.', 0.84, source);
+            }
+            if (/key|llave|cube|cubo|artifact|artefact|skin bible|biblia|soul stone|piedra del alma/.test(value)) {
+                this._upsertGoal('suspectedGoals', 'preserve_key_items', 'Treat unusual keys, books, souls, and artifacts as story-relevant until proven otherwise.', 0.55, text);
+            }
+            if (/sacrifice|sacrific|ofrec|altar|gro-?goroth|girl|niña|nina/.test(value)) {
+                this._upsertGoal('knownGoals', 'no_sacrifice_without_consent', 'Never sacrifice allies or important companions without explicit consent.', 0.92, text);
+            }
+        },
+
+        markCurrentAreaStatus(status, reason) {
+            const state = this._state();
+            const mapId = $gameMap ? $gameMap.mapId() : null;
+            const key = this._mapKey(mapId);
+            if (!state.visitedMaps[key]) this.onMapTransfer(mapId, $gameMap ? ($gameMap.displayName() || `Map ${mapId}`) : `Map ${key}`);
+            state.visitedMaps[key].status = status || 'partially_explored';
+            state.visitedMaps[key].statusReason = reason || '';
+            state.visitedMaps[key].updatedAt = this._now();
+            state.areaStatus[key] = { status: state.visitedMaps[key].status, reason: reason || '', updatedAt: this._now() };
+        },
+
+        getPromptSummary() {
+            const state = this._state();
+            const es = Config.language === 'es';
+            const lines = [];
+            lines.push(es
+                ? 'Este resumen contiene solo lo que el grupo ha observado, escuchado o deducido. No lo trates como conocimiento absoluto del futuro.'
+                : 'This summary contains only what the party has observed, heard, or inferred. Do not treat it as absolute future knowledge.');
+            const currentMapId = this._mapKey($gameMap ? $gameMap.mapId() : null);
+            const currentArea = state.visitedMaps[currentMapId];
+            if (currentArea) {
+                lines.push(es
+                    ? `Zona actual: ${currentArea.name} (${currentArea.status || 'parcialmente explorada'}, visitas ${currentArea.visits || 1}).`
+                    : `Current area: ${currentArea.name} (${currentArea.status || 'partially explored'}, visits ${currentArea.visits || 1}).`);
+            }
+            const knownGoals = state.knownGoals.slice(0, 5);
+            if (knownGoals.length > 0) {
+                lines.push(es ? 'METAS CONOCIDAS:' : 'KNOWN GOALS:');
+                knownGoals.forEach(goal => lines.push(`- ${goal.text} (${Math.round((goal.confidence || 0) * 100)}%)`));
+            }
+            const suspectedGoals = state.suspectedGoals.slice(0, 4);
+            if (suspectedGoals.length > 0) {
+                lines.push(es ? 'SOSPECHAS / RUMBOS POSIBLES:' : 'SUSPECTED LEADS:');
+                suspectedGoals.forEach(goal => lines.push(`- ${goal.text} (${Math.round((goal.confidence || 0) * 100)}%)`));
+            }
+            const personalGoals = state.personalGoals.slice(0, 4);
+            if (personalGoals.length > 0) {
+                lines.push(es ? 'METAS PERSONALES DEL COMPAÑERO:' : 'COMPANION PERSONAL GOALS:');
+                personalGoals.forEach(goal => lines.push(`- ${goal.text}`));
+            }
+            const recentEvents = state.knownEvents.slice(0, 6);
+            if (recentEvents.length > 0) {
+                lines.push(es ? 'HITOS RECIENTES OBSERVADOS:' : 'RECENT OBSERVED MILESTONES:');
+                recentEvents.forEach(event => lines.push(`- ${event.text}`));
+            }
+            const characters = Object.values(state.knownCharacters || {}).sort((a, b) => (b.lastMetAt || 0) - (a.lastMetAt || 0)).slice(0, 5);
+            if (characters.length > 0) {
+                lines.push(es ? 'PERSONAJES CONOCIDOS:' : 'KNOWN CHARACTERS:');
+                characters.forEach(char => lines.push(`- ${char.name}${char.lastMap ? ` (${char.lastMap})` : ''}${char.lastLine ? `: "${char.lastLine}"` : ''}`));
+            }
+            return lines.join('\n');
+        },
+
+        getDebugSnapshot() {
+            return JSON.parse(JSON.stringify(this._state()));
+        }
+    };
+
+    //=========================================================================
     // DialogueMemory - persistent anti-repetition memory shared by chat/ambient
     //=========================================================================
     const DialogueMemory = {
@@ -8253,6 +8537,7 @@ Respond ONLY with this JSON:
         ModelRouter,
         CharacterPresets,
         ShortTermMemory,
+        StoryGoalMemory,
         IntentDetector,
         RelationshipTracker,
         KBFallback,
@@ -8901,6 +9186,9 @@ Respond ONLY with this JSON:
             if (memoryBeliefContext && memoryBeliefContext.length > 0) {
                 pushSection(this._isTradeRecallQuery(playerMessage, intent) ? 'PURCHASE MEMORY' : 'LONG-TERM MEMORY AND BELIEFS', memoryBeliefContext);
             }
+            if (context.story_goal_memory && context.story_goal_memory.length > 0) {
+                pushSection('STORY GOALS AND PROGRESS', context.story_goal_memory);
+            }
 
             const pickupLines = this._getRecentPickupLines(context, playerMessage, intent);
             if (pickupLines.length > 0) pushSection('RECENT PICKUPS', pickupLines);
@@ -9162,6 +9450,7 @@ Respond ONLY with this JSON:
                 older_chat_memory: this._buildOlderChatMemory(),
                 memory_summary: memory.relationship || 'New companion',
                 memory_beliefs: MemoryManager.getPromptSummary(),
+                story_goal_memory: StoryGoalMemory.getPromptSummary(),
                 current_map: mapContext.displayName,
                 current_map_tips: mapContext.tips,
                 raw_map_name: mapContext.rawDisplayName,
@@ -11277,6 +11566,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 if (action.applyGlobal) action.applyGlobal();
                 if (targetActor.refresh) targetActor.refresh();
                 ShortTermMemory.addEvent(`${Config.companionName} used ${item.name} on ${targetActor.name()}.`);
+                if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onSupportItemUsed) {
+                    StoryGoalMemory.onSupportItemUsed(item.name, targetActor.name());
+                }
                 ThesisLogger.log('game_event', {
                     event: 'support_item_used',
                     item_name: item.name,
@@ -12901,6 +13193,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _Game_Party_gainItem.call(this, item, amount, includeEquip);
         if ($gameTemp && $gameTemp._aiSuppressItemPickupHooks) return;
         if (item && amount > 0) {
+            if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onItemGained) {
+                StoryGoalMemory.onItemGained(item, amount, ($gameTemp && ($gameTemp._aiCompanionLootSource || $gameTemp._aiAutonomyActorName)) || 'party');
+            }
             if ($gameTemp && $gameTemp._aiMerchantPurchaseContext) {
                 const ctx = $gameTemp._aiMerchantPurchaseContext;
                 if (ctx.until && Date.now() <= ctx.until && (!ctx.itemId || ctx.itemId === item.id)) {
@@ -12943,6 +13238,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (actor) {
                 const actorName = actor.name() || (actorId === Config.companionActorId ? Config.companionName : 'Unknown');
                 ShortTermMemory.addEvent(`${actorName} joined the party.`, 'map');
+                if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onPartyJoin) {
+                    StoryGoalMemory.onPartyJoin(actorName);
+                }
                 // AI comments on new party members
                 if (actorId !== Config.companionActorId) {
                     AmbientDialogue.onPartyJoin(actor.name());
@@ -12997,6 +13295,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             }
 
             ShortTermMemory.addEvent(`${speakerName} said: "${cleanText}"`, 'map');
+            if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onNpcDialogue) {
+                StoryGoalMemory.onNpcDialogue(speakerName, cleanText, $gameMap ? ($gameMap.displayName() || '') : '');
+            }
             Debug.log('[NPC Track]', speakerName, ':', cleanText);
         }
     };
@@ -13059,6 +13360,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         const rawNames = $gameTroop.members().map(m => m.name());
         const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '').replace(/\s+[A-Z]$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, true);
+        if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onBattleResult) {
+            StoryGoalMemory.onBattleResult(enemyNames, true);
+        }
         AmbientDialogue.onBattleEnd(true);
         ThesisLogger.log('game_event', { event: 'battle_victory', enemies: enemyNames });
         AIState.lastBattleStateCache = null;
@@ -13081,6 +13385,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         const rawNames = $gameTroop.members().map(m => m.name());
         const enemyNames = [...new Set(rawNames.map(n => n.replace(/\s*\[.*?\]\s*$/, '').replace(/\s+[A-Z]$/, '')))];
         ShortTermMemory.setLastBattle(enemyNames, false);
+        if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onBattleResult) {
+            StoryGoalMemory.onBattleResult(enemyNames, false);
+        }
         AmbientDialogue.onBattleEnd(false);
         ThesisLogger.log('game_event', { event: 'battle_escape', enemies: enemyNames });
         AIState.lastBattleStateCache = null;
@@ -13108,6 +13415,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const mapName = $gameMap.displayName() || 'new area';
             Debug.log('Room entry detected:', mapName);
             ThesisLogger.log('game_event', { event: 'map_transfer', map_name: mapName, map_id: $gameMap.mapId() });
+            if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onMapTransfer) {
+                StoryGoalMemory.onMapTransfer($gameMap.mapId(), mapName);
+            }
             AmbientDialogue.onRoomEntry(mapName);
             WorldStateEngine.onMapTransfer($gameMap.mapId());
             if (typeof AutonomySystem !== 'undefined' && AutonomySystem.onMapTransfer) {
@@ -13140,6 +13450,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 if (speaker && speaker.name !== 'Narrator') {
                     const mapName = $gameMap ? ($gameMap.displayName() || 'unknown') : 'unknown';
                     NPCIntelligence.recordDialogue(speaker.nameEs || speaker.name, fullText, mapName);
+                    if (typeof StoryGoalMemory !== 'undefined' && StoryGoalMemory.onNpcDialogue) {
+                        StoryGoalMemory.onNpcDialogue(speaker.nameEs || speaker.name, fullText, mapName);
+                    }
                 }
             }
         } catch (e) {
@@ -13164,6 +13477,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     window.AI_Companion.WorldStateEngine = WorldStateEngine;
     window.AI_Companion.RiskEvaluator = RiskEvaluator;
     window.AI_Companion.NPCIntelligence = NPCIntelligence;
+    window.AI_Companion.StoryGoalMemory = StoryGoalMemory;
     window.AI_Companion.AutonomySystem = AutonomySystem;
     window.AI_Companion.DebugState = DebugState;
 
