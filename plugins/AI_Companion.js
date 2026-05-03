@@ -129,6 +129,11 @@
         companionActorId: Number(parameters['companionActorId'] || 15),
         companionName: String(parameters['companionName'] || 'Wanderer'),
         personality: String(parameters['personality'] || 'survival-first, cautious, trauma-aware'),
+        customPersonaEnabled: localStorage.getItem('AI_Companion_CustomPersonaEnabled') === 'true',
+        customBackstory: localStorage.getItem('AI_Companion_CustomBackstory') || '',
+        customSpeechStyle: localStorage.getItem('AI_Companion_CustomSpeechStyle') || '',
+        customGoals: localStorage.getItem('AI_Companion_CustomGoals') || '',
+        customBehaviorRules: localStorage.getItem('AI_Companion_CustomBehaviorRules') || '',
         debugMode: savedDebug !== null ? savedDebug === 'true' : (parameters['debugMode'] === 'true'),
         forceMockAI: parameters['useMockAI'] === 'true',
         autoJoinParty: parameters['autoJoinParty'] !== 'false',
@@ -158,6 +163,9 @@
         // Local AI config
         localEndpoint: localStorage.getItem('AI_Companion_LocalEndpoint') || 'http://192.168.100.3:1234/v1/chat/completions',
         localModel: localStorage.getItem('AI_Companion_LocalModel') || 'qwen3.5-4b-uncensored-hauhaucs-aggressive',
+        chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
+        chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
+        chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
 
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
@@ -277,6 +285,112 @@
         setLocalModel(model) {
             this.localModel = model;
             localStorage.setItem('AI_Companion_LocalModel', model);
+        },
+
+        setCustomPersonaEnabled(on) {
+            this.customPersonaEnabled = !!on;
+            localStorage.setItem('AI_Companion_CustomPersonaEnabled', on ? 'true' : 'false');
+            this.refreshPersonality();
+        },
+
+        setCustomBackstory(text) {
+            this.customBackstory = String(text || '').trim();
+            localStorage.setItem('AI_Companion_CustomBackstory', this.customBackstory);
+        },
+
+        setCustomSpeechStyle(text) {
+            this.customSpeechStyle = String(text || '').trim();
+            localStorage.setItem('AI_Companion_CustomSpeechStyle', this.customSpeechStyle);
+        },
+
+        setCustomGoals(text) {
+            this.customGoals = String(text || '').trim();
+            localStorage.setItem('AI_Companion_CustomGoals', this.customGoals);
+        },
+
+        setCustomBehaviorRules(text) {
+            this.customBehaviorRules = String(text || '').trim();
+            localStorage.setItem('AI_Companion_CustomBehaviorRules', this.customBehaviorRules);
+        },
+
+        refreshPersonality() {
+            const preset = typeof CharacterPresets !== 'undefined' && CharacterPresets.getCurrentPersonality
+                ? CharacterPresets.getCurrentPersonality()
+                : null;
+            this.personality = this.customPersonaEnabled && this.customSpeechStyle
+                ? this.customSpeechStyle
+                : (preset && preset.traits ? preset.traits : String(parameters['personality'] || 'survival-first, cautious, trauma-aware'));
+        },
+
+        getPersonaBackstory() {
+            if (this.customPersonaEnabled && this.customBackstory) return this.customBackstory;
+            const preset = typeof CharacterPresets !== 'undefined' && CharacterPresets.getCurrentPersonality
+                ? CharacterPresets.getCurrentPersonality()
+                : null;
+            return preset && preset.backstory ? preset.backstory : '';
+        },
+
+        getPersonaPromptBlock() {
+            const lines = [];
+            lines.push(`IDENTITY: You are ${this.companionName}. Never claim to be another person.`);
+            lines.push(`PERSONALITY AND VOICE: ${this.personality}`);
+            const backstory = this.getPersonaBackstory();
+            if (backstory) lines.push(`BACKSTORY: ${backstory}`);
+            if (this.customPersonaEnabled && this.customGoals) lines.push(`PERSONAL GOALS: ${this.customGoals}`);
+            if (this.customPersonaEnabled && this.customBehaviorRules) lines.push(`BEHAVIOR RULES: ${this.customBehaviorRules}`);
+            return lines.join('\n');
+        },
+
+        setChatTemperature(value) {
+            this.chatTemperature = Math.max(0, Math.min(2, Number(value) || 0.85));
+            localStorage.setItem('AI_Companion_ChatTemperature', String(this.chatTemperature));
+        },
+
+        cycleChatTemperature() {
+            const values = [0.3, 0.6, 0.85, 1.0, 1.2];
+            const idx = values.indexOf(this.chatTemperature);
+            this.setChatTemperature(values[(idx + 1 + values.length) % values.length]);
+            return this.chatTemperature;
+        },
+
+        setChatTopP(value) {
+            this.chatTopP = Math.max(0.1, Math.min(1, Number(value) || 0.95));
+            localStorage.setItem('AI_Companion_ChatTopP', String(this.chatTopP));
+        },
+
+        cycleChatTopP() {
+            const values = [0.8, 0.9, 0.95, 1.0];
+            const idx = values.indexOf(this.chatTopP);
+            this.setChatTopP(values[(idx + 1 + values.length) % values.length]);
+            return this.chatTopP;
+        },
+
+        setChatTopK(value) {
+            this.chatTopK = Math.max(0, Math.min(200, Number(value) || 64));
+            localStorage.setItem('AI_Companion_ChatTopK', String(this.chatTopK));
+        },
+
+        cycleChatTopK() {
+            const values = [0, 32, 40, 64, 100];
+            const idx = values.indexOf(this.chatTopK);
+            this.setChatTopK(values[(idx + 1 + values.length) % values.length]);
+            return this.chatTopK;
+        },
+
+        getSamplingOptions(overrides) {
+            const settings = Object.assign({
+                temperature: this.chatTemperature,
+                top_p: this.chatTopP
+            }, overrides || {});
+            if (this.chatTopK > 0) settings.top_k = this.chatTopK;
+            return settings;
+        },
+
+        isSelfIntroFiller(text) {
+            const raw = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const name = String(this.companionName || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            if (!raw || !name) return false;
+            return raw.indexOf(`soy ${name}`) === 0 || raw.indexOf(`i am ${name}`) === 0 || raw.indexOf(`i'm ${name}`) === 0;
         },
 
         get useMockAI() {
@@ -777,7 +891,7 @@
         setPersonality(id) {
             this._currentPersonality = id;
             localStorage.setItem('AI_Companion_Personality', id);
-            Config.personality = this.getCurrentPersonality().traits;
+            Config.refreshPersonality();
         },
 
         setName(name) {
@@ -790,8 +904,8 @@
     const savedName = localStorage.getItem('AI_Companion_Name');
     if (savedName) Config.companionName = savedName;
 
-    // Load saved personality
-    Config.personality = CharacterPresets.getCurrentPersonality().traits;
+    // Load saved personality/persona
+    Config.refreshPersonality();
 
     //=========================================================================
     // AI Companion State
@@ -3735,11 +3849,10 @@ Reply with ONLY the category name, nothing else.`;
 You are one of the party's allies — do NOT address ${playerName} as if you are separate from the group.
 ${otherAllies ? 'Other allies in this fight: ' + otherAllies + '.' : ''}
 You speak from experience, cautiously and with weight. NEVER break immersion.
-You are ${Config.personality}.
+${Config.getPersonaPromptBlock()}
 SANITY: ${sanityMod}
 ${fearState.prompt}
 ${driftPrompt}
-${CharacterPresets.getCurrentPersonality().backstory ? '\nCHARACTER BACKSTORY: ' + CharacterPresets.getCurrentPersonality().backstory + '\n' : ''}
 GAME RULES: NO leveling/XP exists. COIN FLIP = instant death mechanic on specific turns. Kill enemies BEFORE their coin flip turn. Use "Atacar" to deal damage — NOT self-buff skills.
 BATTLE STATE (Turn ${battleState.turn_number}):
 - Enemies: ${compactEnemies}
@@ -3881,9 +3994,8 @@ Respond ONLY with this JSON:
                     body: JSON.stringify(Object.assign({
                         model: model,
                         messages: messages,
-                        temperature: 0.6,
                         max_tokens: maxTokens
-                    }, isLocal ? { enable_thinking: false } : {}))
+                    }, Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }), isLocal ? { enable_thinking: false } : {}))
                 });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return await response.json();
@@ -4048,9 +4160,8 @@ Respond ONLY with this JSON:
                     xhr.send(JSON.stringify(Object.assign({
                         model: model,
                         messages: messages,
-                        temperature: 0.6,
                         max_tokens: maxTokens
-                    }, isLocal ? { enable_thinking: false } : {})));
+                    }, Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }), isLocal ? { enable_thinking: false } : {})));
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
                         return { _requestFailed: true, _failure: { model: model, type: 'http', status: xhr.status, body: String(xhr.responseText || '').substring(0, 400) } };
@@ -5167,7 +5278,8 @@ Respond ONLY with this JSON:
         drawLine((es ? 'Autonomía beta: ' : 'Beta autonomy: ') + (Config.autonomyEnabled ? (es ? 'ACTIVA' : 'ON') : (es ? 'apagada' : 'OFF')) + '  |  ' + (es ? 'perfil: ' : 'profile: ') + Config.autonomyBehaviorProfile, 4);
         drawLine((es ? 'Modelo auto.: ' : 'Auto model: ') + autonomyModel + ' (' + autonomyRisk + ')', 5);
         drawLine((es ? 'Pulso: ' : 'Heartbeat: ') + Config.autonomyTickSeconds + 's  |  ' + (es ? 'explorar: ' : 'scout: ') + Config.autonomyMaxScoutDistance + '  |  ' + (es ? 'desvío: ' : 'detour: ') + Config.autonomyMaxDetourDistance + '  |  ' + (es ? 'botín: ' : 'loot: ') + Config.autonomyLootRadius, 6);
-        drawLine((es ? 'Debug: ' : 'Debug: ') + (Config.debugMode ? 'ON' : 'OFF') + '  |  ' + (es ? 'Overlay: ' : 'Overlay: ') + (Config.debugOverlay ? 'ON' : 'OFF'), 7);
+        drawLine((es ? 'Muestreo: ' : 'Sampling: ') + `temp ${Config.chatTemperature} / top_p ${Config.chatTopP} / top_k ${Config.chatTopK || 'off'}`, 7);
+        drawLine((es ? 'Debug: ' : 'Debug: ') + (Config.debugMode ? 'ON' : 'OFF') + '  |  ' + (es ? 'Overlay: ' : 'Overlay: ') + (Config.debugOverlay ? 'ON' : 'OFF'), 8);
     };
 
     Scene_AIConfig.prototype._refreshConfigScene = function (helpText) {
@@ -5189,10 +5301,20 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('setName', this.commandSetName.bind(this));
         this._commandWindow.setHandler('setAppearance', this.commandSetAppearance.bind(this));
         this._commandWindow.setHandler('setPersonality', this.commandSetPersonality.bind(this));
+        this._commandWindow.setHandler('toggleCustomPersona', this.commandToggleCustomPersona.bind(this));
+        this._commandWindow.setHandler('editBackstory', this.commandEditBackstory.bind(this));
+        this._commandWindow.setHandler('editSpeechStyle', this.commandEditSpeechStyle.bind(this));
+        this._commandWindow.setHandler('editGoals', this.commandEditGoals.bind(this));
+        this._commandWindow.setHandler('editBehaviorRules', this.commandEditBehaviorRules.bind(this));
         this._commandWindow.setHandler('setClass', this.commandSetClass.bind(this));
         this._commandWindow.setHandler('setLanguage', this.commandSetLanguage.bind(this));
         this._commandWindow.setHandler('setProvider', this.commandSetProvider.bind(this));
         this._commandWindow.setHandler('setModel', this.commandSetModel.bind(this));
+        this._commandWindow.setHandler('editLocalEndpoint', this.commandEditLocalEndpoint.bind(this));
+        this._commandWindow.setHandler('editLocalModel', this.commandEditLocalModel.bind(this));
+        this._commandWindow.setHandler('setTemperature', this.commandSetTemperature.bind(this));
+        this._commandWindow.setHandler('setTopP', this.commandSetTopP.bind(this));
+        this._commandWindow.setHandler('setTopK', this.commandSetTopK.bind(this));
         this._commandWindow.setHandler('toggleAutonomy', this.commandToggleAutonomy.bind(this));
         this._commandWindow.setHandler('setAutonomyModel', this.commandSetAutonomyModel.bind(this));
         this._commandWindow.setHandler('setAutonomyTick', this.commandSetAutonomyTick.bind(this));
@@ -5214,6 +5336,7 @@ Respond ONLY with this JSON:
             ? 'Pega tu API key con Ctrl+V\nEnter para guardar, Escape para cancelar'
             : 'Paste your API key with Ctrl+V\nPress Enter to save, Escape to cancel');
         this._inputMode = true;
+        this._textInputPurpose = 'apiKey';
         this._commandWindow.deactivate();
         // Create input window if it doesn't exist
         if (!this._inputWindow) {
@@ -5227,8 +5350,8 @@ Respond ONLY with this JSON:
             this.addWindow(this._inputWindow);
         } else {
             this._inputWindow.show();
-            this._inputWindow.clear();
         }
+        this._inputWindow.setTextMode('API Key', Config.apiKey || '', true);
         this._inputWindow.activate();
     };
 
@@ -5254,6 +5377,37 @@ Respond ONLY with this JSON:
 
     Scene_AIConfig.prototype.onInputOk = function () {
         const key = this._inputWindow.getKey();
+        if (this._textInputPurpose && this._textInputPurpose !== 'apiKey') {
+            const text = String(key || '').trim();
+            const es = Config.language === 'es';
+            switch (this._textInputPurpose) {
+                case 'backstory':
+                    Config.setCustomBackstory(text);
+                    break;
+                case 'speechStyle':
+                    Config.setCustomSpeechStyle(text);
+                    Config.refreshPersonality();
+                    break;
+                case 'goals':
+                    Config.setCustomGoals(text);
+                    break;
+                case 'behaviorRules':
+                    Config.setCustomBehaviorRules(text);
+                    break;
+                case 'localEndpoint':
+                    Config.setLocalEndpoint(text);
+                    break;
+                case 'localModel':
+                    Config.setLocalModel(text);
+                    break;
+            }
+            SoundManager.playOk();
+            this._inputWindow.hide();
+            this._inputMode = false;
+            this._textInputPurpose = null;
+            this._refreshConfigScene(es ? 'Texto guardado.' : 'Text saved.');
+            return;
+        }
         if (key && key.length > 10) {
             Config.setApiKey(key);  // Saves to localStorage!
             Config.forceMockAI = false;
@@ -5262,6 +5416,7 @@ Respond ONLY with this JSON:
             SoundManager.playOk();
             this._inputWindow.hide();
             this._inputMode = false;
+            this._textInputPurpose = null;
             this._refreshConfigScene(Config.language === 'es'
                 ? 'API key guardada correctamente\nElige una opción abajo'
                 : 'API key saved successfully!\nSelect an option below');
@@ -5274,9 +5429,31 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.onInputCancel = function () {
         this._inputWindow.hide();
         this._inputMode = false;
+        this._textInputPurpose = null;
         this._refreshConfigScene(Config.language === 'es'
             ? 'Configuración del compañero IA\nAjusta chat, depuración y autonomía beta.\nElige una opción abajo.'
             : 'AI Companion Configuration\nAdjust chat, debugging, and beta autonomy.\nSelect an option below.');
+    };
+
+    Scene_AIConfig.prototype._openTextInput = function (purpose, title, current, helpText) {
+        this._textInputPurpose = purpose;
+        this._inputMode = true;
+        this._helpWindow.setText(helpText);
+        this._commandWindow.deactivate();
+        if (!this._inputWindow) {
+            const ww = Graphics.boxWidth - 100;
+            const wh = 110;
+            const wx = (Graphics.boxWidth - ww) / 2;
+            const wy = this._commandWindow.y + Math.min(this._commandWindow.height, 260) + 8;
+            this._inputWindow = new Window_AIKeyInput(wx, wy, ww, wh);
+            this._inputWindow.setHandler('ok', this.onInputOk.bind(this));
+            this._inputWindow.setHandler('cancel', this.onInputCancel.bind(this));
+            this.addWindow(this._inputWindow);
+        } else {
+            this._inputWindow.show();
+        }
+        this._inputWindow.setTextMode(title, current || '', false);
+        this._inputWindow.activate();
     };
 
     // Name input handler
@@ -5325,6 +5502,38 @@ Respond ONLY with this JSON:
         CharacterPresets.setPersonality(types[nextIndex].id);
         SoundManager.playOk();
         this._refreshConfigScene(`Personality: ${types[nextIndex].name}\n(${types[nextIndex].traits})`);
+    };
+
+    Scene_AIConfig.prototype.commandToggleCustomPersona = function () {
+        Config.setCustomPersonaEnabled(!Config.customPersonaEnabled);
+        SoundManager.playOk();
+        this._refreshConfigScene(Config.language === 'es'
+            ? `Perfil personalizado: ${Config.customPersonaEnabled ? 'ON' : 'OFF'}`
+            : `Custom persona: ${Config.customPersonaEnabled ? 'ON' : 'OFF'}`);
+    };
+
+    Scene_AIConfig.prototype.commandEditBackstory = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('backstory', es ? 'Historia' : 'Backstory', Config.customBackstory,
+            es ? 'Pega una historia breve. Enter guarda, Escape cancela.' : 'Paste a short backstory. Enter saves, Escape cancels.');
+    };
+
+    Scene_AIConfig.prototype.commandEditSpeechStyle = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('speechStyle', es ? 'Voz/estilo' : 'Voice/style', Config.customSpeechStyle,
+            es ? 'Pega rasgos de voz, tono y personalidad.' : 'Paste voice, tone, and personality traits.');
+    };
+
+    Scene_AIConfig.prototype.commandEditGoals = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('goals', es ? 'Metas' : 'Goals', Config.customGoals,
+            es ? 'Pega metas personales del compañero.' : 'Paste the companion personal goals.');
+    };
+
+    Scene_AIConfig.prototype.commandEditBehaviorRules = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('behaviorRules', es ? 'Reglas' : 'Rules', Config.customBehaviorRules,
+            es ? 'Pega reglas de conducta del personaje.' : 'Paste behavior rules for the character.');
     };
 
     // Class cycling handler
@@ -5387,6 +5596,36 @@ Respond ONLY with this JSON:
         SoundManager.playOk();
         const shortName = models[nextIdx].length > 40 ? models[nextIdx].substring(0, 40) + '...' : models[nextIdx];
         this._refreshConfigScene(`${es ? 'Modelo de chat' : 'Chat model'}: ${shortName}`);
+    };
+
+    Scene_AIConfig.prototype.commandEditLocalEndpoint = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('localEndpoint', es ? 'Endpoint local' : 'Local endpoint', Config.localEndpoint,
+            es ? 'Pega endpoint de LM Studio/Ollama compatible OpenAI.' : 'Paste OpenAI-compatible LM Studio/Ollama endpoint.');
+    };
+
+    Scene_AIConfig.prototype.commandEditLocalModel = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('localModel', es ? 'Modelo local' : 'Local model', Config.localModel,
+            es ? 'Pega el ID exacto del modelo local cargado.' : 'Paste the exact loaded local model ID.');
+    };
+
+    Scene_AIConfig.prototype.commandSetTemperature = function () {
+        const next = Config.cycleChatTemperature();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Temperatura' : 'Temperature'}: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetTopP = function () {
+        const next = Config.cycleChatTopP();
+        SoundManager.playOk();
+        this._refreshConfigScene(`top_p: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetTopK = function () {
+        const next = Config.cycleChatTopK();
+        SoundManager.playOk();
+        this._refreshConfigScene(`top_k: ${next === 0 ? 'off' : next}`);
     };
 
     Scene_AIConfig.prototype.commandToggleAutonomy = function () {
@@ -5495,7 +5734,7 @@ Respond ONLY with this JSON:
     };
 
     Window_AIConfigCommand.prototype.numVisibleRows = function () {
-        return 11;
+        return 12;
     };
 
     Window_AIConfigCommand.prototype.makeCommandList = function () {
@@ -5510,6 +5749,11 @@ Respond ONLY with this JSON:
         this.addCommand(`${es ? 'Nombre' : 'Name'}: ${Config.companionName}`, 'setName');
         this.addCommand(`${es ? 'Aspecto' : 'Appearance'}: ${CharacterPresets.getCurrentPresetName()}`, 'setAppearance');
         this.addCommand(`${es ? 'Personalidad' : 'Personality'}: ${CharacterPresets.getCurrentPersonalityName()}`, 'setPersonality');
+        this.addCommand(`${es ? 'Perfil personalizado' : 'Custom persona'}: ${Config.customPersonaEnabled ? 'ON' : 'OFF'}`, 'toggleCustomPersona');
+        this.addCommand(es ? 'Editar historia' : 'Edit backstory', 'editBackstory');
+        this.addCommand(es ? 'Editar voz/estilo' : 'Edit voice/style', 'editSpeechStyle');
+        this.addCommand(es ? 'Editar metas' : 'Edit goals', 'editGoals');
+        this.addCommand(es ? 'Editar reglas' : 'Edit rules', 'editBehaviorRules');
         const loadout = STARTING_LOADOUTS[Config.companionClass];
         const className = loadout ? (es ? loadout.nameEs : loadout.name) : Config.companionClass;
         this.addCommand(`${es ? 'Clase inicial' : 'Starting class'}: ${className}`, 'setClass');
@@ -5529,6 +5773,13 @@ Respond ONLY with this JSON:
             ? Config.localModel.substring(0, 30)
             : (Config.chatModel || providerDef.defaultModels[0] || 'auto').split('/').pop().substring(0, 30);
         this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
+        if (Config.apiProvider === 'local') {
+            this.addCommand(es ? 'Editar endpoint local' : 'Edit local endpoint', 'editLocalEndpoint');
+            this.addCommand(es ? 'Editar modelo local' : 'Edit local model', 'editLocalModel');
+        }
+        this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
+        this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
+        this.addCommand(`top_k: ${Config.chatTopK || 'off'}`, 'setTopK');
         // Fetch free models (OpenRouter only)
         if (Config.apiProvider === 'openrouter') {
             const freeCount = Config.getFreeModels().length;
@@ -5561,10 +5812,20 @@ Respond ONLY with this JSON:
             setName: es ? 'Abre la edición nativa del nombre del compañero.' : 'Open the native companion name editor.',
             setAppearance: es ? 'Cambia el preset visual del compañero.' : 'Cycle the companion appearance preset.',
             setPersonality: es ? 'Cambia la personalidad base del compañero.' : 'Cycle the companion base personality.',
+            toggleCustomPersona: es ? 'Usa tu propia ficha de personaje en los prompts.' : 'Use your custom character sheet in prompts.',
+            editBackstory: es ? 'Edita historia y trasfondo mediante pegado.' : 'Edit backstory by pasting text.',
+            editSpeechStyle: es ? 'Edita voz, tono y rasgos. Reemplaza la personalidad si el perfil custom está activo.' : 'Edit voice, tone, and traits. Replaces personality when custom persona is active.',
+            editGoals: es ? 'Edita metas personales no omniscientes del compañero.' : 'Edit non-omniscient personal goals for the companion.',
+            editBehaviorRules: es ? 'Edita reglas de conducta del bot.' : 'Edit behavior rules for the bot.',
             setClass: es ? 'Cambia el equipamiento inicial del compañero.' : 'Cycle the companion starting loadout.',
             setLanguage: es ? 'Alterna el idioma principal del plugin.' : 'Toggle the plugin language.',
             setProvider: es ? 'Cambia el proveedor de chat principal.' : 'Cycle the primary chat provider.',
             setModel: es ? 'Cambia el modelo usado para chat y rol.' : 'Cycle the model used for chat and roleplay.',
+            editLocalEndpoint: es ? 'Configura un endpoint local compatible OpenAI.' : 'Configure an OpenAI-compatible local endpoint.',
+            editLocalModel: es ? 'Configura el ID del modelo local cargado.' : 'Configure the loaded local model ID.',
+            setTemperature: es ? 'Controla creatividad del modelo.' : 'Control model creativity.',
+            setTopP: es ? 'Controla muestreo nucleus/top_p.' : 'Control nucleus/top_p sampling.',
+            setTopK: es ? 'Controla muestreo top_k; 0 lo desactiva.' : 'Control top_k sampling; 0 disables it.',
             fetchModels: es ? 'Busca modelos gratis disponibles en OpenRouter.' : 'Fetch available free models from OpenRouter.',
             toggleAutonomy: es ? 'Activa la futura autonomía beta. Por ahora es preparación/configuración.' : 'Enable future beta autonomy. For now this is configuration prep.',
             setAutonomyModel: es ? 'Modelo preferido para la autonomía. Lo ideal es mantenerlo local.' : 'Preferred model for autonomy. Local is recommended.',
@@ -5596,6 +5857,8 @@ Respond ONLY with this JSON:
     Window_AIKeyInput.prototype.initialize = function (x, y, width, height) {
         Window_Base.prototype.initialize.call(this, x, y, width, height);
         this._apiKey = Config.apiKey || '';
+        this._title = 'API Key';
+        this._mask = true;
         this._handlers = {};
         this.refresh();
         this._setupClipboard();
@@ -5618,12 +5881,20 @@ Respond ONLY with this JSON:
 
     Window_AIKeyInput.prototype.refresh = function () {
         this.contents.clear();
-        const masked = this._apiKey ?
-            this._apiKey.substring(0, 8) + '...' + this._apiKey.substring(this._apiKey.length - 4) :
-            '(empty - paste your key)';
-        this.drawText('API Key:', 0, 0, 100);
-        this.drawText(masked, 110, 0, this.contentsWidth() - 120);
-        this.drawText('Press ENTER to save, ESC to cancel', 0, 40, this.contentsWidth(), 'center');
+        const value = String(this._apiKey || '');
+        const visible = this._mask && value
+            ? value.substring(0, 8) + '...' + value.substring(Math.max(0, value.length - 4))
+            : (value || '(empty - paste text)');
+        this.drawText(this._title + ':', 0, 0, 160);
+        this.drawText(visible.substring(0, 90), 170, 0, this.contentsWidth() - 180);
+        this.drawText('Ctrl+V paste | ENTER save | ESC cancel', 0, 40, this.contentsWidth(), 'center');
+    };
+
+    Window_AIKeyInput.prototype.setTextMode = function (title, value, mask) {
+        this._title = title || 'Text';
+        this._apiKey = String(value || '');
+        this._mask = !!mask;
+        this.refresh();
     };
 
     Window_AIKeyInput.prototype.update = function () {
@@ -5647,6 +5918,11 @@ Respond ONLY with this JSON:
 
     Window_AIKeyInput.prototype.getKey = function () {
         return this._apiKey;
+    };
+
+    Window_AIKeyInput.prototype.clear = function () {
+        this._apiKey = '';
+        this.refresh();
     };
 
     Window_AIKeyInput.prototype.activate = function () {
@@ -6955,7 +7231,7 @@ Respond ONLY with this JSON:
             Debug.warn('[Autonomy] Consent required:', reason);
             if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue && AmbientDialogue._speak) {
                 const es = Config.language === 'es';
-                AmbientDialogue._speak(es ? 'David, esto lo decides tú.' : 'This one is your call.', 'autonomy_consent');
+                AmbientDialogue._speak(es ? 'Esto lo decides tú.' : 'This one is your call.', 'autonomy_consent');
             }
         },
 
@@ -9011,61 +9287,66 @@ Respond ONLY with this JSON:
         },
 
         _buildVisionFallback(context) {
+            const playerName = context && context.player_name ? context.player_name : 'tú';
             if (context && context.nearby_objects) {
-                return `Solo veo esto cerca, David: ${context.nearby_objects}.`;
+                return `Solo veo esto cerca, ${playerName}: ${context.nearby_objects}.`;
             }
-            return 'No veo nada destacable ahora mismo, David.';
+            return `No veo nada destacable ahora mismo, ${playerName}.`;
         },
 
         _buildTacticalFallback(context) {
+            const playerName = context && context.player_name ? context.player_name : 'tú';
             const nearbyEnemies = this._getNearbyEnemyKnowledge(context);
             if (nearbyEnemies.length === 0) {
-                return 'No veo enemigos cerca, David. Mantente alerta por si aparece algo.';
+                return `No veo enemigos cerca, ${playerName}. Mantente alerta por si aparece algo.`;
             }
 
             const firstEnemy = nearbyEnemies[0].enemy;
             const name = firstEnemy.displayNameEs || firstEnemy.displayName || 'enemigo';
             if (firstEnemy.coinFlipTurn) {
-                return `${name} está cerca, David. Cuidado con su turno de moneda; hay que matarlo antes de eso.`;
+                return `${name} está cerca, ${playerName}. Cuidado con su turno de moneda; hay que matarlo antes de eso.`;
             }
-            return `${name} está cerca, David. Parece manejable, pero no bajemos la guardia.`;
+            return `${name} está cerca, ${playerName}. Parece manejable, pero no bajemos la guardia.`;
         },
 
         _buildRecentBattleFallback(context) {
+            const playerName = context && context.player_name ? context.player_name : 'tú';
             if (!context || !context.last_battle || !context.last_battle.enemies || context.last_battle.enemies.length === 0) {
-                return 'No recuerdo bien el último combate, David.';
+                return `No recuerdo bien el último combate, ${playerName}.`;
             }
             const names = context.last_battle.enemies.join(', ');
             if (context.last_battle.victory) {
-                return `Nos fue bien, David. Acabamos de vencer a ${names}.`;
+                return `Nos fue bien, ${playerName}. Acabamos de vencer a ${names}.`;
             }
-            return `El último combate fue contra ${names}, David.`;
+            return `El último combate fue contra ${names}, ${playerName}.`;
         },
 
         _buildNpcRecallFallback(context) {
+            const playerName = context && context.player_name ? context.player_name : 'tú';
             const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
             if (!entries || entries.length === 0) {
-                return 'No estoy seguro de con quién hablamos recién, David.';
+                return `No estoy seguro de con quién hablamos recién, ${playerName}.`;
             }
             const latest = entries[entries.length - 1];
             if (!latest || !latest.speaker) {
-                return 'No estoy seguro de con quién hablamos recién, David.';
+                return `No estoy seguro de con quién hablamos recién, ${playerName}.`;
             }
             if (latest.text) {
-                return `Era ${latest.speaker}, David. Nos habló de esto: "${latest.text.substring(0, 90)}"`;
+                return `Era ${latest.speaker}, ${playerName}. Nos habló de esto: "${latest.text.substring(0, 90)}"`;
             }
-            return `Era ${latest.speaker}, David.`;
+            return `Era ${latest.speaker}, ${playerName}.`;
         },
 
-        _buildEmotionalFallback(playerMessage) {
+        _buildEmotionalFallback(playerMessage, context) {
+            const playerName = context && context.player_name ? context.player_name : 'tú';
             const msg = String(playerMessage || '').toLowerCase();
             if (/lo hice bien|did i do well|did i do good/.test(msg)) {
-                return 'Sí. Lo hiciste bien, David.';
+                return `Sí. Lo hiciste bien, ${playerName}.`;
             }
             if (/como te sientes|cómo te sientes|how do you feel/.test(msg)) {
                 return 'Sigo entero. Un poco tenso, pero bien.';
             }
-            return 'Estoy contigo, David. Seguimos adelante.';
+            return `Estoy contigo, ${playerName}. Seguimos adelante.`;
         },
 
         _validateChatResponse(response, playerMessage, context, intent) {
@@ -9129,7 +9410,7 @@ Respond ONLY with this JSON:
 
             if (intent && intent.primary === 'emotional') {
                 if (/a \d+ pasos al|enemig|coin flip|turno de moneda/i.test(text)) {
-                    return { text: this._buildEmotionalFallback(playerMessage), changed: true, reason: 'emotional_tactical_drift' };
+                    return { text: this._buildEmotionalFallback(playerMessage, context), changed: true, reason: 'emotional_tactical_drift' };
                 }
             }
 
@@ -9679,8 +9960,8 @@ Respond ONLY with this JSON:
 
             // Base prompt: identity + relationship (always)
             const playerName = context.player_name || 'the player';
-            let prompt = `You are ${Config.companionName}, a companion fighting alongside ${playerName} in Fear & Hunger. You are talking directly to ${playerName}. Refer to them as 'you' or by name, NEVER in the third person. You are one of the party — do NOT talk as if you are separate from the group. You are ${Config.personality}.
-${CharacterPresets.getCurrentPersonality().backstory ? '\nCHARACTER BACKSTORY: ' + CharacterPresets.getCurrentPersonality().backstory + '\n' : ''}
+            let prompt = `You are ${Config.companionName}, a companion fighting alongside ${playerName} in Fear & Hunger. You are talking directly to ${playerName}. Refer to them as 'you' or by name, NEVER in the third person. You are one of the party — do NOT talk as if you are separate from the group.
+${Config.getPersonaPromptBlock()}
 RELATIONSHIP: ${RelationshipTracker.getSummary()}
 Sanity: ${context.sanity_state} (${sanityMod})
 Fear: ${context.fear_state ? context.fear_state.level : 'calm'}${context.fear_state && context.fear_state.reasons && context.fear_state.reasons.length ? ' — ' + context.fear_state.reasons.join(', ') : ''}
@@ -9876,9 +10157,9 @@ CRITICAL GAME RULES (NEVER violate these):
                 }
                 case 'emotional': {
                     let block = `\nRelationship level: ${RelationshipTracker.getLevel()} (Trust ${RelationshipTracker.trust}, Affinity ${RelationshipTracker.affinity})\n`;
-                    const personality = CharacterPresets.getCurrentPersonality();
-                    if (personality && personality.backstory) {
-                        block += `\nIMPORTANT: Answer from your CHARACTER'S emotional perspective. Your backstory: ${personality.backstory.substring(0, 250)}\n`;
+                    const backstory = Config.getPersonaBackstory();
+                    if (backstory) {
+                        block += `\nIMPORTANT: Answer from your CHARACTER'S emotional perspective. Your backstory: ${backstory.substring(0, 250)}\n`;
                         block += `Do NOT give tactical advice or mention nearby threats. Focus on how YOU feel, your fears, your past, your connection to the player.\n`;
                     }
                     return block;
@@ -10003,9 +10284,8 @@ CRITICAL GAME RULES (NEVER violate these):
                         body: JSON.stringify(Object.assign({
                             model: model,
                             messages: extraBody.messages || [{ role: 'user', content: prompt }],
-                            temperature: 0.8,
                             max_tokens: maxTokens
-                        }, extraBody.extra || {}))
+                        }, Config.getSamplingOptions(), extraBody.extra || {}))
                     });
                     clearTimeout(timer);
                     if (!response.ok) return '';
@@ -10239,9 +10519,9 @@ CRITICAL GAME RULES (NEVER violate these):
             }
 
             const itemDesc = kbItem ? kbItem.description : '';
-            const prompt = `You are ${Config.companionName}, a companion in "Fear & Hunger".
+const prompt = `You are ${Config.companionName}, a companion in "Fear & Hunger".
 ${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}
-Your personality: ${Config.personality}
+${Config.getPersonaPromptBlock()}
 Your sanity: ${sanity.level} (${sanity.percent}%). ${sanity.modifier}
 
 ${companionOwned ? `You just found: ${item.name}` : `The player just picked up: ${item.name}`}
@@ -10581,7 +10861,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             if (!raw) return fallback;
             const lower = raw.toLowerCase();
             if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) return fallback;
-            if (/^(soy marcoh|i am marcoh)/i.test(lower)) return fallback;
+            if (Config.isSelfIntroFiller(raw)) return fallback;
             if (raw.length < 6) return fallback;
             const type = String(target && target.type || '').toLowerCase();
             const subtype = String(target && target.subtype || '').toLowerCase();
@@ -10610,7 +10890,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 /light|torch|lantern|candle|yesquero|farol|vela|antorcha/.test(String(target && target.label || '').toLowerCase()) ||
                 subtype === 'light_source';
             const mentionsLighting = /(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower);
-            if (/soy\s+marcoh|i am\s+marcoh/i.test(lower)) {
+            if (Config.isSelfIntroFiller(raw)) {
                 return fallback;
             }
             if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) {
@@ -10883,7 +11163,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
             const prompt = `You are ${Config.companionName}, a companion in "Fear & Hunger".
 ${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}
-Your personality: ${Config.personality}
+${Config.getPersonaPromptBlock()}
 Your sanity: ${sanity.level} (${sanity.percent}%). ${sanity.modifier}
 
 You are at Hunger Level ${hungerLevel}/5. ${hungerLevel >= 4 ? 'You are STARVING and close to death.' : hungerLevel >= 3 ? 'Your hunger is painful.' : 'You are getting hungry.'}
@@ -11143,7 +11423,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             if (!raw || raw.length < 4) return { speak: false, thought: 'empty or too short', source: 'heuristic' };
             if (this._shouldAlwaysSpeak(topic)) return { speak: true, thought: 'mandatory prompt', source: 'heuristic' };
             const lower = raw.toLowerCase();
-            if (/^(estoy aqu[ií]|aqu[ií] estoy|sigo aqu[ií]|soy marcoh|here\b|i am here\b|still here\b|we are here\b|i am marcoh\b)/i.test(lower)) {
+            if (/^(estoy aqu[ií]|aqu[ií] estoy|sigo aqu[ií]|here\b|i am here\b|still here\b|we are here\b)/i.test(lower) || Config.isSelfIntroFiller(raw)) {
                 return { speak: false, thought: 'generic presence filler', source: 'heuristic' };
             }
             if (/^(mm+\.?|eh+\.?|bueno\.?|vale\.?|ok\.?)$/i.test(lower)) {
