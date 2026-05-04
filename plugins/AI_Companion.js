@@ -6109,14 +6109,37 @@ Respond ONLY with this JSON:
         const es = Config.language === 'es';
         this._helpWindow = new Window_Help(2);
         this._helpWindow.setText(es
-            ? 'Registro IA reciente\nOK/Esc: volver. Se actualiza al abrir.'
-            : 'Recent AI log\nOK/Esc: back. Refreshes when opened.');
+            ? 'Registro IA reciente\nOK: detalles. Esc: volver.'
+            : 'Recent AI log\nOK: details. Esc: back.');
         this.addWindow(this._helpWindow);
         this._logWindow = new Window_AIDebugLog(0, this._helpWindow.height, Graphics.boxWidth, Graphics.boxHeight - this._helpWindow.height);
-        this._logWindow.setHandler('ok', this.popScene.bind(this));
-        this._logWindow.setHandler('cancel', this.popScene.bind(this));
+        this._logWindow.setHandler('ok', this.onLogOk.bind(this));
+        this._logWindow.setHandler('cancel', this.onLogCancel.bind(this));
         this.addWindow(this._logWindow);
         this._logWindow.activate();
+    };
+
+    Scene_AIDebugLog.prototype.onLogOk = function () {
+        if (this._logWindow.showSelectedDetails()) {
+            this._helpWindow.setText(Config.language === 'es'
+                ? 'Detalle del registro\nEsc: volver a la lista.'
+                : 'Log entry detail\nEsc: back to list.');
+            this._logWindow.activate();
+        } else {
+            this._logWindow.activate();
+        }
+    };
+
+    Scene_AIDebugLog.prototype.onLogCancel = function () {
+        if (this._logWindow.isShowingDetails && this._logWindow.isShowingDetails()) {
+            this._logWindow.showList();
+            this._helpWindow.setText(Config.language === 'es'
+                ? 'Registro IA reciente\nOK: detalles. Esc: volver.'
+                : 'Recent AI log\nOK: details. Esc: back.');
+            this._logWindow.activate();
+            return;
+        }
+        this.popScene();
     };
 
     function Window_AIDebugLog() {
@@ -6128,6 +6151,8 @@ Respond ONLY with this JSON:
 
     Window_AIDebugLog.prototype.initialize = function (x, y, width, height) {
         this._lines = [];
+        this._entries = [];
+        this._detailMode = false;
         Window_Selectable.prototype.initialize.call(this, x, y, width, height);
         this.refresh();
         this.select(0);
@@ -6138,12 +6163,63 @@ Respond ONLY with this JSON:
     };
 
     Window_AIDebugLog.prototype.refresh = function () {
-        const entries = ThesisLogger.getRecentEntries(40);
-        this._lines = entries.length > 0
-            ? entries.map(entry => ThesisLogger.formatRecentLine(entry))
+        this._entries = ThesisLogger.getRecentEntries(40);
+        this._detailMode = false;
+        this._lines = this._entries.length > 0
+            ? this._entries.map(entry => ThesisLogger.formatRecentLine(entry))
             : [Config.language === 'es' ? 'No hay registros recientes todavía.' : 'No recent entries yet.'];
         this.createContents();
         this.drawAllItems();
+    };
+
+    Window_AIDebugLog.prototype.isShowingDetails = function () {
+        return !!this._detailMode;
+    };
+
+    Window_AIDebugLog.prototype.showList = function () {
+        this._detailMode = false;
+        this._lines = this._entries.length > 0
+            ? this._entries.map(entry => ThesisLogger.formatRecentLine(entry))
+            : [Config.language === 'es' ? 'No hay registros recientes todavía.' : 'No recent entries yet.'];
+        this.createContents();
+        this.drawAllItems();
+        this.select(0);
+    };
+
+    Window_AIDebugLog.prototype.showSelectedDetails = function () {
+        if (!this._entries || this._entries.length === 0) return false;
+        const entry = this._entries[this.index()];
+        if (!entry) return false;
+        this._detailMode = true;
+        this._lines = this._detailLines(entry);
+        this.createContents();
+        this.drawAllItems();
+        this.select(0);
+        return true;
+    };
+
+    Window_AIDebugLog.prototype._detailLines = function (entry) {
+        const lines = [];
+        const push = (key, value) => {
+            if (value == null || value === '') return;
+            lines.push(`${key}: ${String(value).replace(/\s+/g, ' ').substring(0, 140)}`);
+        };
+        push('type', entry._type);
+        push('time', Math.floor((entry.session_time_ms || 0) / 1000) + 's');
+        push('map', `${entry.map_name || ''} ${entry.map_id != null ? '#' + entry.map_id : ''}`);
+        push('action', entry.action);
+        push('event_id', entry.event_id);
+        push('source', entry.source);
+        push('model', entry.model_used);
+        push('reason', entry.reason);
+        push('error', entry.error);
+        push('text', entry.text || entry.candidate_text);
+        push('raw', entry.raw_response_content);
+        if (entry.snapshot) {
+            push('situation', `${entry.snapshot.situation || ''} / threat ${entry.snapshot.threatLevel || ''}`);
+            push('nearby', entry.snapshot.nearby ? entry.snapshot.nearby.map(item => `${item.label || item.type}#${item.eventId}`).slice(0, 8).join(', ') : '');
+        }
+        return lines.length > 0 ? lines : [Config.language === 'es' ? 'Sin detalles.' : 'No details.'];
     };
 
     Window_AIDebugLog.prototype.drawItem = function (index) {
