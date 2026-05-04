@@ -166,6 +166,7 @@
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
+        ambientFallbackMode: localStorage.getItem('AI_Companion_AmbientFallbackMode') || 'silent',
 
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
@@ -384,6 +385,10 @@
             }, overrides || {});
             if (this.chatTopK > 0) settings.top_k = this.chatTopK;
             return settings;
+        },
+
+        shouldUseAmbientFallbacks() {
+            return this.ambientFallbackMode === 'legacy';
         },
 
         isSelfIntroFiller(text) {
@@ -10869,6 +10874,10 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
             try {
                 if (Config.useMockAI) {
+                    if (!Config.shouldUseAmbientFallbacks()) {
+                        Debug.log('[Ambient] Item comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
+                        return;
+                    }
                     const fallbacks = isFood && isHungry
                         ? (es ? ['Comida... la necesito.', 'Tengo tanta hambre...'] : ['Food... I need it.', 'I\'m so hungry...'])
                         : isWeapon
@@ -11508,6 +11517,10 @@ React in one short sentence (max 60 chars). Stay in character. Express your hung
 
             try {
                 if (Config.useMockAI) {
+                    if (!Config.shouldUseAmbientFallbacks()) {
+                        Debug.log('[Ambient] Hunger comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
+                        return;
+                    }
                     const fallbacks = hasFood
                         ? (es ? ['Tengo hambre... ¿no teníamos comida?', 'Necesito comer algo...'] : ['I\'m hungry... didn\'t we have food?', 'I need to eat...'])
                         : (es ? ['El hambre me está matando...', 'Necesitamos comida...'] : ['The hunger is killing me...', 'We need food...']);
@@ -11583,6 +11596,10 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
 
             try {
                 if (Config.useMockAI) {
+                    if (!Config.shouldUseAmbientFallbacks()) {
+                        Debug.log('[Ambient] Party join comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
+                        return;
+                    }
                     const fallbacks = es
                         ? ['Alguien más... no sé si confiar.', 'Más gente... bien, supongo.', '¿Quién eres tú?']
                         : ['Someone else... I don\'t know if I trust them.', 'More people... good, I guess.', 'Who are you?'];
@@ -11627,6 +11644,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
         },
 
         onBattleEnd(victory) {
+            if (!Config.shouldUseAmbientFallbacks()) return;
             if (!this.canSpeak() || Math.random() > 0.40) return;
             if (victory) {
                 const lines = ['Terminamos.', 'Sigue con vida...', 'Hay que seguir.', 'No fue fácil.', 'Eso estuvo cerca.'];
@@ -11706,6 +11724,10 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 const model = Config.getChatModel();
 
                 if (Config.useMockAI) {
+                    if (!Config.shouldUseAmbientFallbacks()) {
+                        Debug.log('[Ambient] Room comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
+                        return;
+                    }
                     const fallback = es ? 'Este lugar... no me gusta nada.' : 'This place... I don\'t like it.';
                     this._speakWithThought(fallback, 'room_entry', {
                         mapName,
