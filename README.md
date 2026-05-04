@@ -111,6 +111,7 @@ Branch-specific tests are in [docs/BRANCH_TEST_PLANS.md](docs/BRANCH_TEST_PLANS.
 General smoke test:
 
 ```bash
+node scripts/check_plugin_static.js
 node --check plugins/AI_Companion.js
 node --check plugins/FearHungerKB.js
 git diff --check

@@ -129,3 +129,24 @@ Pass:
 - Archive includes plugin/docs/install files.
 - Archive excludes game files, saves, logs, and private notes.
 - Version and changelog are present.
+
+## `feat/english-version-regression-test`
+
+Purpose: static and manual bilingual regression coverage.
+
+Test:
+
+1. Run:
+
+   ```bash
+   node scripts/check_plugin_static.js
+   ```
+
+2. Follow `docs/ENGLISH_REGRESSION.md`.
+
+Pass:
+
+- Static checker prints `OK`.
+- English mode uses English labels and replies.
+- Spanish mode keeps Spanish labels and replies.
+- Combat, autonomy, story memory, and hardcoded-line cleanup still work in both modes.
