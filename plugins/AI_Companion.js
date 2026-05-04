@@ -2057,7 +2057,17 @@ Reply with ONLY the category name, nothing else.`;
                 'Moneda': 'Coin',
                 'Cadáver': 'Corpse',
                 'Trampa de flechas': 'Arrow trap',
-                'Trampa de oso': 'Bear trap'
+                'Trampa de oso': 'Bear trap',
+                'Cuerpo colgado': 'Hanging corpse',
+                'Pozo': 'Well',
+                'Cadáveres': 'Corpses',
+                'Montón de cadáveres': 'Corpse pile',
+                'Mecanismo': 'Mechanism',
+                'Rejas': 'Bars',
+                'Interior podrido': 'Rotten interior',
+                'Carrito minero': 'Mine cart',
+                'Niña muerta': 'Dead girl',
+                'Moonless muerta': 'Dead Moonless'
             };
             return labels[raw] || raw;
         },
@@ -2111,6 +2121,16 @@ Reply with ONLY the category name, nothing else.`;
             add(51, [46, 65, 66, 155, 156, 157, 158, 159, 160, 161, 162, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 232], 'obstruction', 'collapsed_passage', 'Pasillo bloqueado', { danger: 'none' });
             add(1, [287, 288], 'trap', 'floor_trap', 'Suelo peligroso', { danger: 'medium' });
 
+            [4, 128].forEach(mapId => {
+                add(mapId, [1, 2, 3, 4, 20, 76], 'door', 'transfer', 'Salida');
+                add(mapId, [5], 'npc', 'dead_moonless', 'Moonless muerta');
+                add(mapId, [18], 'npc', 'dead_girl', 'Niña muerta');
+                add(mapId, [12, 13, 14, 15, 16, 17, 28, 29, 30, 31], 'corpse', 'hanging_body', 'Cuerpo colgado');
+                add(mapId, [44], 'hazard', 'insect_whispers', 'Ritual', { danger: 'medium' });
+                add(mapId, [61, 62, 63, 64], 'hazard', 'well', 'Pozo', { danger: 'high' });
+                add(mapId, [69], 'container', 'loot_body', 'Cadáveres');
+            });
+
             add(3, [14, 98], 'npc', 'buckman', 'Buckman');
             add(3, [15], 'hazard', 'pit_hole', 'Retrete ensangrentado', { danger: 'medium' });
             add(3, [41, 43, 50, 52, 54, 55], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
@@ -2133,6 +2153,23 @@ Reply with ONLY the category name, nothing else.`;
             add(6, [35, 37, 38, 45], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
             add(6, [8, 9, 83, 84, 85, 86, 87], 'hazard', 'rest', 'Cama', { danger: 'medium' });
             add(6, [16], 'enemy', 'ghoul', 'Ghoul', { danger: 'high' });
+
+            add(5, [1, 3, 4, 5], 'door', 'transfer', 'Salida');
+            add(5, [8, 9, 10], 'door', 'bars', 'Rejas');
+            add(5, [15, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72], 'corpse', 'corpse_pile', 'Montón de cadáveres');
+            add(5, [18, 21], 'hazard', 'mechanism', 'Mecanismo', { danger: 'medium' });
+            add(5, [80], 'npc', 'dead_girl', 'Niña muerta');
+
+            add(8, [11, 12, 13, 15, 16, 44, 45, 46, 47, 48, 49, 74, 76, 77, 78, 79, 80], 'corpse', 'burned_corpses', 'Montón de cadáveres');
+            add(8, [14], 'npc', 'dead_girl', 'Niña muerta');
+            add(8, [18], 'hazard', 'suffocation', 'Suelo peligroso', { danger: 'medium' });
+            add(8, [33, 36, 43, 59, 60, 66, 68, 71], 'hazard', 'rotten_interior', 'Interior podrido', { danger: 'medium' });
+
+            add(11, [2], 'container', 'mine_cart', 'Carrito minero');
+            add(11, [13, 14], 'container', 'chest', 'Cofre');
+            add(11, [22], 'npc', 'dead_girl', 'Niña muerta');
+            add(11, [23], 'npc', 'dead_moonless', 'Moonless muerta');
+            add(11, [41, 48, 49, 50], 'door', 'transfer', 'Salida');
 
             add(74, [14, 15, 16, 17, 38], 'door', 'transfer', 'Puerta');
             add(74, [39, 40, 41, 148, 155], 'container', 'barrel', 'Barril');
