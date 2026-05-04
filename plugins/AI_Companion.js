@@ -1965,11 +1965,52 @@ Reply with ONLY the category name, nothing else.`;
 
         _curatedEventRegistry: null,
 
+        _localizeLabel(label) {
+            const raw = String(label || '');
+            if (Config.language === 'es') return raw;
+            const labels = {
+                'Puerta': 'Door',
+                'Salida': 'Exit',
+                'Guardia': 'Guard',
+                'Cofre': 'Chest',
+                'Estantería': 'Bookshelf',
+                'Libro de visitas': 'Guest book',
+                'Caja': 'Crate',
+                'Barril': 'Barrel',
+                'Mesa': 'Table',
+                'Luz apagada': 'Unlit light',
+                'Horno': 'Oven',
+                'Líquido extraño': 'Strange liquid',
+                'Ritual': 'Ritual',
+                'Niña enjaulada': 'Caged girl',
+                'Bandera': 'Cloth',
+                'Clavo oxidado': 'Rusty nail',
+                'Cama': 'Bed',
+                'Pasillo bloqueado': 'Blocked passage',
+                'Suelo peligroso': 'Dangerous floor',
+                'Retrete ensangrentado': 'Bloody toilet',
+                'Agujero peligroso': 'Dangerous hole',
+                'Puerta de celda': 'Cell door',
+                'Niña': 'Girl',
+                'Mercader': 'Merchant',
+                'Contenedor': 'Container',
+                'Enemigo': 'Enemy',
+                'Emboscada': 'Ambush',
+                'Círculo ritual': 'Ritual circle',
+                'Moneda': 'Coin',
+                'Cadáver': 'Corpse',
+                'Trampa de flechas': 'Arrow trap',
+                'Trampa de oso': 'Bear trap'
+            };
+            return labels[raw] || raw;
+        },
+
         _eventEntry(type, subtype, label, extra) {
             const entry = Object.assign({
                 type: type,
                 subtype: subtype,
-                label: label,
+                label: this._localizeLabel(label),
+                labelEs: label,
                 tags: [type]
             }, extra || {});
             if (type === 'shop') entry.tags = ['shop', 'npc'];
@@ -2054,7 +2095,11 @@ Reply with ONLY the category name, nothing else.`;
             const mapTable = this._curatedEventRegistry[$gameMap.mapId()];
             if (!mapTable) return null;
             const eventId = event.eventId ? event.eventId() : event._eventId;
-            return mapTable[eventId] || null;
+            const entry = mapTable[eventId];
+            if (!entry) return null;
+            const localized = Object.assign({}, entry);
+            localized.label = this._localizeLabel(entry.labelEs || entry.label);
+            return localized;
         },
 
         _normalize(text) {
@@ -2149,8 +2194,8 @@ Reply with ONLY the category name, nothing else.`;
                 { pattern: /enki/, label: 'Enki' },
                 { pattern: /cahara/, label: 'Cahara' },
                 { pattern: /ragnvaldr/, label: 'Ragnvaldr' },
-                { pattern: /girl/, label: 'Niña' },
-                { pattern: /merchant/, label: 'Mercader' }
+                { pattern: /girl/, label: this._localizeLabel('Niña') },
+                { pattern: /merchant/, label: this._localizeLabel('Mercader') }
             ];
 
             for (let i = 0; i < mappings.length; i++) {
@@ -2232,9 +2277,11 @@ Reply with ONLY the category name, nothing else.`;
                     const fallbackLabel = this._enemySpriteLabels[key];
                     if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
                         const enemy = KBLookupCache.enemy(key);
-                        if (enemy && enemy.displayNameEs) return enemy.displayNameEs;
+                        if (enemy) return Config.language === 'es'
+                            ? (enemy.displayNameEs || enemy.displayName || fallbackLabel)
+                            : (enemy.displayName || enemy.displayNameEs || fallbackLabel);
                     }
-                    return fallbackLabel;
+                    return this._localizeLabel(fallbackLabel);
                 }
             }
 
@@ -2248,10 +2295,12 @@ Reply with ONLY the category name, nothing else.`;
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
                 for (const candidate of lookupCandidates) {
                     const enemy = KBLookupCache.enemy(candidate);
-                    if (enemy) return enemy.displayNameEs || enemy.displayName || 'Enemigo';
+                    if (enemy) return Config.language === 'es'
+                        ? (enemy.displayNameEs || enemy.displayName || this._localizeLabel('Enemigo'))
+                        : (enemy.displayName || enemy.displayNameEs || this._localizeLabel('Enemigo'));
                 }
             }
-            return 'Enemigo';
+            return this._localizeLabel('Enemigo');
         },
 
         _eventTags(event, metadata) {
@@ -2382,63 +2431,67 @@ Reply with ONLY the category name, nothing else.`;
                 if (metadata.battleTroopName) {
                     if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
                         const troopEnemy = KBLookupCache.enemy(metadata.battleTroopName);
-                        if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || metadata.battleTroopName;
+                        if (troopEnemy) return Config.language === 'es'
+                            ? (troopEnemy.displayNameEs || troopEnemy.displayName || metadata.battleTroopName)
+                            : (troopEnemy.displayName || troopEnemy.displayNameEs || metadata.battleTroopName);
                     }
                     return metadata.battleTroopName;
                 }
                 const spriteLabel = this._labelFromEnemySprite(sprite);
-                if (spriteLabel !== 'Enemigo') return spriteLabel;
+                if (spriteLabel !== this._localizeLabel('Enemigo')) return spriteLabel;
                 if (this._looksPlayerFacingEventName(rawName)) return rawName;
-                return 'Enemigo';
+                return this._localizeLabel('Enemigo');
             }
             if (type === 'combat_trigger') {
                 if (metadata.battleTroopName && typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
                     const troopEnemy = KBLookupCache.enemy(metadata.battleTroopName);
-                    if (troopEnemy) return troopEnemy.displayNameEs || troopEnemy.displayName || 'Emboscada';
+                    if (troopEnemy) return Config.language === 'es'
+                        ? (troopEnemy.displayNameEs || troopEnemy.displayName || this._localizeLabel('Emboscada'))
+                        : (troopEnemy.displayName || troopEnemy.displayNameEs || this._localizeLabel('Emboscada'));
                 }
-                return 'Emboscada';
+                return this._localizeLabel('Emboscada');
             }
-            if (type === 'door') return 'Puerta';
-            if (type === 'save_point') return 'Círculo ritual';
+            if (type === 'door') return this._localizeLabel('Puerta');
+            if (type === 'save_point') return this._localizeLabel('Círculo ritual');
             if (type === 'container') {
-                if (lowerRawName.includes('coin')) return 'Moneda';
+                if (lowerRawName.includes('coin')) return this._localizeLabel('Moneda');
                 if (lowerRawName.includes('book') || lowerRawName.includes('shelf') || lowerRawName.includes('libro') || lowerRawName.includes('estante') || lowerRawName.includes('biblioteca') || (metadata && metadata.textHints && /book|libro|estante|biblioteca|read|leer/.test(metadata.textHints))) {
-                    return 'Estantería';
+                    return this._localizeLabel('Estantería');
                 }
                 if (lowerRawName.includes('barrel') || lowerRawName.includes('barril') || (metadata && metadata.textHints && /barrel|barril/.test(metadata.textHints))) {
-                    return 'Barril';
+                    return this._localizeLabel('Barril');
                 }
                 if (lowerRawName.includes('crate') || lowerRawName.includes('caja') || (metadata && metadata.textHints && /crate|caja|box|boxes/.test(metadata.textHints))) {
-                    return 'Caja';
+                    return this._localizeLabel('Caja');
                 }
                 if (lowerRawName.includes('table') || lowerRawName.includes('desk') || lowerRawName.includes('mesa') || lowerRawName.includes('mapa') || lowerRawName.includes('cabinet') || lowerRawName.includes('drawer') || (metadata && metadata.textHints && /table|desk|mesa|mapa|cabinet|drawer|bottle|papers|notes|documents/.test(metadata.textHints))) {
-                    return 'Mesa';
+                    return this._localizeLabel('Mesa');
                 }
-                return 'Contenedor';
+                return this._localizeLabel('Contenedor');
             }
-            if (type === 'corpse') return 'Cadáver';
+            if (type === 'corpse') return this._localizeLabel('Cadáver');
             if (type === 'trap') {
-                if (this._callsCommonEvent(this._pageCommands(event), [278]) || lowerRawName.includes('arrow')) return 'Trampa de flechas';
-                if (sprite.includes('beartrap') || lowerRawName.includes('beartrap')) return 'Trampa de oso';
-                if (lowerRawName.includes('hole') || lowerRawName.includes('pit') || lowerRawName.includes('agujero') || lowerRawName.includes('pozo') || (metadata && metadata.textHints && /hole|pit|agujero|pozo|caida|caída/.test(metadata.textHints))) return 'Agujero peligroso';
-                return 'Suelo peligroso';
+                if (this._callsCommonEvent(this._pageCommands(event), [278]) || lowerRawName.includes('arrow')) return this._localizeLabel('Trampa de flechas');
+                if (sprite.includes('beartrap') || lowerRawName.includes('beartrap')) return this._localizeLabel('Trampa de oso');
+                if (lowerRawName.includes('hole') || lowerRawName.includes('pit') || lowerRawName.includes('agujero') || lowerRawName.includes('pozo') || (metadata && metadata.textHints && /hole|pit|agujero|pozo|caida|caída/.test(metadata.textHints))) return this._localizeLabel('Agujero peligroso');
+                return this._localizeLabel('Suelo peligroso');
             }
             if (type === 'obstruction') {
-                return 'Pasillo bloqueado';
+                return this._localizeLabel('Pasillo bloqueado');
             }
             if (type === 'hazard') {
-                if (lowerRawName.includes('demonseed') || sprite.includes('seed')) return 'Semilla demoníaca';
-                return 'Crecimiento orgánico';
+                if (lowerRawName.includes('demonseed') || sprite.includes('seed')) return Config.language === 'es' ? 'Semilla demoníaca' : 'Demon seed';
+                return Config.language === 'es' ? 'Crecimiento orgánico' : 'Organic growth';
             }
             if (type === 'npc') {
-                if (sprite.includes('chained') || lowerRawName.includes('chained')) return 'Prisionero encadenado';
+                if (sprite.includes('chained') || lowerRawName.includes('chained')) return Config.language === 'es' ? 'Prisionero encadenado' : 'Chained prisoner';
                 if (metadata.npcName) return metadata.npcName;
                 if (this._looksPlayerFacingEventName(rawName)) return rawName;
                 return 'NPC';
             }
-            if (type === 'shop') return 'Comerciante';
+            if (type === 'shop') return Config.language === 'es' ? 'Comerciante' : 'Merchant';
             if (this._looksPlayerFacingEventName(rawName)) return rawName;
-            return 'Evento';
+            return Config.language === 'es' ? 'Evento' : 'Event';
         },
 
         /**
@@ -5563,7 +5616,7 @@ Respond ONLY with this JSON:
         const newLang = Config.language === 'es' ? 'en' : 'es';
         Config.setLanguage(newLang);
         SoundManager.playOk();
-        this._refreshConfigScene(`Language set to: ${newLang === 'es' ? 'Español' : 'English'}`);
+        this._refreshConfigScene(newLang === 'es' ? 'Idioma: Español' : 'Language: English');
     };
 
     // Provider cycling handler (groq → openrouter → local)
@@ -5572,7 +5625,7 @@ Respond ONLY with this JSON:
         const providerDef = PROVIDERS[newProvider];
         SoundManager.playOk();
         if (newProvider === 'local') {
-            this._refreshConfigScene(`IA Local: ${Config.localModel}\n${Config.localEndpoint}`);
+            this._refreshConfigScene(Config.language === 'es' ? `IA local: ${Config.localModel}\n${Config.localEndpoint}` : `Local AI: ${Config.localModel}\n${Config.localEndpoint}`);
         } else {
             const modelName = Config.getChatModel();
             this._refreshConfigScene(`${providerDef.name}\nModel: ${modelName}`);
@@ -9309,66 +9362,81 @@ Respond ONLY with this JSON:
         },
 
         _buildVisionFallback(context) {
+            const es = Config.language === 'es';
             const playerName = context && context.player_name ? context.player_name : 'tú';
             if (context && context.nearby_objects) {
-                return `Solo veo esto cerca, ${playerName}: ${context.nearby_objects}.`;
+                return es
+                    ? `Solo veo esto cerca, ${playerName}: ${context.nearby_objects}.`
+                    : `I only see this nearby, ${playerName}: ${context.nearby_objects}.`;
             }
-            return `No veo nada destacable ahora mismo, ${playerName}.`;
+            return es ? `No veo nada destacable ahora mismo, ${playerName}.` : `I do not see anything notable right now, ${playerName}.`;
         },
 
         _buildTacticalFallback(context) {
+            const es = Config.language === 'es';
             const playerName = context && context.player_name ? context.player_name : 'tú';
             const nearbyEnemies = this._getNearbyEnemyKnowledge(context);
             if (nearbyEnemies.length === 0) {
-                return `No veo enemigos cerca, ${playerName}. Mantente alerta por si aparece algo.`;
+                return es
+                    ? `No veo enemigos cerca, ${playerName}. Mantente alerta por si aparece algo.`
+                    : `I do not see enemies nearby, ${playerName}. Stay alert in case one appears.`;
             }
 
             const firstEnemy = nearbyEnemies[0].enemy;
-            const name = firstEnemy.displayNameEs || firstEnemy.displayName || 'enemigo';
+            const name = es ? (firstEnemy.displayNameEs || firstEnemy.displayName || 'enemigo') : (firstEnemy.displayName || firstEnemy.displayNameEs || 'enemy');
             if (firstEnemy.coinFlipTurn) {
-                return `${name} está cerca, ${playerName}. Cuidado con su turno de moneda; hay que matarlo antes de eso.`;
+                return es
+                    ? `${name} está cerca, ${playerName}. Cuidado con su turno de moneda; hay que matarlo antes de eso.`
+                    : `${name} is nearby, ${playerName}. Watch its coin flip turn; we must kill it before then.`;
             }
-            return `${name} está cerca, ${playerName}. Parece manejable, pero no bajemos la guardia.`;
+            return es
+                ? `${name} está cerca, ${playerName}. Parece manejable, pero no bajemos la guardia.`
+                : `${name} is nearby, ${playerName}. It looks manageable, but stay guarded.`;
         },
 
         _buildRecentBattleFallback(context) {
+            const es = Config.language === 'es';
             const playerName = context && context.player_name ? context.player_name : 'tú';
             if (!context || !context.last_battle || !context.last_battle.enemies || context.last_battle.enemies.length === 0) {
-                return `No recuerdo bien el último combate, ${playerName}.`;
+                return es ? `No recuerdo bien el último combate, ${playerName}.` : `I do not clearly remember the last fight, ${playerName}.`;
             }
             const names = context.last_battle.enemies.join(', ');
             if (context.last_battle.victory) {
-                return `Nos fue bien, ${playerName}. Acabamos de vencer a ${names}.`;
+                return es ? `Nos fue bien, ${playerName}. Acabamos de vencer a ${names}.` : `We did well, ${playerName}. We just beat ${names}.`;
             }
-            return `El último combate fue contra ${names}, ${playerName}.`;
+            return es ? `El último combate fue contra ${names}, ${playerName}.` : `The last fight was against ${names}, ${playerName}.`;
         },
 
         _buildNpcRecallFallback(context) {
+            const es = Config.language === 'es';
             const playerName = context && context.player_name ? context.player_name : 'tú';
             const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
             if (!entries || entries.length === 0) {
-                return `No estoy seguro de con quién hablamos recién, ${playerName}.`;
+                return es ? `No estoy seguro de con quién hablamos recién, ${playerName}.` : `I am not sure who we just spoke to, ${playerName}.`;
             }
             const latest = entries[entries.length - 1];
             if (!latest || !latest.speaker) {
-                return `No estoy seguro de con quién hablamos recién, ${playerName}.`;
+                return es ? `No estoy seguro de con quién hablamos recién, ${playerName}.` : `I am not sure who we just spoke to, ${playerName}.`;
             }
             if (latest.text) {
-                return `Era ${latest.speaker}, ${playerName}. Nos habló de esto: "${latest.text.substring(0, 90)}"`;
+                return es
+                    ? `Era ${latest.speaker}, ${playerName}. Nos habló de esto: "${latest.text.substring(0, 90)}"`
+                    : `It was ${latest.speaker}, ${playerName}. They said this: "${latest.text.substring(0, 90)}"`;
             }
-            return `Era ${latest.speaker}, ${playerName}.`;
+            return es ? `Era ${latest.speaker}, ${playerName}.` : `It was ${latest.speaker}, ${playerName}.`;
         },
 
         _buildEmotionalFallback(playerMessage, context) {
+            const es = Config.language === 'es';
             const playerName = context && context.player_name ? context.player_name : 'tú';
             const msg = String(playerMessage || '').toLowerCase();
             if (/lo hice bien|did i do well|did i do good/.test(msg)) {
-                return `Sí. Lo hiciste bien, ${playerName}.`;
+                return es ? `Sí. Lo hiciste bien, ${playerName}.` : `Yes. You did well, ${playerName}.`;
             }
             if (/como te sientes|cómo te sientes|how do you feel/.test(msg)) {
-                return 'Sigo entero. Un poco tenso, pero bien.';
+                return es ? 'Sigo entero. Un poco tenso, pero bien.' : 'I am still standing. Tense, but fine.';
             }
-            return `Estoy contigo, ${playerName}. Seguimos adelante.`;
+            return es ? `Estoy contigo, ${playerName}. Seguimos adelante.` : `I am with you, ${playerName}. We keep moving.`;
         },
 
         _validateChatResponse(response, playerMessage, context, intent) {
@@ -14026,7 +14094,9 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
         this._itemWindow.activate();
     };
 
-    console.log('[AI_Companion] Plugin cargado. Para ver logs de depuración: menú título → Compañero IA → Consola debug: SÍ');
+    console.log(Config.language === 'es'
+        ? '[AI_Companion] Plugin cargado. Para ver logs de depuración: menú título → Compañero IA → Consola debug: SÍ'
+        : '[AI_Companion] Plugin loaded. To view debug logs: title menu → AI Companion → Debug console: ON');
     if (Config.debugMode) {
         Debug.log('AI_Companion plugin loaded');
         Debug.log('Config:', { apiKey: !!Config.apiKey, useMockAI: Config.useMockAI, language: Config.language });
