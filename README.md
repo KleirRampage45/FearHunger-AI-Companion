@@ -1,90 +1,162 @@
 # Fear & Hunger: AI Companion Mod
 
-An AI-powered companion mod for **Fear & Hunger** (RPG Maker MV) that adds a fully interactive, context-aware AI party member to the game.
+An AI companion plugin for **Fear & Hunger** v1.4.x. It adds a configurable party member that can chat, fight, react to the world, remember save-tied events, and optionally act autonomously through a local model.
 
-## Features
+Current version: `0.8.0-beta`
 
-- 🤖 **AI-Controlled Combat** — The companion fights alongside you with tactical decisions based on enemy weaknesses, limb targeting, and coin flip awareness.
-- 💬 **Chat System** — Talk to your companion in real-time via an in-game chat window (press `C`). Ask questions, discuss strategy, or just roleplay.
-- 🧠 **Knowledge Base** — Comprehensive database of enemies, locations, items, and game mechanics. The AI knows about coin flips, limb priorities, and enemy tactics.
-- 🗣️ **Ambient Dialogue** — The companion reacts naturally to events: entering new rooms, picking up items, party changes, limb loss, hunger, and combat.
-- 🎭 **Character Presets** — Multiple companion personalities with unique backstories, speech patterns, and visual appearances.
-- 🌐 **Bilingual** — Full Spanish and English support. Automatically handles localized enemy/map names.
-- 🔧 **Configurable** — In-game settings menu to change API provider, model, companion name, personality, and more.
+## What This Repo Contains
+
+This repository is intended to be plugin-only.
+
+Included:
+
+- `plugins/AI_Companion.js`
+- `plugins/FearHungerKB.js`
+- installer scripts
+- documentation
+- optional companion face assets
+
+Not included:
+
+- base game files
+- decrypted game data
+- saves
+- personal logs
+- private plugin examples
+- full game assets
+
+## Main Features
+
+- AI-controlled combat with target/limb selection, validation, fallbacks, and combat logging.
+- In-game chat opened with `C`.
+- Persistent save-tied story and goal memory.
+- Context-grounded world perception from map events, nearby objects, NPC dialogue, combat state, party state, items, and knowledge base data.
+- Autonomous beta mode that can ask a local model for goals and continue tasks locally.
+- Consent guards for risky interactions, merchant purchases, support item use, and equipment suggestions.
+- Configurable companion name, appearance, starting class, persona, backstory, voice/style, goals, and behavior rules.
+- Groq, OpenRouter, and local OpenAI-compatible provider support.
+- Runtime language support for Spanish and English.
+- In-game `AI Log` viewer for recent autonomy/combat/chat/fear events.
+- Persistent JSONL logs in the game folder under `ai_companion_logs/`.
 
 ## Supported AI Providers
 
-| Provider | Models | Cost |
-|----------|--------|------|
-| **Groq** (default) | Llama 3.3 70B, Llama 3.1 8B | Free tier available |
-| **OpenRouter** | Many models (including free ones) | Free/paid options |
-| **Local** | Any OpenAI-compatible server (Ollama, LMStudio, etc.) | Free |
+| Provider | Use case | Notes |
+| --- | --- | --- |
+| Groq | cloud chat/combat | fast, free tier available |
+| OpenRouter | model variety | supports free and paid models |
+| Local | autonomy and private testing | LM Studio/Ollama/OpenAI-compatible servers |
+
+Recommended local autonomy defaults:
+
+```text
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+```
 
 ## Installation
 
-### Automatic (Recommended)
+Full instructions are in [docs/INSTALL.md](docs/INSTALL.md).
+
+Quick Linux/macOS/Git Bash install:
 
 ```bash
-# Clone the repo
 git clone https://github.com/KleirRampage45/FearHunger-AI-Companion.git
 cd FearHunger-AI-Companion
-
-# Run the installer
+chmod +x install.sh
 ./install.sh
 ```
 
-The installer will:
-1. Detect your OS (Linux/macOS/Windows via WSL or Git Bash)
-2. Auto-detect Fear & Hunger installation path (Steam, GOG, manual)
-3. Copy plugin files and assets to the correct locations
-4. Patch `plugins.js` to register the mod
+Windows:
 
-### Manual Installation
-
-1. Copy `plugins/AI_Companion.js` → `<game_dir>/www/js/plugins/`
-2. Copy `plugins/FearHungerKB.js` → `<game_dir>/www/js/plugins/`
-3. Copy `assets/faces/*` → `<game_dir>/www/img/faces/`
-4. Edit `<game_dir>/www/js/plugins.js` and add to the plugin list:
-```json
-{"name":"FearHungerKB","status":true,"description":"Knowledge Base","parameters":{}},
-{"name":"AI_Companion","status":true,"description":"AI Companion","parameters":{}}
+```bat
+install.bat
 ```
+
+Manual install:
+
+1. Copy `plugins/AI_Companion.js` to `<game>/www/js/plugins/`.
+2. Copy `plugins/FearHungerKB.js` to `<game>/www/js/plugins/`.
+3. Copy `assets/faces/*.png` to `<game>/www/img/faces/`.
+4. Add `FearHungerKB` and `AI_Companion` to `<game>/www/js/plugins.js`, with `FearHungerKB` first.
 
 ## Configuration
 
-1. Launch the game
-2. Press `F5` or access the AI Companion menu
-3. Set your API key (get one free from [Groq Console](https://console.groq.com))
-4. Choose your companion's personality and appearance
+Open `AI Companion` from the title menu.
+
+Important settings:
+
+- `Language`: Spanish or English.
+- `Provider`: Groq, OpenRouter, or Local.
+- `Chat model`: cloud chat/combat model.
+- `Autonomy model`: preferably a fast local model.
+- `Custom persona`: enables custom backstory/voice/goals/rules.
+- `Autonomy`: turns beta autonomous behavior on/off.
+- `AI Log`: title-menu viewer for recent plugin decisions and errors.
 
 ## Controls
 
 | Key | Action |
-|-----|--------|
-| `C` | Open/close chat |
-| `Enter` | Send message |
-| `↑` / `↓` | Scroll chat history |
-| `ESC` | Clear text / close chat |
-| `F5` | AI Configuration menu |
+| --- | --- |
+| `C` | Open/close AI chat |
+| `Enter` | Send chat message / confirm UI |
+| `Esc` | Close/cancel |
+| `F5` | Reload RPG Maker MV game page |
 
-## Requirements
+## Testing
 
-- Fear & Hunger v1.4.x (RPG Maker MV)
-- Internet connection for cloud AI (or local AI server)
-- API key from Groq, OpenRouter, or a local model
+Branch-specific tests are in [docs/BRANCH_TEST_PLANS.md](docs/BRANCH_TEST_PLANS.md).
+
+General smoke test:
+
+```bash
+node --check plugins/AI_Companion.js
+node --check plugins/FearHungerKB.js
+git diff --check
+```
+
+In game:
+
+1. Open `AI Companion` config from title screen.
+2. Set provider/model/API key or local endpoint.
+3. Start/load a save.
+4. Press `C`, ask a simple question.
+5. Enter one battle and verify companion acts.
+6. Enable autonomy and watch `AI Log` for decisions.
+
+## Logs
+
+Runtime logs are written by the installed game copy, not this repo:
+
+```text
+<game>/ai_companion_logs/session_*.jsonl
+```
+
+Use these for debugging actual gameplay sessions.
+
+The title-menu `AI Log` viewer only shows recent entries from the current run. It does not read historical JSONL files.
+
+## Release Packaging
+
+See [docs/RELEASE.md](docs/RELEASE.md).
+
+Do not package the base game or private logs. Release archives should contain only plugin files, installers, docs, license, version, changelog, and distributable companion assets.
 
 ## Known Limitations
 
-- The AI companion uses Actor slot 15 — avoid conflicts with other mods using this slot
-- Synchronous combat requests may cause brief freezes (~1-2 seconds per turn)
-- Free API tiers have rate limits — the companion falls back to basic attacks when rate-limited
+- Actor slot 15 is used for the companion by default.
+- Combat calls are synchronous for RPG Maker MV input-flow compatibility and can briefly pause the game.
+- Autonomous behavior is beta and depends heavily on local model quality.
+- Early maps have the strongest curated event naming; later maps need more manual naming coverage.
+- Some risky game events intentionally ask for consent before proceeding.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE)
+MIT License. See [LICENSE](LICENSE).
 
 ## Credits
 
-- **Fear & Hunger** by Miro Haverinen
-- AI integration by Asukat
-- Knowledge base sourced from the [Fear & Hunger Wiki](https://fear-and-hunger.fandom.com)
+- **Fear & Hunger** by Miro Haverinen.
+- Mod implementation by Asukat and AI-assisted development.
+- Knowledge base references derived from player-facing Fear & Hunger knowledge and wiki-style summaries.
