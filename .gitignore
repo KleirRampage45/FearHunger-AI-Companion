@@ -1,6 +1,67 @@
-*.rpgmvp
-*.rpgmvo
+# Dependencies and build outputs
 node_modules/
+dist/
+build/
+coverage/
+
+# OS/editor noise
 .DS_Store
 Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*.tmp
+*.temp
+
+# Local env/secrets
+.env
+.env.*
+*.key
+*.pem
+*.token
+
+# Backups
 *.bak
+*.backup
+*.orig
+*.rej
+
+# RPG Maker encrypted/audio/movie/game assets
+*.rpgmvp
+*.rpgmvo
+*.rpgmvm
+*.ogg
+*.m4a
+*.webm
+
+# RPG Maker save/config files
+*.rpgsave
+*.rvdata
+*.rvdata2
+Save*.*
+config.rpgsave
+global.rpgsave
+
+# Installed game folders or copied game data
+Fear & Hunger*/
+Fear and Hunger*/
+FearHunger*/
+www/
+Game.exe
+nw
+package.json
+
+# Runtime logs and personal debugging data
+ai_companion_logs/
+buglogs/
+logs/
+*.jsonl
+*.log
+
+# Private references and local experiments
+plugin ideas/
+plugin-ideas/
+private/
+notes/
+scratch/
+tmp/
