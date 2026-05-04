@@ -679,6 +679,8 @@
         _queue: [],         // Buffer for writes during init
         _writeCount: 0,
         _errorCount: 0,
+        _recent: [],
+        _recentMax: 80,
 
         /**
          * Initialize the logger. Safe to call multiple times — only runs once.
@@ -780,11 +782,65 @@
                 entry.trust_level = RelationshipTracker ? RelationshipTracker.getSummary() : null;
             } catch (e) { /* not ready */ }
 
+            this._rememberRecent(entry);
+
             if (!this._initialized) {
                 this._queue.push(entry);
                 return;
             }
             this._write(entry);
+        },
+
+        _rememberRecent(entry) {
+            if (!entry || !entry._type) return;
+            const keepTypes = {
+                autonomy_tick: true,
+                combat_decision: true,
+                chat: true,
+                ambient_thought: true,
+                fear_state: true,
+                fear_recovery: true,
+                game_event: true
+            };
+            if (!keepTypes[entry._type]) return;
+            this._recent.push(entry);
+            while (this._recent.length > this._recentMax) this._recent.shift();
+        },
+
+        getRecentEntries(limit) {
+            const count = Math.max(1, Math.min(this._recentMax, Number(limit) || 30));
+            return this._recent.slice(-count);
+        },
+
+        _shortReason(entry) {
+            const value = entry.reason || entry.error || entry.text || entry.candidate_text || entry.event || '';
+            return String(value || '').replace(/\s+/g, ' ').substring(0, 96);
+        },
+
+        formatRecentLine(entry) {
+            const t = Math.floor((entry.session_time_ms || 0) / 1000);
+            if (entry._type === 'autonomy_tick') {
+                const action = entry.action || 'NONE';
+                const id = entry.event_id != null ? ` #${entry.event_id}` : '';
+                const source = entry.source ? ` ${entry.source}` : '';
+                return `[${t}s] AUTO ${action}${id}${source}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'combat_decision') {
+                return `[${t}s] COMBAT ${entry.action || '?'} ${entry.target || ''} ${entry.limb || ''}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'chat') {
+                return `[${t}s] CHAT ${entry.error ? 'ERR' : 'OK'}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'ambient_thought') {
+                return `[${t}s] THOUGHT ${entry.speak ? 'speak' : 'skip'}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'fear_state' || entry._type === 'fear_recovery') {
+                return `[${t}s] FEAR ${entry.level || entry.recovery || ''}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'game_event') {
+                return `[${t}s] EVENT ${entry.event || ''}: ${this._shortReason(entry)}`;
+            }
+            return `[${t}s] ${entry._type}: ${this._shortReason(entry)}`;
         },
 
         /**
@@ -818,7 +874,8 @@
                 sessionFile: this._sessionFile,
                 entriesLogged: this._writeCount,
                 errors: this._errorCount,
-                queueLength: this._queue.length
+                queueLength: this._queue.length,
+                recentEntries: this._recent.length
             };
         }
     };
@@ -5914,7 +5971,7 @@ Respond ONLY with this JSON:
             toggleAutonomySolo: es ? 'Permite entrar en combate sin el jugador cerca.' : 'Allow autonomous solo engagement.',
             toggleAutonomyReturn: es ? 'Hace que vuelva al jugador cuando detecta peligro.' : 'Return to the player when danger rises.',
             toggleDebug: es ? 'Activa logs detallados en la consola F12.' : 'Enable detailed logs in the F12 console.',
-            toggleDebugOverlay: es ? 'Reservado para mostrar overlays de depuración en pantalla.' : 'Reserved for on-screen debug overlays.'
+            toggleDebugOverlay: es ? 'Muestra información de depuración ligera cuando esté disponible.' : 'Show lightweight debug information when available.'
         };
         this._helpWindow.setText(help[symbol] || (es ? 'Configuración del compañero IA' : 'AI companion configuration'));
     };
@@ -6010,12 +6067,14 @@ Respond ONLY with this JSON:
         _Window_TitleCommand_makeCommandList.call(this);
         // Always add our command — base makeCommandList clears the list each time
         this.addCommand(Config.language === 'es' ? 'Compañero IA' : 'AI Companion', 'aiConfig');
+        this.addCommand(Config.language === 'es' ? 'Registro IA' : 'AI Log', 'aiDebugLog');
     };
 
     const _Scene_Title_createCommandWindow = Scene_Title.prototype.createCommandWindow;
     Scene_Title.prototype.createCommandWindow = function () {
         _Scene_Title_createCommandWindow.call(this);
         this._commandWindow.setHandler('aiConfig', this.commandAIConfig.bind(this));
+        this._commandWindow.setHandler('aiDebugLog', this.commandAIDebugLog.bind(this));
     };
 
     Scene_Title.prototype.commandAIConfig = function () {
@@ -6023,8 +6082,81 @@ Respond ONLY with this JSON:
         SceneManager.push(Scene_AIConfig);
     };
 
+    Scene_Title.prototype.commandAIDebugLog = function () {
+        this._commandWindow.close();
+        SceneManager.push(Scene_AIDebugLog);
+    };
+
     // Expose scene for external access
     window.Scene_AIConfig = Scene_AIConfig;
+
+    //=========================================================================
+    // In-game Debug Log Viewer
+    //=========================================================================
+    function Scene_AIDebugLog() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Scene_AIDebugLog.prototype = Object.create(Scene_MenuBase.prototype);
+    Scene_AIDebugLog.prototype.constructor = Scene_AIDebugLog;
+
+    Scene_AIDebugLog.prototype.initialize = function () {
+        Scene_MenuBase.prototype.initialize.call(this);
+    };
+
+    Scene_AIDebugLog.prototype.create = function () {
+        Scene_MenuBase.prototype.create.call(this);
+        const es = Config.language === 'es';
+        this._helpWindow = new Window_Help(2);
+        this._helpWindow.setText(es
+            ? 'Registro IA reciente\nOK/Esc: volver. Se actualiza al abrir.'
+            : 'Recent AI log\nOK/Esc: back. Refreshes when opened.');
+        this.addWindow(this._helpWindow);
+        this._logWindow = new Window_AIDebugLog(0, this._helpWindow.height, Graphics.boxWidth, Graphics.boxHeight - this._helpWindow.height);
+        this._logWindow.setHandler('ok', this.popScene.bind(this));
+        this._logWindow.setHandler('cancel', this.popScene.bind(this));
+        this.addWindow(this._logWindow);
+        this._logWindow.activate();
+    };
+
+    function Window_AIDebugLog() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Window_AIDebugLog.prototype = Object.create(Window_Selectable.prototype);
+    Window_AIDebugLog.prototype.constructor = Window_AIDebugLog;
+
+    Window_AIDebugLog.prototype.initialize = function (x, y, width, height) {
+        this._lines = [];
+        Window_Selectable.prototype.initialize.call(this, x, y, width, height);
+        this.refresh();
+        this.select(0);
+    };
+
+    Window_AIDebugLog.prototype.maxItems = function () {
+        return Math.max(1, this._lines.length);
+    };
+
+    Window_AIDebugLog.prototype.refresh = function () {
+        const entries = ThesisLogger.getRecentEntries(40);
+        this._lines = entries.length > 0
+            ? entries.map(entry => ThesisLogger.formatRecentLine(entry))
+            : [Config.language === 'es' ? 'No hay registros recientes todavía.' : 'No recent entries yet.'];
+        this.createContents();
+        this.drawAllItems();
+    };
+
+    Window_AIDebugLog.prototype.drawItem = function (index) {
+        if (!this._lines[index]) return;
+        const rect = this.itemRectForText(index);
+        this.drawTextEx(this._lines[index], rect.x, rect.y);
+    };
+
+    Window_AIDebugLog.prototype.processOk = function () {
+        this.callHandler('ok');
+    };
+
+    window.Scene_AIDebugLog = Scene_AIDebugLog;
 
     //=========================================================================
     // Auto-Join Party at New Game Start
@@ -7856,14 +7988,14 @@ Respond ONLY with this JSON:
                     : ''
             );
             if (this._state.lastRawLocalContent) {
-                console.log('[Autonomy LLM]', this._state.lastRawLocalContent);
+                Debug.log('[Autonomy LLM]', this._state.lastRawLocalContent);
             }
             let decision = GeminiAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
                 return Object.assign({ _autonomySource: 'llm_parse_fallback' }, fallback);
             }
             decision.action = String(decision.action).toUpperCase();
-            console.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
+            Debug.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
             decision = this._normalizeDecision(snapshot, Object.assign({ _autonomySource: 'local' }, decision), fallback);
 
             if (decision.action === 'LOOT' || decision.action === 'INTERACT' || decision.action === 'CONSENT') return decision;
