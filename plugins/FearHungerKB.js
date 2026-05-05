@@ -34,6 +34,7 @@ FearHungerKB.enemies = {
             stinger: { hp: 150, attack: "Stinger Thrust (36-54 pierce)", destruction: "Use Leg Sweep to also cut legs" },
             torso: { hp: 500 }
         },
+        coinFlipLimb: "right arm",
         coinFlipTurn: 2,
         tactics: "Turn 1: destroy cleaver arm (left). Turn 2: GUARD (always coin flip!). Turn 3: Leg Sweep stinger. Then attack torso, guarding on turns 5, 8, 11, 14.",
         strategy: [
@@ -102,6 +103,7 @@ FearHungerKB.enemies = {
             left_leg: { hp: 150, attack: "Kick", destruction: "Reduces mobility" },
             torso: { hp: 600 }
         },
+        coinFlipLimb: "right arm",
         coinFlipTurn: 2,
         tactics: "Turn 1: destroy sword arm. Turn 2: GUARD. Then remove stinger to stop poison.",
         hints: ["Has a tail stinger that poisons", "More HP than regular guard", "Guard outfit works on them too", "Morning Star can be stolen from them"],
@@ -3029,10 +3031,11 @@ FearHungerKB.getEnemyHints = function (name) {
     const enemy = this.getEnemy(name);
     if (!enemy) return null;
 
-    return {
-        name: enemy.displayNameEs || enemy.displayName,
-        priority: enemy.limbPriority || [],
-        coinFlipTurn: enemy.coinFlipTurn || null,
+	    return {
+	        name: enemy.displayNameEs || enemy.displayName,
+	        priority: enemy.limbPriority || [],
+	        coinFlipLimb: enemy.coinFlipLimb || null,
+	        coinFlipTurn: enemy.coinFlipTurn || null,
         hints: enemy.hints || [],
         mistakes: enemy.mistakes || [],
         dangerLevel: enemy.danger !== undefined ? enemy.danger : 1,

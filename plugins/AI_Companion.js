@@ -3630,8 +3630,8 @@ Reply with ONLY the category name, nothing else.`;
             return key === 'piernas' ? 'legs' : key;
         }
 
-        static _getLimbAliases(token) {
-            const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
+	        static _getLimbAliases(token) {
+	            const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
             const aliases = [normalized];
             const translated = this.LIMB_TRANSLATIONS[normalized];
             if (translated && aliases.indexOf(translated) === -1) aliases.push(translated);
@@ -3652,8 +3652,19 @@ Reply with ONLY the category name, nothing else.`;
                     if (aliases.indexOf(alias) === -1) aliases.push(alias);
                 });
             }
-            return aliases;
-        }
+	            return aliases;
+	        }
+
+	        static _isLimbAlive(enemy, token) {
+	            return !!this._findAliveLimbKey(enemy, token);
+	        }
+
+	        static _isCoinFlipStillLive(enemy, kbEnemy) {
+	            if (!enemy || !enemy.alive || !kbEnemy || !kbEnemy.coinFlipTurn) return false;
+	            const gate = kbEnemy.coinFlipLimb || kbEnemy.coinFlipSourceLimb || null;
+	            if (!gate) return true;
+	            return this._isLimbAlive(enemy, gate);
+	        }
 
         static _findAliveLimbKey(enemy, token) {
             if (!enemy || !enemy.limbs) return null;
@@ -3733,12 +3744,19 @@ Reply with ONLY the category name, nothing else.`;
 
             normalized.target = enemy.name;
 
-            if (this._normalizeActionName(normalized.action) !== 'attack') {
-                return normalized;
-            }
+	            const normalizedAction = this._normalizeActionName(normalized.action);
+	            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? KBLookupCache.enemy(enemy.name) : null;
+	            if (normalizedAction === 'guard' && kbEnemy && kbEnemy.coinFlipTurn && battleState.turn_number >= kbEnemy.coinFlipTurn && !this._isCoinFlipStillLive(enemy, kbEnemy)) {
+	                normalized.action = 'Atacar';
+	                normalized.limb = this._pickBestAliveLimb(enemy);
+	                normalized.reasoning = 'Coin flip limb is destroyed; attacking instead of wasting a defend turn.';
+	                normalized.dialog = this._generateQuickDialog(normalized);
+	                AIState.currentStrategy = null;
+	            } else if (normalizedAction !== 'attack') {
+	                return normalized;
+	            }
 
-            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? KBLookupCache.enemy(enemy.name) : null;
-            const requestedLimb = this._normalizeLimbName(normalized.limb).replace(/_/g, ' ');
+	            const requestedLimb = this._normalizeLimbName(normalized.limb).replace(/_/g, ' ');
             let chosenLimb = null;
             const preferredAliveLimbs = [];
 
@@ -4030,9 +4048,11 @@ Reply with ONLY the category name, nothing else.`;
                         knowledgeHints += `\n${prefix}${kb.name || enemy.name}:\n`;
                         if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
                         knowledgeHints += `  - Priority: ${kb.priority.join(' → ')}\n`;
-                        if (kb.coinFlipTurn) {
-                            knowledgeHints += `  - ⚠ COIN FLIP on turn ${kb.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
-                        }
+	                        if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
+	                            knowledgeHints += `  - ⚠ COIN FLIP on turn ${kb.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
+	                        } else if (kb.coinFlipTurn && kb.coinFlipLimb) {
+	                            knowledgeHints += `  - Coin flip threat is disabled because ${kb.coinFlipLimb} is destroyed. Do NOT defend for coin flip; keep attacking.\n`;
+	                        }
                         kb.hints.slice(0, 2).forEach(h => {
                             knowledgeHints += `  - ${h}\n`;
                         });
@@ -4080,9 +4100,9 @@ Reply with ONLY the category name, nothing else.`;
                 for (const enemy of battleState.enemies) {
                     if (!enemy.alive) continue;
                     const kb = KBLookupCache.enemyHints(enemy.name);
-                    if (kb && kb.coinFlipTurn && battleState.turn_number === kb.coinFlipTurn) {
-                        coinFlipWarning = `\n⚠️ COIN FLIP WARNING: ${enemy.name} has a LETHAL coin flip attack on turn ${kb.coinFlipTurn}! You MUST Defend this turn. Warn ${playerName} in your dialog.`;
-                    }
+	                    if (kb && kb.coinFlipTurn && battleState.turn_number === kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
+	                        coinFlipWarning = `\n⚠️ COIN FLIP WARNING: ${enemy.name} has a LETHAL coin flip attack on turn ${kb.coinFlipTurn}! You MUST Defend this turn. Warn ${playerName} in your dialog.`;
+	                    }
                 }
             }
 
@@ -7019,10 +7039,10 @@ Respond ONLY with this JSON:
                     } else if (kb.dangerLevel >= 2) {
                         score += 2;
                     }
-                    if (kb.coinFlipTurn) {
-                        if (turnNumber >= kb.coinFlipTurn) {
-                            score += 5;
-                            details.push(`${kb.name || enemy.name}: coin flip ahora`);
+	                    if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
+	                        if (turnNumber >= kb.coinFlipTurn) {
+	                            score += 5;
+	                            details.push(`${kb.name || enemy.name}: coin flip ahora`);
                         } else if (turnNumber === kb.coinFlipTurn - 1) {
                             score += 3;
                             details.push(`${kb.name || enemy.name}: coin flip próximo`);
@@ -10513,7 +10533,7 @@ CRITICAL GAME RULES (NEVER violate these):
                                     block += `  ${limb}: HP ${info.hp}${info.attack ? ' | Attack: ' + info.attack : ''}${info.destruction ? ' | If destroyed: ' + info.destruction : ''}\n`;
                                 }
                             }
-                            if (data.coinFlipTurn) block += `COIN FLIP on turn ${data.coinFlipTurn} — GUARD on that turn!\n`;
+	                            if (data.coinFlipTurn && (!data.coinFlipLimb || !context.in_battle)) block += `COIN FLIP on turn ${data.coinFlipTurn} — GUARD on that turn unless the enabling limb is destroyed.\n`;
                             if (data.mistakes && data.mistakes.length) block += `AVOID: ${data.mistakes.join('; ')}\n`;
                         }
                     } else if (context.in_battle && context.battle_state && typeof FearHungerKB !== 'undefined') {
@@ -10527,7 +10547,12 @@ CRITICAL GAME RULES (NEVER violate these):
                                 if (data.tactics) block += `Tactics: ${data.tactics}\n`;
                                 if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
                                 if (data.hints && data.hints.length) block += `Tips: ${data.hints.join('; ')}\n`;
-                                if (data.coinFlipTurn) block += `⚠ COIN FLIP on turn ${data.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
+	                                if (data.coinFlipTurn) {
+	                                    const liveCoinFlip = ActionExecutor._isCoinFlipStillLive(enemy, data);
+	                                    block += liveCoinFlip
+	                                        ? `⚠ COIN FLIP on turn ${data.coinFlipTurn} — KILL BEFORE THIS TURN!\n`
+	                                        : `Coin flip threat disabled by destroyed ${data.coinFlipLimb}; do NOT defend for coin flip.\n`;
+	                                }
                                 if (data.mistakes && data.mistakes.length) block += `AVOID: ${data.mistakes.join('; ')}\n`;
                                 if (data.special) block += `Special: ${data.special}\n`;
                             } else {
