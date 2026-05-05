@@ -7395,6 +7395,8 @@ Respond ONLY with this JSON:
             consentPromptPending: false,
             merchantSessionEventId: null,
             merchantSessionUntil: 0,
+            localCooldownUntil: 0,
+            localTimeoutCount: 0,
             eventCooldowns: {},
             searchedEvents: {}
         },
@@ -7424,10 +7426,25 @@ Respond ONLY with this JSON:
             return true;
         },
 
+        isBattleActive() {
+            const partyBattle = !!($gameParty && $gameParty.inBattle && $gameParty.inBattle());
+            const scene = typeof SceneManager !== 'undefined' ? SceneManager._scene : null;
+            const sceneName = scene && scene.constructor ? scene.constructor.name : '';
+            const sceneBattle = sceneName === 'Scene_Battle' || (typeof Scene_Battle !== 'undefined' && scene instanceof Scene_Battle);
+            const stack = typeof SceneManager !== 'undefined' && Array.isArray(SceneManager._stack) ? SceneManager._stack : [];
+            const stackBattle = stack.some(entry => {
+                if (!entry) return false;
+                if (typeof Scene_Battle !== 'undefined' && entry === Scene_Battle) return true;
+                const name = entry.constructor ? entry.constructor.name : '';
+                return name === 'Scene_Battle';
+            });
+            return partyBattle || sceneBattle || stackBattle;
+        },
+
         canRun() {
             if (!Config.autonomyEnabled) return false;
             if (!$gameParty || !$gameParty.members || !$gameParty.members().some(m => m && m.actorId && m.actorId() === Config.companionActorId)) return false;
-            if (!$gameMap || !$gamePlayer || $gameParty.inBattle()) return false;
+            if (!$gameMap || !$gamePlayer || this.isBattleActive()) return false;
             if (!SceneManager._scene || SceneManager._scene.constructor.name !== 'Scene_Map') return false;
             if (ChatSystem && ChatSystem.isActive && ChatSystem.isActive()) return false;
             if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
@@ -7436,6 +7453,10 @@ Respond ONLY with this JSON:
         },
 
         update() {
+            if (this.isBattleActive()) {
+                this._softReset();
+                return;
+            }
             if (!this.canRun()) {
                 this._softReset();
                 return;
@@ -7510,6 +7531,8 @@ Respond ONLY with this JSON:
             this._state.consentPromptPending = false;
             this._state.merchantSessionEventId = null;
             this._state.merchantSessionUntil = 0;
+            this._state.localCooldownUntil = 0;
+            this._state.localTimeoutCount = 0;
         },
 
         _distance(a, b) {
@@ -8281,6 +8304,7 @@ Respond ONLY with this JSON:
 
         _logTick(snapshot, decision, source, latencyMs, errorMessage) {
             try {
+                const hasLocalStats = /^(local|llm_|local_)/.test(String(source || ''));
                 ThesisLogger.log('autonomy_tick', {
                     map_id: $gameMap ? $gameMap.mapId() : null,
                     map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
@@ -8288,11 +8312,11 @@ Respond ONLY with this JSON:
                     mode: this._state.mode,
                     source: source,
                     latency_ms: latencyMs,
-	                    model_used: source === 'local' ? Config.getAutonomyModel() : null,
-	                    llm_stats: source === 'local' ? (this._state.lastLocalStats || null) : null,
-	                    prompt_tokens: source === 'local' && this._state.lastLocalStats ? this._state.lastLocalStats.prompt_tokens : null,
-	                    completion_tokens: source === 'local' && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens : null,
-	                    completion_tokens_per_second: source === 'local' && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens_per_second : null,
+	                    model_used: hasLocalStats ? Config.getAutonomyModel() : null,
+	                    llm_stats: hasLocalStats ? (this._state.lastLocalStats || null) : null,
+	                    prompt_tokens: hasLocalStats && this._state.lastLocalStats ? this._state.lastLocalStats.prompt_tokens : null,
+	                    completion_tokens: hasLocalStats && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens : null,
+	                    completion_tokens_per_second: hasLocalStats && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens_per_second : null,
 	                    reason: decision ? decision.reason : null,
                     action: decision ? decision.action : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
@@ -8342,8 +8366,13 @@ Respond ONLY with this JSON:
 
         async _heartbeat() {
             const start = Date.now();
+            if (this.isBattleActive()) {
+                this._softReset();
+                return;
+            }
             this._state.pending = true;
             try {
+                if (this.isBattleActive()) return;
                 const snapshot = this._buildSnapshot();
                 if (this._isCurrentTaskStillValid(snapshot) && this._state.lastDecision) {
                     this._applyDecision(this._state.lastDecision, snapshot, true);
@@ -8384,7 +8413,16 @@ Respond ONLY with this JSON:
 
         async _requestDecision(snapshot) {
             const fallback = this._goalFreeFallback(snapshot, 'llm unavailable');
+            if (this.isBattleActive()) return Object.assign({ _autonomySource: 'battle_skip', reason: 'battle active' }, fallback);
             if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'no_model' }, fallback);
+            const now = Date.now();
+            if (this._state.localCooldownUntil && now < this._state.localCooldownUntil) {
+                const remaining = Math.ceil((this._state.localCooldownUntil - now) / 1000);
+                return Object.assign({
+                    _autonomySource: 'local_cooldown',
+                    reason: `local model cooling down (${remaining}s)`
+                }, fallback);
+            }
             this._state.lastRawLocalContent = '';
 
             const prompt = [
@@ -8409,7 +8447,8 @@ Respond ONLY with this JSON:
             ].join('\n');
 
 	            const controller = new AbortController();
-	            const timer = setTimeout(() => controller.abort(), 4000);
+	            const timeoutMs = 6000;
+	            const timer = setTimeout(() => controller.abort(), timeoutMs);
 	            const requestStart = performance.now();
 	            let response;
             try {
@@ -8428,7 +8467,23 @@ Respond ONLY with this JSON:
 	                });
             } catch (error) {
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
-                    return Object.assign({ _autonomySource: 'llm_timeout' }, fallback);
+                    const latencyMs = performance.now() - requestStart;
+                    this._state.localTimeoutCount = (this._state.localTimeoutCount || 0) + 1;
+                    const cooldownMs = Math.min(30000, 8000 + (this._state.localTimeoutCount - 1) * 5000);
+                    this._state.localCooldownUntil = Date.now() + cooldownMs;
+                    this._state.lastLocalStats = {
+                        prompt_tokens: null,
+                        completion_tokens: null,
+                        total_tokens: null,
+                        completion_tokens_per_second: null,
+                        latency_ms: Math.round(latencyMs),
+                        has_usage: false,
+                        timed_out: true,
+                        timeout_ms: timeoutMs,
+                        cooldown_ms: cooldownMs
+                    };
+                    Debug.warn('[Autonomy] Local request timed out; cooling down for', cooldownMs + 'ms');
+                    return Object.assign({ _autonomySource: 'llm_timeout', reason: 'local model timed out' }, fallback);
                 }
                 throw error;
             } finally {
@@ -8436,11 +8491,24 @@ Respond ONLY with this JSON:
             }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
-                return Object.assign({ _autonomySource: 'llm_http_error' }, fallback);
+                this._state.localCooldownUntil = Date.now() + 8000;
+                this._state.lastLocalStats = {
+                    prompt_tokens: null,
+                    completion_tokens: null,
+                    total_tokens: null,
+                    completion_tokens_per_second: null,
+                    latency_ms: Math.round(performance.now() - requestStart),
+                    has_usage: false,
+                    http_status: response.status,
+                    cooldown_ms: 8000
+                };
+                return Object.assign({ _autonomySource: 'llm_http_error', reason: 'local model HTTP error' }, fallback);
             }
 
 	            const data = await response.json();
 	            this._state.lastLocalStats = LlmTelemetry.fromResponse(data, performance.now() - requestStart);
+	            this._state.localCooldownUntil = 0;
+	            this._state.localTimeoutCount = 0;
 	            this._state.lastRawLocalContent = String(
                 data &&
                 data.choices &&
