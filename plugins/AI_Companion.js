@@ -8413,15 +8413,15 @@ Respond ONLY with this JSON:
 
         async _requestDecision(snapshot) {
             const fallback = this._goalFreeFallback(snapshot, 'llm unavailable');
-            if (this.isBattleActive()) return Object.assign({ _autonomySource: 'battle_skip', reason: 'battle active' }, fallback);
-            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'no_model' }, fallback);
+            if (this.isBattleActive()) return Object.assign({}, fallback, { _autonomySource: 'battle_skip', reason: 'battle active' });
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({}, fallback, { _autonomySource: 'no_model' });
             const now = Date.now();
             if (this._state.localCooldownUntil && now < this._state.localCooldownUntil) {
                 const remaining = Math.ceil((this._state.localCooldownUntil - now) / 1000);
-                return Object.assign({
+                return Object.assign({}, fallback, {
                     _autonomySource: 'local_cooldown',
                     reason: `local model cooling down (${remaining}s)`
-                }, fallback);
+                });
             }
             this._state.lastRawLocalContent = '';
 
@@ -8483,7 +8483,7 @@ Respond ONLY with this JSON:
                         cooldown_ms: cooldownMs
                     };
                     Debug.warn('[Autonomy] Local request timed out; cooling down for', cooldownMs + 'ms');
-                    return Object.assign({ _autonomySource: 'llm_timeout', reason: 'local model timed out' }, fallback);
+                    return Object.assign({}, fallback, { _autonomySource: 'llm_timeout', reason: 'local model timed out' });
                 }
                 throw error;
             } finally {
@@ -8502,7 +8502,7 @@ Respond ONLY with this JSON:
                     http_status: response.status,
                     cooldown_ms: 8000
                 };
-                return Object.assign({ _autonomySource: 'llm_http_error', reason: 'local model HTTP error' }, fallback);
+                return Object.assign({}, fallback, { _autonomySource: 'llm_http_error', reason: 'local model HTTP error' });
             }
 
 	            const data = await response.json();
