@@ -118,11 +118,10 @@
     };
 
     const _providerOrder = ['groq', 'openrouter', 'local'];
-    const FAST_AUTONOMY_MODEL_HINTS = [
-        'gemma-4-e4b-uncensored-hauhaucs-aggressive',
-        'gemma-4',
-        'gemma'
-    ];
+    const savedLocalModel = localStorage.getItem('AI_Companion_LocalModel') || '';
+    const normalizedSavedLocalModel = (/^q/i.test(savedLocalModel) && /3\.5-4b-uncensored-hauhaucs-aggressive/i.test(savedLocalModel))
+        ? ''
+        : savedLocalModel;
 
 	    const Config = {
         apiKey: savedApiKey || String(parameters['apiKey'] || ''),
@@ -162,7 +161,7 @@
 
         // Local AI config
         localEndpoint: localStorage.getItem('AI_Companion_LocalEndpoint') || 'http://192.168.100.3:1234/v1/chat/completions',
-        localModel: localStorage.getItem('AI_Companion_LocalModel') || 'qwen3.5-4b-uncensored-hauhaucs-aggressive',
+        localModel: normalizedSavedLocalModel,
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
@@ -246,22 +245,16 @@
             const pushUnique = (value) => {
                 if (value && options.indexOf(value) === -1) options.push(value);
             };
-            for (let i = 0; i < FAST_AUTONOMY_MODEL_HINTS.length; i++) {
-                pushUnique(FAST_AUTONOMY_MODEL_HINTS[i]);
-            }
             pushUnique(this.localModel);
             pushUnique(this.chatModel);
             const defaults = this.getProvider().defaultModels || [];
             for (let i = 0; i < defaults.length; i++) pushUnique(defaults[i]);
-            return options.length > 0 ? options : ['local-current'];
+            return options;
         },
 
         getAutonomyModel() {
             if (this.autonomyModel) return this.autonomyModel;
-            if (this.localModel && !/qwen|thinking|reasoning/i.test(this.localModel)) {
-                return this.localModel;
-            }
-            return FAST_AUTONOMY_MODEL_HINTS[0] || this.localModel || this.getChatModel();
+            return this.localModel || this.getChatModel();
         },
 
         setAutonomyModel(model) {
@@ -284,8 +277,12 @@
         },
 
         setLocalModel(model) {
-            this.localModel = model;
-            localStorage.setItem('AI_Companion_LocalModel', model);
+            this.localModel = String(model || '').trim();
+            localStorage.setItem('AI_Companion_LocalModel', this.localModel);
+            if (this.apiProvider === 'local') {
+                this.chatModel = this.localModel;
+                localStorage.setItem('AI_Companion_ChatModel', this.localModel);
+            }
         },
 
         setCustomPersonaEnabled(on) {
@@ -5687,8 +5684,8 @@ Respond ONLY with this JSON:
         const apiStatus = Config.apiKey
             ? (es ? 'API key: OK' : 'API key: OK') + ' (' + Config.apiKey.substring(0, 8) + '...)'
             : (es ? 'API key: no configurada' : 'API key: not set');
-        const chatModel = short((Config.apiProvider === 'local' ? Config.localModel : (Config.chatModel || Config.getProvider().defaultModels[0] || 'auto')).split('/').pop(), 28);
-        const autonomyModel = short(String(Config.getAutonomyModel() || 'local-current').split('/').pop(), 28);
+        const chatModel = short((Config.apiProvider === 'local' ? (Config.localModel || 'paste-model-id') : (Config.chatModel || Config.getProvider().defaultModels[0] || 'auto')).split('/').pop(), 28);
+        const autonomyModel = short(String(Config.getAutonomyModel() || 'same-as-local-chat').split('/').pop(), 28);
         const autonomyRisk = Config.getAutonomyModel() === Config.localModel
             ? (es ? 'local preferido' : 'local preferred')
             : (es ? 'posible uso cloud' : 'may use cloud');
@@ -5997,10 +5994,15 @@ Respond ONLY with this JSON:
     };
 
     // Model selection handler — cycles through available models for current provider
-    Scene_AIConfig.prototype.commandSetModel = function () {
-        const es = Config.language === 'es';
-        let models = [];
-        if (Config.apiProvider === 'openrouter') {
+	    Scene_AIConfig.prototype.commandSetModel = function () {
+	        const es = Config.language === 'es';
+	        if (Config.apiProvider === 'local') {
+	            this._openTextInput('localModel', es ? 'Modelo de chat local' : 'Local chat model', Config.localModel,
+	                es ? 'Pega el ID exacto del modelo cargado en LM Studio.' : 'Paste the exact model ID loaded in LM Studio.');
+	            return;
+	        }
+	        let models = [];
+	        if (Config.apiProvider === 'openrouter') {
             const free = Config.getFreeModels();
             if (free.length > 0) {
                 models = free.map(m => m.id);
@@ -6009,10 +6011,7 @@ Respond ONLY with this JSON:
             }
         } else if (Config.apiProvider === 'groq') {
             models = PROVIDERS.groq.defaultModels;
-        } else {
-            this._refreshConfigScene(es ? 'Modelo local se configura en LM Studio' : 'Local model is set in LM Studio');
-            return;
-        }
+	        }
         if (models.length === 0) {
             this._refreshConfigScene(es ? 'No hay modelos. Usa "Buscar modelos gratis"' : 'No models. Use "Fetch Free Models"');
             return;
@@ -6031,11 +6030,11 @@ Respond ONLY with this JSON:
             es ? 'Pega endpoint de LM Studio/Ollama compatible OpenAI.' : 'Paste OpenAI-compatible LM Studio/Ollama endpoint.');
     };
 
-    Scene_AIConfig.prototype.commandEditLocalModel = function () {
-        const es = Config.language === 'es';
-        this._openTextInput('localModel', es ? 'Modelo local' : 'Local model', Config.localModel,
-            es ? 'Pega el ID exacto del modelo local cargado.' : 'Paste the exact loaded local model ID.');
-    };
+	    Scene_AIConfig.prototype.commandEditLocalModel = function () {
+	        const es = Config.language === 'es';
+	        this._openTextInput('localModel', es ? 'Modelo de chat local' : 'Local chat model', Config.localModel,
+	            es ? 'Pega el ID exacto del modelo cargado en LM Studio.' : 'Paste the exact model ID loaded in LM Studio.');
+	    };
 
     Scene_AIConfig.prototype.commandSetTemperature = function () {
         const next = Config.cycleChatTemperature();
@@ -6063,11 +6062,17 @@ Respond ONLY with this JSON:
             : `Beta autonomy: ${Config.autonomyEnabled ? 'ON' : 'OFF'}`);
     };
 
-    Scene_AIConfig.prototype.commandSetAutonomyModel = function () {
-        const next = Config.cycleAutonomyModel();
-        SoundManager.playOk();
-        this._refreshConfigScene(`${Config.language === 'es' ? 'Modelo de autonomía' : 'Autonomy model'}: ${next}`);
-    };
+	    Scene_AIConfig.prototype.commandSetAutonomyModel = function () {
+	        const es = Config.language === 'es';
+	        if (Config.apiProvider === 'local' && Config.getAutonomyModelOptions().length === 0) {
+	            this._openTextInput('localModel', es ? 'Modelo local' : 'Local model', Config.localModel,
+	                es ? 'Pega el ID exacto del modelo cargado en LM Studio.' : 'Paste the exact model ID loaded in LM Studio.');
+	            return;
+	        }
+	        const next = Config.cycleAutonomyModel();
+	        SoundManager.playOk();
+	        this._refreshConfigScene(`${Config.language === 'es' ? 'Modelo de autonomía' : 'Autonomy model'}: ${next}`);
+	    };
 
     Scene_AIConfig.prototype.commandSetAutonomyTick = function () {
         const next = Config.cycleAutonomyTickSeconds();
@@ -6200,18 +6205,20 @@ Respond ONLY with this JSON:
         this.addCommand(es ? '--- Chat / IA ---' : '--- Chat / AI ---', 'separator', false);
         // Provider label
         const providerDef = PROVIDERS[Config.apiProvider] || PROVIDERS.groq;
-        let providerLabel;
-        if (Config.apiProvider === 'local') {
-            providerLabel = `Local (${Config.localModel.substring(0, 20)})`;
-        } else {
-            providerLabel = providerDef.name;
-        }
-        this.addCommand(`${es ? 'Proveedor' : 'Provider'}: ${providerLabel}`, 'setProvider');
-        // Model label
-        const modelLabel = Config.apiProvider === 'local'
-            ? Config.localModel.substring(0, 30)
-            : (Config.chatModel || providerDef.defaultModels[0] || 'auto').split('/').pop().substring(0, 30);
-        this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
+	        let providerLabel;
+	        if (Config.apiProvider === 'local') {
+	            providerLabel = Config.localModel
+	                ? `Local (${Config.localModel.substring(0, 20)})`
+	                : (es ? 'Local (pegar modelo)' : 'Local (paste model)');
+	        } else {
+	            providerLabel = providerDef.name;
+	        }
+	        this.addCommand(`${es ? 'Proveedor' : 'Provider'}: ${providerLabel}`, 'setProvider');
+	        // Model label
+	        const modelLabel = Config.apiProvider === 'local'
+	            ? (Config.localModel ? Config.localModel.substring(0, 30) : (es ? 'pegar ID del modelo' : 'paste model ID'))
+	            : (Config.chatModel || providerDef.defaultModels[0] || 'auto').split('/').pop().substring(0, 30);
+	        this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
         if (Config.apiProvider === 'local') {
             this.addCommand(es ? 'Editar endpoint local' : 'Edit local endpoint', 'editLocalEndpoint');
             this.addCommand(es ? 'Editar modelo local' : 'Edit local model', 'editLocalModel');
@@ -6226,7 +6233,7 @@ Respond ONLY with this JSON:
         }
         this.addCommand(es ? '--- Autonomía beta ---' : '--- Beta Autonomy ---', 'separator', false);
         this.addCommand(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'}`, 'toggleAutonomy');
-        this.addCommand(`${es ? 'Modelo de autonomía' : 'Autonomy model'}: ${String(Config.getAutonomyModel()).split('/').pop().substring(0, 30)}`, 'setAutonomyModel');
+	        this.addCommand(`${es ? 'Modelo de autonomía' : 'Autonomy model'}: ${(String(Config.getAutonomyModel() || '').split('/').pop() || (es ? 'igual al chat local' : 'same as local chat')).substring(0, 30)}`, 'setAutonomyModel');
         this.addCommand(`${es ? 'Pulso' : 'Heartbeat'}: ${Config.autonomyTickSeconds}s`, 'setAutonomyTick');
         this.addCommand(`${es ? 'Perfil' : 'Profile'}: ${Config.autonomyBehaviorProfile}`, 'setAutonomyProfile');
         this.addCommand(`${es ? 'Exploración máxima' : 'Max scout'}: ${Config.autonomyMaxScoutDistance}`, 'setAutonomyScout');
