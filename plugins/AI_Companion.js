@@ -378,12 +378,13 @@
             return this.chatTopK;
         },
 
-        getSamplingOptions(overrides) {
+        getSamplingOptions(overrides, options) {
             const settings = Object.assign({
                 temperature: this.chatTemperature,
                 top_p: this.chatTopP
             }, overrides || {});
-            if (this.chatTopK > 0) settings.top_k = this.chatTopK;
+            const includeTopK = options && options.includeTopK;
+            if (includeTopK && this.chatTopK > 0) settings.top_k = this.chatTopK;
             return settings;
         },
 
@@ -594,11 +595,12 @@
     //=========================================================================
     // Model Router - Dynamic, provider-aware
     //=========================================================================
-    const ModelRouter = {
-        // Track failed models temporarily
-        _failedModels: new Set(),
-        _failedExpiry: 60000,
-        _failedTimestamps: {},
+	    const ModelRouter = {
+	        // Track failed models temporarily
+	        _failedModels: new Set(),
+	        _failedExpiry: 60000,
+	        _failedTimestamps: {},
+	        _lastFailures: [],
 
         // Get models for a context from the active provider
         getModelsForContext(context) {
@@ -641,11 +643,22 @@
             return models.filter(m => !this._failedModels.has(m));
         },
 
-        markFailed(model) {
-            this._failedModels.add(model);
-            this._failedTimestamps[model] = Date.now();
-            Debug.warn(`Model marked as failed (1min cooldown): ${model}`);
-        },
+	        markFailed(model) {
+	            this._failedModels.add(model);
+	            this._failedTimestamps[model] = Date.now();
+	            Debug.warn(`Model marked as failed (1min cooldown): ${model}`);
+	        },
+
+	        recordFailure(failure) {
+	            if (!failure) return;
+	            const entry = Object.assign({ time: Date.now() }, failure);
+	            this._lastFailures.push(entry);
+	            while (this._lastFailures.length > 12) this._lastFailures.shift();
+	        },
+
+	        getRecentFailures() {
+	            return this._lastFailures.slice();
+	        },
 
         getPrimaryModel(context) {
             const available = this.getModelsForContext(context);
@@ -4231,7 +4244,10 @@ Respond ONLY with this JSON:
                         model: model,
                         messages: messages,
                         max_tokens: maxTokens
-                    }, Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }), isLocal ? { enable_thinking: false } : {}))
+                    }, Config.getSamplingOptions(
+                        { temperature: Math.min(Config.chatTemperature, 0.8) },
+                        { includeTopK: isLocal }
+                    ), isLocal ? { enable_thinking: false } : {}))
                 });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return await response.json();
@@ -4397,7 +4413,10 @@ Respond ONLY with this JSON:
                         model: model,
                         messages: messages,
                         max_tokens: maxTokens
-                    }, Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }), isLocal ? { enable_thinking: false } : {})));
+                    }, Config.getSamplingOptions(
+                        { temperature: Math.min(Config.chatTemperature, 0.8) },
+                        { includeTopK: isLocal }
+                    ), isLocal ? { enable_thinking: false } : {})));
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
                         return { _requestFailed: true, _failure: { model: model, type: 'http', status: xhr.status, body: String(xhr.responseText || '').substring(0, 400) } };
@@ -10281,22 +10300,24 @@ Respond ONLY with this JSON:
                         prompt_length: prompt.length,
                         prompt_sections: this._lastPromptSections || null,
                         risk_assessment: context.risk_assessment,
-                        response_text: fallback,
-                        response_source: 'kb_fallback',
-                        latency_ms: chatLatency,
-                        model_used: null
-                    });
+	                        response_text: fallback,
+	                        response_source: 'kb_fallback',
+	                        latency_ms: chatLatency,
+	                        model_used: null,
+	                        llm_failures: ModelRouter.getRecentFailures()
+	                    });
                     DebugState.captureChat({
                         player_message: playerMessage,
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                         prompt_length: prompt.length,
                         prompt_sections: this._lastPromptSections || null,
                         risk_assessment: context.risk_assessment,
-                        response_text: fallback,
-                        response_source: 'kb_fallback',
-                        latency_ms: chatLatency,
-                        model_used: null
-                    });
+	                        response_text: fallback,
+	                        response_source: 'kb_fallback',
+	                        latency_ms: chatLatency,
+	                        model_used: null,
+	                        llm_failures: ModelRouter.getRecentFailures()
+	                    });
                     return fallback;
                 }
                 const validation = this._validateChatResponse(response, playerMessage, context, intent);
@@ -10358,21 +10379,23 @@ Respond ONLY with this JSON:
                     prompt_length: prompt.length,
                     prompt_sections: this._lastPromptSections || null,
                     risk_assessment: context.risk_assessment,
-                    response_text: fallback,
-                    response_source: 'kb_fallback_error',
-                    latency_ms: chatLatency,
-                    error: error.message
-                });
+	                    response_text: fallback,
+	                    response_source: 'kb_fallback_error',
+	                    latency_ms: chatLatency,
+	                    error: error.message,
+	                    llm_failures: ModelRouter.getRecentFailures()
+	                });
                 DebugState.captureChat({
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
                     prompt_length: prompt.length,
                     prompt_sections: this._lastPromptSections || null,
-                    response_text: fallback,
-                    response_source: 'kb_fallback_error',
-                    latency_ms: chatLatency,
-                    error: error.message,
-                    context_map: context.current_map,
+	                    response_text: fallback,
+	                    response_source: 'kb_fallback_error',
+	                    latency_ms: chatLatency,
+	                    error: error.message,
+	                    llm_failures: ModelRouter.getRecentFailures(),
+	                    context_map: context.current_map,
                     nearby_objects: context.nearby_objects
                 });
                 return fallback;
@@ -10724,7 +10747,20 @@ CRITICAL GAME RULES (NEVER violate these):
                         }, Config.getSamplingOptions(), extraBody.extra || {}))
                     });
                     clearTimeout(timer);
-                    if (!response.ok) return '';
+	                    if (!response.ok) {
+	                        const body = await response.text().catch(() => '');
+	                        const failure = {
+	                            provider: Config.apiProvider === 'local' && Config.apiKey ? 'groq_fallback' : Config.apiProvider,
+	                            context: 'chat',
+	                            model: model,
+	                            type: 'http',
+	                            status: response.status,
+	                            body: String(body || '').substring(0, 500)
+	                        };
+	                        ModelRouter.recordFailure(failure);
+	                        Debug.warn(`[Chat] ${model} HTTP ${response.status}: ${failure.body}`);
+	                        return '';
+	                    }
                     const data = await response.json();
                     if (Config.debugMode) Debug.log('[Chat] Raw response:', JSON.stringify(data).substring(0, 500));
                     let text = '';
@@ -10741,12 +10777,19 @@ CRITICAL GAME RULES (NEVER violate these):
                         text = data.response.trim();
                     }
                     return text || '';
-                } catch (error) {
-                    clearTimeout(timer);
-                    if (error.name === 'AbortError') Debug.warn('[Chat] Request timed out');
-                    else Debug.warn('[Chat] Request error:', error.message);
-                    return '';
-                }
+	                } catch (error) {
+	                    clearTimeout(timer);
+	                    if (error.name === 'AbortError') Debug.warn('[Chat] Request timed out');
+	                    else Debug.warn('[Chat] Request error:', error.message);
+	                    ModelRouter.recordFailure({
+	                        provider: Config.apiProvider === 'local' && Config.apiKey ? 'groq_fallback' : Config.apiProvider,
+	                        context: 'chat',
+	                        model: model,
+	                        type: error.name === 'AbortError' ? 'timeout' : 'exception',
+	                        message: error.message
+	                    });
+	                    return '';
+	                }
             };
 
             // === STRATEGY: Chat/RP ALWAYS uses Groq (70B) for quality ===
