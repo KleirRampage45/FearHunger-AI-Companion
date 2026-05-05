@@ -124,7 +124,7 @@
         'gemma'
     ];
 
-    const Config = {
+	    const Config = {
         apiKey: savedApiKey || String(parameters['apiKey'] || ''),
         companionActorId: Number(parameters['companionActorId'] || 15),
         companionName: String(parameters['companionName'] || 'Wanderer'),
@@ -545,10 +545,128 @@
         // Groq hardcoded endpoint for chat fallback (used by _sendChatRequest, combat fallback)
         get apiEndpoint() {
             return PROVIDERS.groq.endpoint;
-        }
-    };
+	        }
+	    };
 
-    // Starting equipment loadouts based on F&H characters
+	    const Locale = {
+	        isEnglish() {
+	            return Config.language !== 'es';
+	        },
+
+	        direction(value) {
+	            const raw = String(value || '').toLowerCase();
+	            if (!this.isEnglish()) return raw;
+	            const map = {
+	                norte: 'north',
+	                sur: 'south',
+	                este: 'east',
+	                oeste: 'west',
+	                noreste: 'northeast',
+	                noroeste: 'northwest',
+	                sureste: 'southeast',
+	                suroeste: 'southwest',
+	                norteeste: 'northeast',
+	                norteoeste: 'northwest'
+	            };
+	            return map[raw] || raw;
+	        },
+
+	        distance(value) {
+	            if (!this.isEnglish()) return `${value}p`;
+	            return `${value} steps`;
+	        },
+
+	        nearbyLine(label, distance, direction, warning) {
+	            const cleanLabel = this.text(label);
+	            const cleanDir = this.direction(direction);
+	            if (!this.isEnglish()) return `${warning ? '⚠ ' : ''}${cleanLabel} a ${distance} pasos al ${cleanDir}`;
+	            return `${warning ? '⚠ ' : ''}${cleanLabel} ${distance} steps to the ${cleanDir}`;
+	        },
+
+	        enemyName(name) {
+	            if (!this.isEnglish()) return String(name || '');
+	            if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) {
+	                const enemy = FearHungerKB.getEnemy(name);
+	                if (enemy) return enemy.displayName || enemy.displayNameEs || name;
+	            }
+	            return this.text(name);
+	        },
+
+	        text(value) {
+	            if (!this.isEnglish()) return String(value || '');
+	            let text = String(value || '');
+	            const replacements = [
+	                [/Nivel 1 - Entrada/gi, 'Level 1 - Entrance'],
+	                [/Nivel 1 - Patio Trasero/gi, 'Level 1 - Backyard'],
+	                [/Nivel 1 - Patio/gi, 'Level 1 - Courtyard'],
+	                [/Nivel 1 - Sala Interior/gi, 'Level 1 - Inner Hall'],
+	                [/Nivel 1 - Pasillo interior/gi, 'Level 1 - Inner Hall'],
+	                [/Nivel 2 - Pozo de Sangre/gi, 'Level 2 - Blood Pit'],
+	                [/Nivel 2 - Pozo de sangre/gi, 'Level 2 - Blood Pit'],
+	                [/Nivel 2 - Pozo de Mierda/gi, 'Level 2 - Filth Pit'],
+	                [/Nivel 3 - Prisiones/gi, 'Level 3 - Prisons'],
+	                [/Nivel 4 - Cavernas/gi, 'Level 4 - Caverns'],
+	                [/Nivel 5-6 - Minas/gi, 'Level 5-6 - Mines'],
+	                [/Nivel 7 - Catacumbas/gi, 'Level 7 - Catacombs'],
+	                [/\bGuardia\b/gi, 'Guard'],
+	                [/\bGnomo de las cavernas\b/gi, 'Cave gnome'],
+	                [/\bSacerdote\b/gi, 'Priest'],
+	                [/\bHombre Lagarto\b/gi, 'Lizardman'],
+	                [/\bNiña\b/gi, 'Girl'],
+	                [/\bPuerta de celda\b/gi, 'Cell door'],
+	                [/\bPuerta\b/gi, 'Door'],
+	                [/\bCaja\b/gi, 'Crate'],
+	                [/\bBarril\b/gi, 'Barrel'],
+	                [/\bCofre\b/gi, 'Chest'],
+	                [/\bSalida\b/gi, 'Exit'],
+	                [/\bMercader\b/gi, 'Merchant'],
+	                [/\bSuelo sospechoso\b/gi, 'Suspicious floor'],
+	                [/\bPeligro\b/gi, 'Hazard'],
+	                [/\bTrampa\b/gi, 'Trap'],
+	                [/\bCerveza Ale\b/gi, 'Ale'],
+	                [/\bCerveza\b/gi, 'Beer'],
+	                [/\bBotella de whisky\b/gi, 'Whisky bottle'],
+	                [/\bVial con vino\b/gi, 'Wine vial'],
+	                [/\bMoneda de la suerte\b/gi, 'Lucky coin'],
+	                [/\bAntorcha\b/gi, 'Torch'],
+	                [/\bYesquero\b/gi, 'Lighter'],
+	                [/\bPequeña llave\b/gi, 'Small key'],
+	                [/\bDiario del capitán\b/gi, "Captain's diary"],
+	                [/\bCarne cruda\b/gi, 'Raw meat'],
+	                [/\bHambre LVL\b/gi, 'Hunger LVL'],
+	                [/\bSangrando\b/gi, 'Bleeding'],
+	                [/\bInfección de pierna\b/gi, 'Leg infection'],
+	                [/\bInfeccion de pierna\b/gi, 'Leg infection'],
+	                [/\bnecrofobia\b/gi, 'necrophobia'],
+	                [/\bfasmofobia\b/gi, 'phasmophobia'],
+	                [/\berotofobia\b/gi, 'erotophobia'],
+	                [/\bpanofobia\b/gi, 'panophobia'],
+	                [/\bescotofobia\b/gi, 'scotophobia'],
+	                [/\bCombate reciente\b/gi, 'Recent fight'],
+	                [/\bDerrotamos a\b/gi, 'Defeated'],
+	                [/\bDerrotado\b/gi, 'Defeated'],
+	                [/\bVisitado\b/gi, 'Visited'],
+	                [/\bEncontrado\b/gi, 'Found'],
+	                [/\bPlayer picked up\b/gi, 'Player picked up'],
+	                [/\bpasos\b/gi, 'steps'],
+	                [/(\d+)p\b/gi, '$1 steps'],
+	                [/\bal norte\b/gi, 'to the north'],
+	                [/\bal sur\b/gi, 'to the south'],
+	                [/\bal este\b/gi, 'to the east'],
+	                [/\bal oeste\b/gi, 'to the west'],
+	                [/\bal noreste\b/gi, 'to the northeast'],
+	                [/\bal noroeste\b/gi, 'to the northwest'],
+	                [/\bal sureste\b/gi, 'to the southeast'],
+	                [/\bal suroeste\b/gi, 'to the southwest']
+	            ];
+	            replacements.forEach(([pattern, replacement]) => {
+	                text = text.replace(pattern, replacement);
+	            });
+	            return text;
+	        }
+	    };
+
+	    // Starting equipment loadouts based on F&H characters
     const STARTING_LOADOUTS = {
         defensor: {
             name: 'Defensor',
@@ -766,7 +884,7 @@
 
                 // Game context
                 map_id: typeof $gameMap !== 'undefined' && $gameMap ? $gameMap.mapId() : null,
-                map_name: typeof $gameMap !== 'undefined' && $gameMap && $gameMap.displayName ? $gameMap.displayName() : null,
+	                map_name: typeof $gameMap !== 'undefined' && $gameMap && $gameMap.displayName ? Locale.text($gameMap.displayName()) : null,
                 in_battle: typeof $gameParty !== 'undefined' && $gameParty ? $gameParty.inBattle() : false,
 
                 // Companion state
@@ -1177,15 +1295,15 @@
             return traits.length ? traits.join(', ') : 'stable personality';
         },
 
-        getRecentMemorySummary() {
-            const s = this._state();
-            const memories = Array.isArray(s.eventMemory) ? s.eventMemory : [];
-            return memories
-                .filter(entry => Date.now() - (entry.time || 0) < 30 * 60 * 1000)
-                .slice(0, 3)
-                .map(entry => `${entry.trigger}: ${entry.detail}`)
-                .join('; ');
-        },
+	        getRecentMemorySummary() {
+	            const s = this._state();
+	            const memories = Array.isArray(s.eventMemory) ? s.eventMemory : [];
+	            return memories
+	                .filter(entry => Date.now() - (entry.time || 0) < 30 * 60 * 1000)
+	                .slice(0, 3)
+	                .map(entry => `${entry.trigger}: ${Locale.text(entry.detail)}`)
+	                .join('; ');
+	        },
 
         getPromptModifier() {
             const s = this._state();
@@ -2014,11 +2132,17 @@ Reply with ONLY the category name, nothing else.`;
                     const priority = enemy.limbPriority || enemy.priority || [];
                     const hints = enemy.hints || [];
                     const lines = [];
-                    lines.push(`${enemy.displayNameEs || enemy.displayName || entity.name}:`);
-                    if (enemy.tactics) lines.push(enemy.tactics);
-                    if (priority.length > 0) lines.push(`Prioridad: ${priority.join(' > ')}`);
-                    if (enemy.coinFlipTurn) lines.push(`Coin flip en turno ${enemy.coinFlipTurn}: hay que matar o defender antes.`);
-                    if (hints.length > 0) lines.push(`Notas: ${hints.slice(0, 2).join('; ')}`);
+	                    lines.push(`${Config.language === 'es' ? (enemy.displayNameEs || enemy.displayName || entity.name) : (enemy.displayName || enemy.displayNameEs || entity.name)}:`);
+	                    if (enemy.tactics) lines.push(Locale.text(enemy.tactics));
+	                    if (priority.length > 0) lines.push(Config.language === 'es'
+	                        ? `Prioridad: ${priority.join(' > ')}`
+	                        : `Priority: ${priority.join(' > ')}`);
+	                    if (enemy.coinFlipTurn) lines.push(Config.language === 'es'
+	                        ? `Coin flip en turno ${enemy.coinFlipTurn}: hay que matar o defender antes.`
+	                        : `Coin flip on turn ${enemy.coinFlipTurn}: kill it or defend before then.`);
+	                    if (hints.length > 0) lines.push(Config.language === 'es'
+	                        ? `Notas: ${hints.slice(0, 2).join('; ')}`
+	                        : `Notes: ${hints.slice(0, 2).map(h => Locale.text(h)).join('; ')}`);
                     return lines.join(' ') || (Config.language === 'es' ? 'No sé mucho de ese enemigo.' : "I don't know much about that enemy.");
                 }
             }
@@ -2028,7 +2152,9 @@ Reply with ONLY the category name, nothing else.`;
                 if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffect) {
                     for (const word of intent.entities.map(e => e.name).concat(intent.types)) {
                         const effect = KBLookupCache.statusEffect(word);
-                        if (effect) return `${effect.name}: ${effect.effect} Cura: ${effect.cure}`;
+	                        if (effect) return Config.language === 'es'
+	                            ? `${effect.name}: ${effect.effect} Cura: ${effect.cure}`
+	                            : `${Locale.text(effect.name)}: ${Locale.text(effect.effect)} Cure: ${Locale.text(effect.cure)}`;
                     }
                 }
                 const statusReference = KBLookupCache.statusEffectsPrompt();
@@ -2693,15 +2819,18 @@ Reply with ONLY the category name, nothing else.`;
         /**
          * Get cardinal direction from player to target.
          */
-        _getDirection(dx, dy) {
-            if (dx === 0 && dy === 0) return 'aquí';
-            if (Math.abs(dx) > Math.abs(dy)) {
-                return dx > 0 ? 'este' : 'oeste';
-            } else if (Math.abs(dy) > Math.abs(dx)) {
-                return dy > 0 ? 'sur' : 'norte';
-            }
-            return (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
-        },
+	        _getDirection(dx, dy) {
+	            if (dx === 0 && dy === 0) return Config.language === 'es' ? 'aquí' : 'here';
+	            let direction;
+	            if (Math.abs(dx) > Math.abs(dy)) {
+	                direction = dx > 0 ? 'este' : 'oeste';
+	            } else if (Math.abs(dy) > Math.abs(dx)) {
+	                direction = dy > 0 ? 'sur' : 'norte';
+	            } else {
+	                direction = (dy > 0 ? 'sur' : 'norte') + (dx > 0 ? 'este' : 'oeste');
+	            }
+	            return Locale.direction(direction);
+	        },
 
         _tileStandable(x, y) {
             if (!this._mapReady() || !$gameMap.isValid(x, y)) return false;
@@ -3099,10 +3228,10 @@ Reply with ONLY the category name, nothing else.`;
         observe() {
             const dynamicHazards = this.getDynamicHazards($gamePlayer, this.HAZARD_SCAN_RADIUS);
             return {
-                map: {
-                    id: $gameMap ? $gameMap.mapId() : null,
-                    name: $gameMap && $gameMap.displayName ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null
-                },
+	                map: {
+	                    id: $gameMap ? $gameMap.mapId() : null,
+	                    name: $gameMap && $gameMap.displayName ? Locale.text($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null
+	                },
                 nearbyEvents: this.scan(),
                 hazards: dynamicHazards,
                 pointsOfInterest: this.getPointsOfInterest(),
@@ -3125,15 +3254,15 @@ Reply with ONLY the category name, nothing else.`;
             const otherItems = nearby.filter(n => !(n.danger === 'high' || n.type === 'trap'));
             const hazardItems = dynamicHazards.filter(n => n.distance <= 3);
 
-            for (const item of dangerItems) {
-                lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
-            }
-            for (const item of hazardItems.slice(0, 2)) {
-                lines.push(`⚠ ${item.label} a ${item.distance} pasos al ${item.direction}`);
-            }
-            for (const item of otherItems.slice(0, 4)) {
-                lines.push(`${item.label} a ${item.distance} pasos al ${item.direction}`);
-            }
+	            for (const item of dangerItems) {
+	                lines.push(Locale.nearbyLine(item.label, item.distance, item.direction, true));
+	            }
+	            for (const item of hazardItems.slice(0, 2)) {
+	                lines.push(Locale.nearbyLine(item.label, item.distance, item.direction, true));
+	            }
+	            for (const item of otherItems.slice(0, 4)) {
+	                lines.push(Locale.nearbyLine(item.label, item.distance, item.direction, false));
+	            }
 
             return lines.join('; ');
         },
@@ -3194,7 +3323,12 @@ Reply with ONLY the category name, nothing else.`;
                         (locNormEs && (norm.includes(locNormEs) || locNormEs.includes(norm)))) {
                         if (loc.tips) tips.push(...loc.tips);
                         if (loc.description) tips.push(loc.description);
-                        return { displayName: loc.displayNameEs || loc.displayName || mapName, tips };
+	                        return {
+	                            displayName: Config.language === 'es'
+	                                ? (loc.displayNameEs || loc.displayName || mapName)
+	                                : (loc.displayName || loc.displayNameEs || Locale.text(mapName)),
+	                            tips
+	                        };
                     }
                 }
             }
@@ -3208,55 +3342,62 @@ Reply with ONLY the category name, nothing else.`;
                     const lNorm = l.toLowerCase().replace(/[^a-z0-9áéíóúñü]/g, '');
                     return norm.includes(lNorm) || lNorm.includes(norm);
                 })) {
-                    enemiesHere.push((e.displayNameEs || e.displayName) + (e.danger >= 4 ? ' (¡peligroso!)' : ''));
-                }
-            }
-            if (enemiesHere.length > 0) {
-                tips.push('Enemigos en esta zona: ' + enemiesHere.join(', ') + '.');
-            }
+	                    const enemyName = Config.language === 'es'
+	                        ? (e.displayNameEs || e.displayName)
+	                        : (e.displayName || e.displayNameEs);
+	                    enemiesHere.push(enemyName + (e.danger >= 4 ? (Config.language === 'es' ? ' (¡peligroso!)' : ' (dangerous)') : ''));
+	                }
+	            }
+	            if (enemiesHere.length > 0) {
+	                tips.push(Config.language === 'es'
+	                    ? 'Enemigos en esta zona: ' + enemiesHere.join(', ') + '.'
+	                    : 'Enemies in this area: ' + enemiesHere.join(', ') + '.');
+	            }
 
             // Hardcoded area-specific tips (English + Spanish) as last resort
+            const es = Config.language === 'es';
             const hardcoded = {
-                'entrance': 'Dogs will chase and attack if you linger.',
-                'entrada': 'Los perros te perseguirán si te quedas.',
-                'courtyard': 'Open area. Dagger can be found here.',
-                'patio': 'Área abierta. Se puede encontrar un puñal.',
-                'innerhall': 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.',
-                'inner hall': 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.',
-                'salainterior': 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.',
-                'pasillointerior': 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.',
-                'bloodpit': 'Human Hydra here can be used for stat farming.',
-                'blood pit': 'Human Hydra here can be used for stat farming.',
-                'pozodesangre': 'La Hidra Humana está aquí. Útil para subir estadísticas.',
-                'pozosangre': 'La Hidra Humana está aquí. Útil para subir estadísticas.',
-                'prisons': 'Prisoners and Skeletons can be recruited.',
-                'prisiones': 'Prisioneros y Esqueletos pueden ser reclutados.',
-                'thicket': 'Infection is common. Stock green herbs.',
-                'espesura': 'Las infecciones son comunes. Lleva hierba verde.',
-                'catacombs': 'Skin Granny is here. Bring Penance armor or Iron mask.',
-                'catacumbas': 'La Skin Granny está aquí. Trae armadura de Penitencia o máscara de hierro.',
-                'mahabre': 'Ancient city. Yellow Mages and Moonless.',
-                "ma'habre": 'Ancient city. Yellow Mages and Moonless.',
-                'escalera': 'Escalera que conecta los niveles de la mazmorra.',
-                'sótano': 'Corredores del sótano. Guardias y enemigos de élite patrullan.',
-                'sotano': 'Corredores del sótano. Guardias y enemigos de élite patrullan.',
-                'cavernas': 'Cuevas naturales. Arañas y comerciantes Cavedweller.',
-                'minas': 'Minas abandonadas. Espectros mineros y el Altar de la Oscuridad.'
+                'entrance': { en: 'Dogs will chase and attack if you linger.', es: 'Los perros te perseguirán si te quedas.' },
+                'entrada': { en: 'Dogs will chase and attack if you linger.', es: 'Los perros te perseguirán si te quedas.' },
+                'courtyard': { en: 'Open area. Dagger can be found here.', es: 'Área abierta. Se puede encontrar un puñal.' },
+                'patio': { en: 'Open area. Dagger can be found here.', es: 'Área abierta. Se puede encontrar un puñal.' },
+                'innerhall': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
+                'inner hall': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
+                'salainterior': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
+                'pasillointerior': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
+                'bloodpit': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
+                'blood pit': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
+                'pozodesangre': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
+                'pozosangre': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
+                'prisons': { en: 'Prisoners and Skeletons can be recruited.', es: 'Prisioneros y Esqueletos pueden ser reclutados.' },
+                'prisiones': { en: 'Prisoners and Skeletons can be recruited.', es: 'Prisioneros y Esqueletos pueden ser reclutados.' },
+                'thicket': { en: 'Infection is common. Stock green herbs.', es: 'Las infecciones son comunes. Lleva hierba verde.' },
+                'espesura': { en: 'Infection is common. Stock green herbs.', es: 'Las infecciones son comunes. Lleva hierba verde.' },
+                'catacombs': { en: 'Skin Granny is here. Bring Penance armor or Iron mask.', es: 'La Skin Granny está aquí. Trae armadura de Penitencia o máscara de hierro.' },
+                'catacumbas': { en: 'Skin Granny is here. Bring Penance armor or Iron mask.', es: 'La Skin Granny está aquí. Trae armadura de Penitencia o máscara de hierro.' },
+                'mahabre': { en: 'Ancient city. Yellow Mages and Moonless.', es: 'Ciudad antigua. Magos amarillos y Moonless.' },
+                "ma'habre": { en: 'Ancient city. Yellow Mages and Moonless.', es: 'Ciudad antigua. Magos amarillos y Moonless.' },
+                'escalera': { en: 'Stairway connecting dungeon levels.', es: 'Escalera que conecta los niveles de la mazmorra.' },
+                'sótano': { en: 'Basement corridors. Guards and elite enemies patrol.', es: 'Corredores del sótano. Guardias y enemigos de élite patrullan.' },
+                'sotano': { en: 'Basement corridors. Guards and elite enemies patrol.', es: 'Corredores del sótano. Guardias y enemigos de élite patrullan.' },
+                'cavernas': { en: 'Natural caves. Spiders and Cavedweller merchants.', es: 'Cuevas naturales. Arañas y comerciantes Cavedweller.' },
+                'minas': { en: 'Abandoned mines. Miner spectres and the Altar of Darkness.', es: 'Minas abandonadas. Espectros mineros y el Altar de la Oscuridad.' }
             };
             for (const hKey in hardcoded) {
                 if (norm.includes(hKey.replace(/[^a-z0-9áéíóúñü]/g, ''))) {
-                    tips.push(hardcoded[hKey]);
+                    const tip = hardcoded[hKey];
+                    tips.push(es ? tip.es : tip.en);
                     break;
                 }
             }
 
-            return tips.length > 0 ? { displayName: mapName, tips } : null;
+            return tips.length > 0 ? { displayName: Locale.text(mapName), tips } : null;
         },
 
         getMapContext() {
             if (!$gameMap) return { displayName: 'Unknown', tips: [] };
             const mapId = String($gameMap.mapId());
-            const displayName = $gameMap.displayName() || ('Map ' + mapId);
+	            const displayName = $gameMap.displayName() || ('Map ' + mapId);
 
             // Try KB matching first (dynamic)
             const kbMatch = this._matchKB(displayName);
@@ -3265,7 +3406,7 @@ Reply with ONLY the category name, nothing else.`;
             // Fallback to ID-based tips
             const byId = this.mapTipsFallback[mapId];
             return {
-                displayName: byId ? byId.displayName : displayName,
+	                displayName: byId ? byId.displayName : Locale.text(displayName),
                 rawDisplayName: displayName,
                 tips: byId && byId.tips ? byId.tips : []
             };
@@ -4890,23 +5031,23 @@ Respond ONLY with this JSON:
             return entry;
         }
 
-        static getPromptSummary() {
-            const memory = this._getMemoryObject();
-            const memories = this.getWeightedMemoriesForPrompt(5);
-            const beliefs = this.getBeliefsForPrompt(4);
-            const lines = [];
-            if (memories.length > 0) {
-                lines.push('PAST WEIGHTED MEMORY (not current inventory, not proof of ownership):');
-                memories.forEach(entry => {
-                    lines.push(`- Past event: ${entry.summary} (importance ${entry.currentImportance.toFixed(2)}, ${entry.category})`);
-                });
-            }
-            if (beliefs.length > 0) {
-                lines.push('MUTABLE BELIEFS:');
-                beliefs.forEach(entry => {
-                    lines.push(`- ${entry.label} (confidence ${entry.confidence.toFixed(2)})`);
-                });
-            }
+	        static getPromptSummary() {
+	            const memory = this._getMemoryObject();
+	            const memories = this.getWeightedMemoriesForPrompt(5);
+	            const beliefs = this.getBeliefsForPrompt(4);
+	            const lines = [];
+	            if (memories.length > 0) {
+	                lines.push('PAST WEIGHTED MEMORY (not current inventory, not proof of ownership):');
+	                memories.forEach(entry => {
+	                    lines.push(`- Past event: ${Locale.text(entry.summary)} (importance ${entry.currentImportance.toFixed(2)}, ${entry.category})`);
+	                });
+	            }
+	            if (beliefs.length > 0) {
+	                lines.push('MUTABLE BELIEFS:');
+	                beliefs.forEach(entry => {
+	                    lines.push(`- ${Locale.text(entry.label)} (confidence ${entry.confidence.toFixed(2)})`);
+	                });
+	            }
             if (memory.relationship) lines.push(`RELATIONSHIP: ${memory.relationship}`);
             return lines.join('\n');
         }
@@ -5287,11 +5428,12 @@ Respond ONLY with this JSON:
                 : 'This summary contains only what the party has observed, heard, or inferred. Do not treat it as absolute future knowledge.');
             const currentMapId = this._mapKey($gameMap ? $gameMap.mapId() : null);
             const currentArea = state.visitedMaps[currentMapId];
-            if (currentArea) {
-                lines.push(es
-                    ? `Zona actual: ${currentArea.name} (${currentArea.status || 'parcialmente explorada'}, visitas ${currentArea.visits || 1}).`
-                    : `Current area: ${currentArea.name} (${currentArea.status || 'partially explored'}, visits ${currentArea.visits || 1}).`);
-            }
+	            if (currentArea) {
+	                const areaName = Locale.text(currentArea.name);
+	                lines.push(es
+	                    ? `Zona actual: ${currentArea.name} (${currentArea.status || 'parcialmente explorada'}, visitas ${currentArea.visits || 1}).`
+	                    : `Current area: ${areaName} (${currentArea.status || 'partially explored'}, visits ${currentArea.visits || 1}).`);
+	            }
             const knownGoals = state.knownGoals.slice(0, 5);
             if (knownGoals.length > 0) {
                 lines.push(es ? 'METAS CONOCIDAS:' : 'KNOWN GOALS:');
@@ -5310,13 +5452,13 @@ Respond ONLY with this JSON:
             const recentEvents = state.knownEvents.slice(0, 6);
             if (recentEvents.length > 0) {
                 lines.push(es ? 'HITOS RECIENTES OBSERVADOS:' : 'RECENT OBSERVED MILESTONES:');
-                recentEvents.forEach(event => lines.push(`- ${event.text}`));
-            }
+	                recentEvents.forEach(event => lines.push(`- ${Locale.text(event.text)}`));
+	            }
             const characters = Object.values(state.knownCharacters || {}).sort((a, b) => (b.lastMetAt || 0) - (a.lastMetAt || 0)).slice(0, 5);
             if (characters.length > 0) {
                 lines.push(es ? 'PERSONAJES CONOCIDOS:' : 'KNOWN CHARACTERS:');
-                characters.forEach(char => lines.push(`- ${char.name}${char.lastMap ? ` (${char.lastMap})` : ''}${char.lastLine ? `: "${char.lastLine}"` : ''}`));
-            }
+	                characters.forEach(char => lines.push(`- ${Locale.text(char.name)}${char.lastMap ? ` (${Locale.text(char.lastMap)})` : ''}${char.lastLine ? `: "${Locale.text(char.lastLine)}"` : ''}`));
+	            }
             return lines.join('\n');
         },
 
@@ -5443,7 +5585,7 @@ Respond ONLY with this JSON:
                     const norm = this._normalize(entry.label);
                     if (!norm || seen[norm]) return;
                     seen[norm] = true;
-                    labels.push(entry.label);
+	                    labels.push(Locale.text(entry.label));
                 });
             return labels.slice(0, 6);
         }
@@ -6865,10 +7007,14 @@ Respond ONLY with this JSON:
             if (s.threats.level === 'extreme' || s.threats.level === 'high') {
                 lines.push(es ? `Amenaza: ${s.threats.level === 'extreme' ? 'extrema' : 'alta'}` : `Threat: ${s.threats.level}`);
             }
-            if (s.threats.dynamic_hazards && s.threats.dynamic_hazards.length > 0) {
-                const hazards = s.threats.dynamic_hazards.slice(0, 2).map(h => `${h.label} ${h.distance}p ${h.direction}`).join('; ');
-                lines.push(es ? `Suelo peligroso: ${hazards}` : `Floor hazard: ${hazards}`);
-            }
+	            if (s.threats.dynamic_hazards && s.threats.dynamic_hazards.length > 0) {
+	                const hazards = s.threats.dynamic_hazards.slice(0, 2)
+	                    .map(h => Config.language === 'es'
+	                        ? `${h.label} ${h.distance}p ${h.direction}`
+	                        : `${Locale.text(h.label)} ${Locale.distance(h.distance)} ${Locale.direction(h.direction)}`)
+	                    .join('; ');
+	                lines.push(es ? `Suelo peligroso: ${hazards}` : `Floor hazard: ${hazards}`);
+	            }
 
             return lines.length > 1 ? lines.join(' | ') : '';
         },
@@ -6932,26 +7078,27 @@ Respond ONLY with this JSON:
             const states = actor && actor.states ? actor.states() : [];
             let score = 0;
             const details = [];
-            states.forEach(state => {
-                const name = String(state && state.name || '');
-                if (!name) return;
-                if (/infecc|infect/i.test(name)) {
-                    score += 4;
-                    details.push(`${actor.name()}: ${name}`);
-                } else if (/sangr|bleed/i.test(name)) {
-                    score += 2;
-                    details.push(`${actor.name()}: ${name}`);
-                } else if (/poison|venen|t[oó]xic/i.test(name)) {
-                    score += 3;
-                    details.push(`${actor.name()}: ${name}`);
-                } else if (/curse|maldic|ruin/i.test(name)) {
-                    score += 4;
-                    details.push(`${actor.name()}: ${name}`);
-                } else if (/hambre|hunger/i.test(name)) {
-                    score += 1;
-                    details.push(`${actor.name()}: ${name}`);
-                }
-            });
+	            states.forEach(state => {
+	                const name = String(state && state.name || '');
+	                if (!name) return;
+	                const label = Locale.text(name);
+	                if (/infecc|infect/i.test(name)) {
+	                    score += 4;
+	                    details.push(`${actor.name()}: ${label}`);
+	                } else if (/sangr|bleed/i.test(name)) {
+	                    score += 2;
+	                    details.push(`${actor.name()}: ${label}`);
+	                } else if (/poison|venen|t[oó]xic/i.test(name)) {
+	                    score += 3;
+	                    details.push(`${actor.name()}: ${label}`);
+	                } else if (/curse|maldic|ruin/i.test(name)) {
+	                    score += 4;
+	                    details.push(`${actor.name()}: ${label}`);
+	                } else if (/hambre|hunger/i.test(name)) {
+	                    score += 1;
+	                    details.push(`${actor.name()}: ${label}`);
+	                }
+	            });
             return { score, details };
         },
 
@@ -7005,24 +7152,32 @@ Respond ONLY with this JSON:
                 : [];
             let score = 0;
             const details = [];
-            nearby.forEach(item => {
-                if (!item) return;
-                if (item.type === 'enemy') {
-                    score += item.distance <= 2 ? 5 : 3;
-                    details.push(`${item.label || 'Enemigo'} ${item.distance}p ${item.direction}`);
-                } else if (item.type === 'trap') {
-                    score += item.distance <= 2 ? 4 : 2;
-                    details.push(`${item.label || 'Trampa'} ${item.distance}p ${item.direction}`);
-                } else if (item.type === 'hazard' && EnvironmentScanner._isWarningThreat && EnvironmentScanner._isWarningThreat(item)) {
-                    score += item.distance <= 2 ? 3 : 1;
-                    details.push(`${item.label || 'Peligro'} ${item.distance}p ${item.direction}`);
-                }
-            });
-            dynamicHazards.forEach(item => {
-                if (!item) return;
-                score += item.distance <= 2 ? 3 : 1;
-                details.push(`${item.label || 'Peligro'} ${item.distance}p ${item.direction}`);
-            });
+	            nearby.forEach(item => {
+	                if (!item) return;
+	                if (item.type === 'enemy') {
+	                    score += item.distance <= 2 ? 5 : 3;
+	                    details.push(Config.language === 'es'
+	                        ? `${item.label || 'Enemigo'} ${item.distance}p ${item.direction}`
+	                        : `${Locale.text(item.label || 'Enemy')} ${Locale.distance(item.distance)} ${Locale.direction(item.direction)}`);
+	                } else if (item.type === 'trap') {
+	                    score += item.distance <= 2 ? 4 : 2;
+	                    details.push(Config.language === 'es'
+	                        ? `${item.label || 'Trampa'} ${item.distance}p ${item.direction}`
+	                        : `${Locale.text(item.label || 'Trap')} ${Locale.distance(item.distance)} ${Locale.direction(item.direction)}`);
+	                } else if (item.type === 'hazard' && EnvironmentScanner._isWarningThreat && EnvironmentScanner._isWarningThreat(item)) {
+	                    score += item.distance <= 2 ? 3 : 1;
+	                    details.push(Config.language === 'es'
+	                        ? `${item.label || 'Peligro'} ${item.distance}p ${item.direction}`
+	                        : `${Locale.text(item.label || 'Hazard')} ${Locale.distance(item.distance)} ${Locale.direction(item.direction)}`);
+	                }
+	            });
+	            dynamicHazards.forEach(item => {
+	                if (!item) return;
+	                score += item.distance <= 2 ? 3 : 1;
+	                details.push(Config.language === 'es'
+	                    ? `${item.label || 'Peligro'} ${item.distance}p ${item.direction}`
+	                    : `${Locale.text(item.label || 'Hazard')} ${Locale.distance(item.distance)} ${Locale.direction(item.direction)}`);
+	            });
             return { score, details };
         },
 
@@ -7031,21 +7186,24 @@ Respond ONLY with this JSON:
             const details = [];
             if (!enemy || !enemy.alive) return { score, details };
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemyHints) {
-                const kb = KBLookupCache.enemyHints(enemy.name);
-                if (kb) {
-                    if (kb.dangerLevel >= 4) {
-                        score += 4;
-                        details.push(`${kb.name || enemy.name}: peligro alto`);
-                    } else if (kb.dangerLevel >= 2) {
-                        score += 2;
-                    }
-	                    if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
-	                        if (turnNumber >= kb.coinFlipTurn) {
-	                            score += 5;
-	                            details.push(`${kb.name || enemy.name}: coin flip ahora`);
+	                const kb = KBLookupCache.enemyHints(enemy.name);
+	                if (kb) {
+	                    const name = Config.language === 'es'
+	                        ? (kb.name || enemy.name)
+	                        : Locale.enemyName(kb.name || enemy.name);
+	                    if (kb.dangerLevel >= 4) {
+	                        score += 4;
+	                        details.push(Config.language === 'es' ? `${name}: peligro alto` : `${name}: high danger`);
+	                    } else if (kb.dangerLevel >= 2) {
+	                        score += 2;
+	                    }
+		                    if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
+		                        if (turnNumber >= kb.coinFlipTurn) {
+		                            score += 5;
+		                            details.push(Config.language === 'es' ? `${name}: coin flip ahora` : `${name}: coin flip now`);
                         } else if (turnNumber === kb.coinFlipTurn - 1) {
                             score += 3;
-                            details.push(`${kb.name || enemy.name}: coin flip próximo`);
+                            details.push(Config.language === 'es' ? `${name}: coin flip próximo` : `${name}: coin flip soon`);
                         }
                     }
                 }
@@ -9449,9 +9607,9 @@ Respond ONLY with this JSON:
                 const enemies = state && state.enemies
                     ? state.enemies.filter(e => e.alive).map(e => e.name)
                     : [];
-                const enemyLabel = enemies.length > 0
-                    ? enemies.join(', ')
-                    : (es ? 'enemigos desconocidos' : 'unknown enemies');
+	                const enemyLabel = enemies.length > 0
+	                    ? enemies.map(name => Locale.enemyName(name)).join(', ')
+	                    : (es ? 'enemigos desconocidos' : 'unknown enemies');
 
                 return {
                     tag: 'battle',
@@ -9463,7 +9621,7 @@ Respond ONLY with this JSON:
                 };
             }
 
-            const mapName = mapContext.displayName || mapContext.rawDisplayName || (es ? 'Zona desconocida' : 'Unknown area');
+	            const mapName = Locale.text(mapContext.displayName || mapContext.rawDisplayName || (es ? 'Zona desconocida' : 'Unknown area'));
             return {
                 tag: 'field',
                 key: 'field:' + String(mapName).toLowerCase(),
@@ -9672,22 +9830,22 @@ Respond ONLY with this JSON:
                 if (trades.length === 0) {
                     return 'No purchase/trade memory is stored for this save yet. Do not answer from pickups, equipped gear, or inventory.';
                 }
-                return [
-                    'PURCHASE/TRADING MEMORY ONLY:',
-                    ...trades.map(entry => `- ${entry.summary}`)
-                ].join('\n');
+	                return [
+	                    'PURCHASE/TRADING MEMORY ONLY:',
+	                    ...trades.map(entry => `- ${Locale.text(entry.summary)}`)
+	                ].join('\n');
             }
             if (!context || !context.memory_beliefs) return '';
             if (intent && intent.primary === 'item_info') {
                 const relevant = MemoryManager.getMemoriesByCategoryForPrompt(['care', 'trade', 'hazard', 'combat'], 4);
                 if (relevant.length === 0) return '';
-                return [
-                    'RELEVANT PAST MEMORY (not current inventory, not proof of ownership):',
-                    ...relevant.map(entry => `- Past event: ${entry.summary} (${entry.category})`)
-                ].join('\n');
-            }
-            return context.memory_beliefs;
-        },
+	                return [
+	                    'RELEVANT PAST MEMORY (not current inventory, not proof of ownership):',
+	                    ...relevant.map(entry => `- Past event: ${Locale.text(entry.summary)} (${entry.category})`)
+	                ].join('\n');
+	            }
+	            return Locale.text(context.memory_beliefs);
+	        },
 
         _normalizeLookupText(text) {
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB._normalizeLookup) {
@@ -9701,9 +9859,11 @@ Respond ONLY with this JSON:
         },
 
         _getNearbyEnemyLabels(context) {
-            return this._getNearbyEnemyKnowledge(context).map(entry =>
-                entry.enemy.displayNameEs || entry.enemy.displayName || entry.snapshot.label
-            );
+	            return this._getNearbyEnemyKnowledge(context).map(entry =>
+	                Config.language === 'es'
+	                    ? (entry.enemy.displayNameEs || entry.enemy.displayName || entry.snapshot.label)
+	                    : (entry.enemy.displayName || entry.enemy.displayNameEs || entry.snapshot.label)
+	            );
         },
 
         _getMentionedEnemyNames(text) {
@@ -9713,21 +9873,23 @@ Respond ONLY with this JSON:
             const matches = [];
             const seen = {};
 
-            collections.forEach(collection => {
-                for (const key in collection) {
-                    const data = collection[key];
+	            collections.forEach(collection => {
+	                for (const key in collection) {
+	                    const data = collection[key];
                     const names = [data.displayName, data.displayNameEs]
                         .concat(data.altNames || [])
                         .filter(Boolean);
                     for (const name of names) {
                         const normalizedName = this._normalizeLookupText(name);
                         if (!normalizedName || normalizedName.length < 3) continue;
-                        if (normalizedText.includes(normalizedName) && !seen[key]) {
-                            seen[key] = true;
-                            matches.push(data.displayNameEs || data.displayName || name);
-                            break;
-                        }
-                    }
+	                        if (normalizedText.includes(normalizedName) && !seen[key]) {
+	                            seen[key] = true;
+	                            matches.push(Config.language === 'es'
+	                                ? (data.displayNameEs || data.displayName || name)
+	                                : (data.displayName || data.displayNameEs || name));
+	                            break;
+	                        }
+	                    }
                 }
             });
 
@@ -9773,7 +9935,7 @@ Respond ONLY with this JSON:
             if (!context || !context.last_battle || !context.last_battle.enemies || context.last_battle.enemies.length === 0) {
                 return es ? `No recuerdo bien el último combate, ${playerName}.` : `I do not clearly remember the last fight, ${playerName}.`;
             }
-            const names = context.last_battle.enemies.join(', ');
+	            const names = context.last_battle.enemies.map(name => Locale.enemyName(name)).join(', ');
             if (context.last_battle.victory) {
                 return es ? `Nos fue bien, ${playerName}. Acabamos de vencer a ${names}.` : `We did well, ${playerName}. We just beat ${names}.`;
             }
@@ -9884,8 +10046,8 @@ Respond ONLY with this JSON:
             const observation = context && context.nearby_observation;
             const points = observation && observation.pointsOfInterest ? observation.pointsOfInterest : [];
             return points.slice(0, 6).map(point => {
-                const label = `${point.label} al ${point.direction}`;
-                const key = `nearby:${point.type}:${point.label}:${point.direction}:${point.distance}`;
+	                const label = Locale.nearbyLine(point.label, point.distance, point.direction, false).replace(/^\s*⚠\s*/, '');
+	                const key = `nearby:${point.type}:${point.label}:${point.direction}:${point.distance}`;
                 return { key: key, label: label, point: point };
             });
         },
@@ -9904,13 +10066,16 @@ Respond ONLY with this JSON:
                 });
             }
 
-            if (intent && intent.primary === 'recent_battle' && context && context.last_battle && context.last_battle.enemies) {
-                context.last_battle.enemies.forEach(name => {
-                    if (normalizedText.includes(this._normalizeLookupText(name))) {
-                        DialogueMemory.rememberFact(`battle:${name}`, `Combate reciente: ${name}`, 'chat_fact', { mapId: mapId });
-                    }
-                });
-            }
+	            if (intent && intent.primary === 'recent_battle' && context && context.last_battle && context.last_battle.enemies) {
+	                context.last_battle.enemies.forEach(name => {
+	                    if (normalizedText.includes(this._normalizeLookupText(name))) {
+	                        const label = Config.language === 'es'
+	                            ? `Combate reciente: ${name}`
+	                            : `Recent fight: ${Locale.enemyName(name)}`;
+	                        DialogueMemory.rememberFact(`battle:${name}`, label, 'chat_fact', { mapId: mapId });
+	                    }
+	                });
+	            }
         },
 
         _buildPromptSections(playerMessage, context, intent) {
@@ -9947,10 +10112,12 @@ Respond ONLY with this JSON:
             pushSection('MODE INSTRUCTIONS', this._buildInstructions(intent));
 
             if (context.party_members && context.party_members.length > 0) {
-                pushSection('PARTY MEMBERS', context.party_members.map(m => {
-                    const statesStr = m.states.length > 0 ? m.states.join(', ') : 'ninguno';
-                    return `- ${m.name}: HP ${m.hp}/${m.max_hp}, Estados: ${statesStr}`;
-                }));
+	                pushSection('PARTY MEMBERS', context.party_members.map(m => {
+	                    const statesStr = m.states.length > 0 ? m.states.map(state => Locale.text(state)).join(', ') : (Config.language === 'es' ? 'ninguno' : 'none');
+	                    return Config.language === 'es'
+	                        ? `- ${m.name}: HP ${m.hp}/${m.max_hp}, Estados: ${statesStr}`
+	                        : `- ${m.name}: HP ${m.hp}/${m.max_hp}, States: ${statesStr}`;
+	                }));
             }
 
             if (context.status_effects_summary) {
@@ -9961,10 +10128,10 @@ Respond ONLY with this JSON:
                 const spatialIntents = new Set(['tactical', 'location', 'generic_query']);
                 if (spatialIntents.has(intent.primary)) {
                     pushSection('LIVE NEARBY DETECTION', context.nearby_objects);
-                } else if (!new Set(['emotional', 'recent_battle', 'social']).has(intent.primary) &&
-                    /⚠/.test(context.nearby_objects) && /[12] pasos/.test(context.nearby_objects)) {
-                    pushSection('LIVE NEARBY THREAT', context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /[12] pasos/.test(s)).join(';').trim());
-                }
+	                } else if (!new Set(['emotional', 'recent_battle', 'social']).has(intent.primary) &&
+	                    /⚠/.test(context.nearby_objects) && /(?:[12] pasos|[12] steps)/.test(context.nearby_objects)) {
+	                    pushSection('LIVE NEARBY THREAT', context.nearby_objects.split(';').filter(s => /⚠/.test(s) && /(?:[12] pasos|[12] steps)/.test(s)).join(';').trim());
+	                }
             }
 
             if (context.dynamic_hazards && context.dynamic_hazards.length > 0) {
@@ -9997,7 +10164,10 @@ Respond ONLY with this JSON:
             if (recentCompanionMsgs.length > 0) {
                 playerSection += `You already said: ${recentCompanionMsgs.map(m => '"' + m.substring(0, 60) + '..."').join(' and ')}. DO NOT repeat yourself or rephrase the same idea. Say something NEW.\n`;
             }
-            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+	            const uncertaintyRule = Config.language === 'es'
+	                ? 'Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.'
+	                : 'Do NOT say "I do not know" or "I am not sure" unless the information is truly not available in the context above.';
+	            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. ${uncertaintyRule}\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
             pushSection('RESPONSE CONTRACT', playerSection);
 
             return sections;
@@ -10068,7 +10238,9 @@ Respond ONLY with this JSON:
             const memory = MemoryManager.getLongTermMemory();
             const sanity = SanityManager.getSanityLevel();
             const fear = FearState.getSnapshot();
-            const events = ShortTermMemory.getRecentEvents();
+	            const events = ShortTermMemory.getRecentEvents().map(event => Object.assign({}, event, {
+	                desc: Locale.text(event.desc)
+	            }));
             const mapContext = MapContextHelper.getMapContext();
             const leader = $gameParty.leader ? $gameParty.leader() : $gameParty.battleMembers()[0];
             const companionActor = $gameActors && $gameActors.actor(Config.companionActorId);
@@ -10101,7 +10273,10 @@ Respond ONLY with this JSON:
                 }
             }
 
-            const lastBattle = ShortTermMemory.getLastBattle();
+	            const rawLastBattle = ShortTermMemory.getLastBattle();
+	            const lastBattle = rawLastBattle ? Object.assign({}, rawLastBattle, {
+	                enemies: (rawLastBattle.enemies || []).map(name => Locale.enemyName(name))
+	            }) : null;
 
             // Only include status effects that are ACTIVE on player/companion, not all 20+
             // Full KB dump only when player asks about a status keyword
@@ -10169,12 +10344,16 @@ Respond ONLY with this JSON:
                                     }
                                 }
                             }
-                            const who = members.join(', ');
-                            if (kbInfo) {
-                                lines.push(`${stateName} (${who}): ${kbInfo.effect} Cura: ${kbInfo.cure}`);
-                            } else {
-                                lines.push(`${stateName} (${who}): Estado activo (sin datos adicionales en KB)`);
-                            }
+	                            const who = members.join(', ');
+	                            if (kbInfo) {
+	                                lines.push(Config.language === 'es'
+	                                    ? `${stateName} (${who}): ${kbInfo.effect} Cura: ${kbInfo.cure}`
+	                                    : `${Locale.text(stateName)} (${who}): ${Locale.text(kbInfo.effect)} Cure: ${Locale.text(kbInfo.cure)}`);
+	                            } else {
+	                                lines.push(Config.language === 'es'
+	                                    ? `${stateName} (${who}): Estado activo (sin datos adicionales en KB)`
+	                                    : `${Locale.text(stateName)} (${who}): Active state (no additional details available)`);
+	                            }
                         }
                         statusEffectsSummary = lines.join('\n');
                     }
@@ -10184,7 +10363,7 @@ Respond ONLY with this JSON:
             const nearbyObservation = EnvironmentScanner.observe();
             const dynamicHazards = (nearbyObservation.hazards || [])
                 .filter(h => h.distance <= 4)
-                .map(h => `${h.label} a ${h.distance} pasos al ${h.direction} (${h.source})`)
+	                .map(h => `${Locale.nearbyLine(h.label, h.distance, h.direction, false)} (${h.source})`)
                 .join('; ');
 
             const ctx = {
@@ -10494,7 +10673,14 @@ CRITICAL GAME RULES (NEVER violate these):
                             // Try to find this item in KB (use getItem for proper matching)
                             const kbItem = KBLookupCache.item(nameMatch[1].trim());
                             if (kbItem) {
-                                itemEntities.push({ name: kbItem.displayNameEs || kbItem.displayName || kbItem.key, key: kbItem.key, type: 'item', status: 'inferred', match: kbItem, score: 0.8 });
+	                                itemEntities.push({
+	                                    name: Config.language === 'es' ? (kbItem.displayNameEs || kbItem.displayName || kbItem.key) : (kbItem.displayName || kbItem.displayNameEs || kbItem.key),
+	                                    key: kbItem.key,
+	                                    type: 'item',
+	                                    status: 'inferred',
+	                                    match: kbItem,
+	                                    score: 0.8
+	                                });
                             }
                         }
                     }
@@ -10542,7 +10728,8 @@ CRITICAL GAME RULES (NEVER violate these):
                             const lookup = FearHungerKB.getEnemy ? KBLookupCache.enemy(enemy.name) : null;
                             const data = lookup || null;
                             if (data) {
-                                block += `\n=== ${(data.displayNameEs || data.displayName || enemy.name).toUpperCase()} ===\n`;
+	                                const displayName = Config.language === 'es' ? (data.displayNameEs || data.displayName || enemy.name) : (data.displayName || data.displayNameEs || enemy.name);
+	                                block += `\n=== ${displayName.toUpperCase()} ===\n`;
                                 if (data.danger !== undefined) block += `Danger: ${data.danger}/5\n`;
                                 if (data.tactics) block += `Tactics: ${data.tactics}\n`;
                                 if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
@@ -10563,7 +10750,8 @@ CRITICAL GAME RULES (NEVER violate these):
                         const nearbyKnowledge = this._getNearbyEnemyKnowledge(context);
                         for (const entry of nearbyKnowledge) {
                             const data = entry.enemy;
-                            block += `\n=== ${(data.displayNameEs || data.displayName || entry.snapshot.label).toUpperCase()} ===\n`;
+	                            const displayName = Config.language === 'es' ? (data.displayNameEs || data.displayName || entry.snapshot.label) : (data.displayName || data.displayNameEs || entry.snapshot.label);
+	                            block += `\n=== ${displayName.toUpperCase()} ===\n`;
                             if (data.danger !== undefined) block += `Danger: ${data.danger}/5\n`;
                             if (data.tactics) block += `Tactics: ${data.tactics}\n`;
                             if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
@@ -10677,9 +10865,9 @@ CRITICAL GAME RULES (NEVER violate these):
                     }
                     if (intent.containerQuery && intent.containerTargets && intent.containerTargets.length > 0) {
                         block += `NEARBY CONTAINERS:\n`;
-                        for (const container of intent.containerTargets) {
-                            block += `- ${container.label} a ${container.distance} pasos al ${container.direction}\n`;
-                        }
+	                        for (const container of intent.containerTargets) {
+	                            block += `- ${Locale.nearbyLine(container.label, container.distance, container.direction, false)}\n`;
+	                        }
                     }
                     return block;
                 }
@@ -10712,8 +10900,11 @@ CRITICAL GAME RULES (NEVER violate these):
         /**
          * Answer mode instructions based on intent
          */
-        _buildInstructions(intent) {
-            const anchors = `\nHARD ANCHORS (NEVER violate):\n- Never betray the player\n- Never sacrifice allies without consent\n- Never break immersion\n- Always maintain core loyalty\n- NEVER mention "database", "base de datos", "KB", "data", or any technical/meta terms. You are a CHARACTER IN THE GAME, not an AI.\n- If you don't have information, say it naturally in character (e.g. "No lo reconozco..." or "No sé qué es...") — NEVER reference data sources.\n`;
+	        _buildInstructions(intent) {
+	            const unknownExample = Config.language === 'es'
+	                ? 'e.g. "No lo reconozco..." or "No sé qué es..."'
+	                : 'e.g. "I do not recognize it..." or "I do not know what it is..."';
+	            const anchors = `\nHARD ANCHORS (NEVER violate):\n- Never betray the player\n- Never sacrifice allies without consent\n- Never break immersion\n- Always maintain core loyalty\n- NEVER mention "database", "base de datos", "KB", "data", or any technical/meta terms. You are a CHARACTER IN THE GAME, not an AI.\n- If you don't have information, say it naturally in character (${unknownExample}) — NEVER reference data sources.\n`;
 
             if (intent && intent.containerQuery) {
                 return anchors + 'MODE: CONTAINER JUDGMENT — The player is asking what might be inside nearby containers. You do NOT have exact loot data unless it is explicitly shown above. Do NOT invent specific item names, rare artifacts, enemies, rituals, or stat gains. Speak only in broad terms like supplies, scraps, something useful, or say we need to open the container to know for sure.\n';
@@ -11654,9 +11845,10 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                         }
                 }
 
-                const pick = warning[Math.floor(Math.random() * warning.length)]
-                    .replace('${DIR}', threat.direction);
-                DialogueMemory.rememberFact(factKey, `${threat.label || 'Peligro'} al ${threat.direction}`, 'ambient_warning', { mapId: $gameMap.mapId() });
+	                const localizedDir = Locale.direction(threat.direction);
+	                const pick = warning[Math.floor(Math.random() * warning.length)]
+	                    .replace('${DIR}', localizedDir);
+	                DialogueMemory.rememberFact(factKey, Locale.nearbyLine(threat.label || 'Peligro', threat.distance || '?', threat.direction, false), 'ambient_warning', { mapId: $gameMap.mapId() });
                 this._speak(pick, 'threat_warning');
                 return; // One warning at a time
             }
@@ -11807,17 +11999,22 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
             return;
         },
 
-        onBattleEnd(victory) {
-            if (!Config.shouldUseAmbientFallbacks()) return;
-            if (!this.canSpeak() || Math.random() > 0.40) return;
-            if (victory) {
-                const lines = ['Terminamos.', 'Sigue con vida...', 'Hay que seguir.', 'No fue fácil.', 'Eso estuvo cerca.'];
-                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: true });
-            } else {
-                const lines = ['Hay que huir.', 'No podemos ganar esto.', 'Retírate, ¡ahora!'];
-                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: false });
-            }
-        },
+	        onBattleEnd(victory) {
+	            if (!Config.shouldUseAmbientFallbacks()) return;
+	            if (!this.canSpeak() || Math.random() > 0.40) return;
+	            const es = Config.language === 'es';
+	            if (victory) {
+	                const lines = es
+	                    ? ['Terminamos.', 'Sigue con vida...', 'Hay que seguir.', 'No fue fácil.', 'Eso estuvo cerca.']
+	                    : ['It is over.', 'Still alive...', 'We need to keep moving.', 'That was not easy.', 'That was close.'];
+	                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: true });
+	            } else {
+	                const lines = es
+	                    ? ['Hay que huir.', 'No podemos ganar esto.', 'Retírate, ¡ahora!']
+	                    : ['We need to run.', 'We cannot win this.', 'Fall back, now!'];
+	                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: false });
+	            }
+	        },
 
         onRoomEntry(mapName) {
             if (!this.canSpeak()) return;
@@ -11859,9 +12056,11 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
                 return;
             }
             this._markVisited(mapKey);
-            DialogueMemory.rememberFact(`area:${mapKey}`, locationEntry.displayNameEs || locationEntry.displayName || mapName, 'ambient_lore', {
-                mapId: $gameMap ? $gameMap.mapId() : null
-            });
+	            DialogueMemory.rememberFact(`area:${mapKey}`, Config.language === 'es'
+	                ? (locationEntry.displayNameEs || locationEntry.displayName || mapName)
+	                : (locationEntry.displayName || locationEntry.displayNameEs || Locale.text(mapName)), 'ambient_lore', {
+	                mapId: $gameMap ? $gameMap.mapId() : null
+	            });
 
             Debug.log('[Ambient] First visit to:', mapName, '- generating AI comment');
 
@@ -11873,9 +12072,12 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
             const sanity = SanityManager.getSanityLevel();
             const es = Config.language === 'es';
 
-            const prompt = `You are ${Config.companionName}, companion in "Fear & Hunger". You entered a new area.
-Location: ${locationEntry.displayNameEs || locationEntry.displayName || mapName}
-Lore: ${locationEntry.lore || 'Dark dungeon area'}
+	            const locationName = es
+	                ? (locationEntry.displayNameEs || locationEntry.displayName || mapName)
+	                : (locationEntry.displayName || locationEntry.displayNameEs || Locale.text(mapName));
+	            const prompt = `You are ${Config.companionName}, companion in "Fear & Hunger". You entered a new area.
+	Location: ${locationName}
+	Lore: ${locationEntry.lore || 'Dark dungeon area'}
 ${(locationEntry.dangers || []).length > 0 ? 'Danger: ' + locationEntry.dangers[0] : ''}
 Sanity: ${sanity.level} (${sanity.percent}%). ${sanity.modifier}
 
@@ -11893,11 +12095,11 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                         return;
                     }
                     const fallback = es ? 'Este lugar... no me gusta nada.' : 'This place... I don\'t like it.';
-                    this._speakWithThought(fallback, 'room_entry', {
-                        mapName,
-                        location: locationEntry.displayNameEs || locationEntry.displayName || mapName,
-                        mock: true
-                    });
+	                    this._speakWithThought(fallback, 'room_entry', {
+	                        mapName: Locale.text(mapName),
+	                        location: locationName,
+	                        mock: true
+	                    });
                     return;
                 }
 
@@ -11917,10 +12119,10 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                     const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
                                        .replace(/\*\*/g, '').replace(/\*/g, '').trim();
                     if (cleaned.length > 3) {
-                        this._speakWithThought(cleaned, 'room_entry', {
-                            mapName,
-                            location: locationEntry.displayNameEs || locationEntry.displayName || mapName
-                        });
+	                        this._speakWithThought(cleaned, 'room_entry', {
+	                            mapName: Locale.text(mapName),
+	                            location: locationName
+	                        });
                         Debug.log('[Ambient] AI room comment:', cleaned);
                     }
                 }
