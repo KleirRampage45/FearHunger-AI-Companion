@@ -4388,13 +4388,12 @@ Respond ONLY with this JSON:
         static async _sendRequest(prompt, context = 'combat') {
             // Helper: try a single async request
             const _tryFetch = async (endpoint, headers, model, maxTokens, isLocal) => {
-                const messages = isLocal
-                    ? [
-                        { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
-                        { role: 'user', content: prompt },
-                        { role: 'assistant', content: '<think>\n\n</think>\n\n' }
-                      ]
-                    : [{ role: 'user', content: prompt }];
+	                    const messages = isLocal
+	                        ? [
+	                            { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
+	                            { role: 'user', content: prompt }
+	                          ]
+	                        : [{ role: 'user', content: prompt }];
                 const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: headers,
@@ -4571,10 +4570,10 @@ Respond ONLY with this JSON:
                         model: model,
                         messages: messages,
                         max_tokens: maxTokens
-                    }, Config.getSamplingOptions(
-                        { temperature: Math.min(Config.chatTemperature, 0.8) },
-                        { includeTopK: isLocal }
-                    ), isLocal ? { enable_thinking: false } : {})));
+	                    }, Config.getSamplingOptions(
+	                        { temperature: Math.min(Config.chatTemperature, 0.8) },
+	                        { includeTopK: isLocal }
+	                    ), isLocal ? { enable_thinking: false, stop: ['<turn|>'] } : {})));
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
                         return { _requestFailed: true, _failure: { model: model, type: 'http', status: xhr.status, body: String(xhr.responseText || '').substring(0, 400) } };
@@ -4641,9 +4640,9 @@ Respond ONLY with this JSON:
             // === STRATEGY: Local first, then Groq fallback ===
             if (Config.apiProvider === 'local') {
                 Debug.log('[Combat] Trying local AI...');
-                const localResult = _trySyncRequest(
-                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true
-                );
+	                const localResult = _trySyncRequest(
+	                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 160, true
+	                );
                 if (localResult && localResult._failure) failureChain.push(localResult._failure);
                 if (localResult && !localResult._validationFailed && !localResult._parseFailed && !localResult._requestFailed) {
                     _logCombatDecision(localResult, Config.localModel, 'local');
@@ -11765,61 +11764,94 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             return fallback;
         },
 
-        async _requestAndShowSupportPrompt(need, topic, factKey, es) {
-            try {
-                const line = await this._generateSupportPromptAsync(need, es, this._generateSupportPromptSync(need, es));
-                if (!line) return;
-                console.log('[SupportApproval Prompt]', line);
-                DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
-                if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
-                    if (!SupportApproval._showPrompt(line)) {
-                        this._speak(line, topic);
-                    }
-                } else {
-                    this._speak(line, topic);
-                }
-            } finally {
-                this._supportPromptInFlight = false;
-            }
-        },
+	        async _requestAndShowSupportPrompt(need, topic, factKey, es) {
+	            const startedAt = performance.now();
+	            let source = 'fallback';
+	            try {
+	                const line = await this._generateSupportPromptAsync(need, es, this._generateSupportPromptSync(need, es));
+	                if (!line) return;
+	                source = line._source || 'llm';
+	                const displayLine = typeof line === 'string' ? line : String(line.text || line);
+	                console.log('[SupportApproval Prompt]', displayLine);
+	                ThesisLogger.log('support_approval_prompt', {
+	                    kind: need.kind,
+	                    actor: need.actor,
+	                    item_name: need.itemName,
+	                    target_self: !!need.targetSelf,
+	                    prompt_text: displayLine,
+	                    response_source: source,
+	                    latency_ms: Math.round(performance.now() - startedAt)
+	                });
+	                DialogueMemory.rememberFact(factKey, displayLine, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
+	                if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
+	                    if (!SupportApproval._showPrompt(displayLine)) {
+	                        this._speak(displayLine, topic);
+	                    }
+	                } else {
+	                    this._speak(displayLine, topic);
+	                }
+	            } finally {
+	                this._supportPromptInFlight = false;
+	            }
+	        },
 
-        async _generateSupportPromptAsync(need, es, fallback) {
-            if (Config.useMockAI) return fallback;
-            try {
-                const endpoint = Config.getEndpoint();
-                const headers = Config.getHeaders();
-                const model = Config.getChatModel();
-                const prompt = `You are ${Config.companionName}, a companion in Fear & Hunger.\n` +
+	        async _generateSupportPromptAsync(need, es, fallback) {
+	            if (Config.useMockAI) return fallback;
+	            const markSource = (text, source) => ({ text: String(text || ''), _source: source });
+	            const isBadSupportLine = (text) => {
+	                const raw = String(text || '').replace(/\s+/g, ' ').trim();
+	                if (!raw) return true;
+	                if (raw.length > 120) return true;
+	                if (need.kind === 'bleed' && /\b(?:may|can|should)\s+i\s+bleed\b|\bbleed\s+(?:cahara|mark|you|him|her)\b/i.test(raw)) return true;
+	                if (need.kind === 'bleed' && !/(bleeding|sangr|cloth|fragment|bandage|stop|staunch|use|uso|usar)/i.test(raw)) return true;
+	                return false;
+	            };
+	            try {
+	                const endpoint = Config.getEndpoint();
+	                const headers = Config.getHeaders();
+	                const model = Config.getChatModel();
+	                const prompt = `You are ${Config.companionName}, a companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `You ARE ${Config.companionName}. Never refer to yourself as another person.\n` +
                     `Write ONE short approval request, under 14 words.\n` +
-                    `Need: ${need.kind}\n` +
-                    `Target: ${need.targetSelf ? 'self' : need.actor}\n` +
-                    `Item: ${need.itemName}\n` +
-                    `Self target: ${need.targetSelf ? 'yes' : 'no'}\n` +
-                    `Tone: urgent but not panicked. Ask permission clearly.\n` +
-                    `If self target is yes, use first person. Never say "en ${Config.companionName}" or address yourself by name.\n` +
-                    `If self target is no, you may mention the target by name once.\n` +
-                    `Do not mention game mechanics. Do not add extra sentences.`;
-                const body = JSON.stringify({
-                    model: model,
-                    messages: [{ role: 'system', content: prompt }],
-                    max_tokens: 40,
-                    temperature: 0.8
-                });
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const data = await resp.json();
-                const text = data.choices?.[0]?.message?.content?.trim();
-                if (!text) return fallback;
-                const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim();
-                if (!cleaned || cleaned.length < 4) return fallback;
-                return cleaned;
-            } catch (e) {
-                Debug.warn('[SupportApproval] Prompt generation failed:', e.message);
-                return fallback;
-            }
-        },
+	                    `Need: ${need.kind}\n` +
+	                    `Target: ${need.targetSelf ? 'self' : need.actor}\n` +
+	                    `Item: ${need.itemName}\n` +
+	                    `Self target: ${need.targetSelf ? 'yes' : 'no'}\n` +
+	                    `Tone: urgent but not panicked. Ask permission clearly.\n` +
+	                    `For bleeding, ask to USE the item to STOP bleeding. Never use "bleed" as a verb.\n` +
+	                    `If self target is yes, use first person. Never say "en ${Config.companionName}" or address yourself by name.\n` +
+	                    `If self target is no, you may mention the target by name once.\n` +
+	                    `Do not mention game mechanics. Do not add extra sentences.`;
+	                const controller = new AbortController();
+	                const timer = setTimeout(() => controller.abort(), 1800);
+	                const isLocal = Config.apiProvider === 'local';
+	                const body = JSON.stringify(Object.assign({
+	                    model: model,
+	                    messages: [{ role: 'system', content: prompt }],
+	                    max_tokens: 32
+	                }, Config.getSamplingOptions({ temperature: 0.45 }, { includeTopK: isLocal }), isLocal ? {
+	                    enable_thinking: false,
+	                    stop: ['<turn|>']
+	                } : {}));
+	                let resp;
+	                try {
+	                    resp = await fetch(endpoint, { method: 'POST', headers, signal: controller.signal, body });
+	                } finally {
+	                    clearTimeout(timer);
+	                }
+	                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+	                const data = await resp.json();
+	                const text = data.choices?.[0]?.message?.content?.trim();
+	                if (!text) return markSource(fallback, 'fallback_empty');
+	                const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim();
+	                if (!cleaned || cleaned.length < 4 || isBadSupportLine(cleaned)) return markSource(fallback, 'fallback_validation');
+	                return markSource(cleaned, 'llm');
+	            } catch (e) {
+	                Debug.warn('[SupportApproval] Prompt generation failed:', e.message);
+	                return markSource(fallback, 'fallback_error');
+	            }
+	        },
 
         // Track warned positions to avoid repeating
         _warnedPositions: new Set(),
