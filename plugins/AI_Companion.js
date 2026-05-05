@@ -165,6 +165,7 @@
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
+        localThinkingEnabled: localStorage.getItem('AI_Companion_LocalThinkingEnabled') === 'true',
         ambientFallbackMode: localStorage.getItem('AI_Companion_AmbientFallbackMode') || 'silent',
 
         // Cached free models from OpenRouter
@@ -375,6 +376,16 @@
             return this.chatTopK;
         },
 
+        setLocalThinkingEnabled(on) {
+            this.localThinkingEnabled = !!on;
+            localStorage.setItem('AI_Companion_LocalThinkingEnabled', this.localThinkingEnabled ? 'true' : 'false');
+        },
+
+        toggleLocalThinkingEnabled() {
+            this.setLocalThinkingEnabled(!this.localThinkingEnabled);
+            return this.localThinkingEnabled;
+        },
+
         getSamplingOptions(overrides, options) {
             const settings = Object.assign({
                 temperature: this.chatTemperature,
@@ -383,6 +394,16 @@
             const includeTopK = options && options.includeTopK;
             if (includeTopK && this.chatTopK > 0) settings.top_k = this.chatTopK;
             return settings;
+        },
+
+        getLocalGenerationOptions(overrides) {
+            return Object.assign(
+                {},
+                this.getSamplingOptions(overrides || {}, { includeTopK: true }),
+                this.localThinkingEnabled
+                    ? { enable_thinking: true }
+                    : { enable_thinking: false, stop: ['<turn|>'] }
+            );
         },
 
         shouldUseAmbientFallbacks() {
@@ -660,6 +681,25 @@
 	                text = text.replace(pattern, replacement);
 	            });
 	            return text;
+	        }
+	    };
+
+	    const LlmTelemetry = {
+	        fromResponse(response, latencyMs) {
+	            const usage = response && response.usage ? response.usage : {};
+	            const promptTokens = Number(usage.prompt_tokens || usage.input_tokens || 0) || null;
+	            const completionTokens = Number(usage.completion_tokens || usage.output_tokens || 0) || null;
+	            const totalTokens = Number(usage.total_tokens || 0) || (promptTokens && completionTokens ? promptTokens + completionTokens : null);
+	            const seconds = Math.max(0.001, (Number(latencyMs) || 0) / 1000);
+	            const completionTokensPerSecond = completionTokens ? Number((completionTokens / seconds).toFixed(2)) : null;
+	            return {
+	                prompt_tokens: promptTokens,
+	                completion_tokens: completionTokens,
+	                total_tokens: totalTokens,
+	                completion_tokens_per_second: completionTokensPerSecond,
+	                latency_ms: Math.round(Number(latencyMs) || 0),
+	                has_usage: !!(promptTokens || completionTokens || totalTokens)
+	            };
 	        }
 	    };
 
@@ -4397,15 +4437,14 @@ Respond ONLY with this JSON:
                 const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: headers,
-                    body: JSON.stringify(Object.assign({
-                        model: model,
-                        messages: messages,
-                        max_tokens: maxTokens
-                    }, Config.getSamplingOptions(
-                        { temperature: Math.min(Config.chatTemperature, 0.8) },
-                        { includeTopK: isLocal }
-                    ), isLocal ? { enable_thinking: false } : {}))
-                });
+	                    body: JSON.stringify(Object.assign({
+	                        model: model,
+	                        messages: messages,
+	                        max_tokens: maxTokens
+	                    }, isLocal
+	                        ? Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
+	                        : Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }, { includeTopK: false })))
+	                });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return await response.json();
             };
@@ -4529,9 +4568,10 @@ Respond ONLY with this JSON:
             const failureChain = [];
 
             // Telemetry helper for combat logging
-            const _logCombatDecision = (decision, modelUsed, source) => {
-                const latency = Math.round(performance.now() - startTime);
-                const snapshot = {
+	            const _logCombatDecision = (decision, modelUsed, source) => {
+	                const latency = Math.round(performance.now() - startTime);
+	                const llmStats = decision && decision._llmStats ? decision._llmStats : null;
+	                const snapshot = {
                     battle_turn: battleState.turn_number,
                     enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
                     companion_battle_hp: battleState.companion ? battleState.companion.hp : null,
@@ -4542,43 +4582,48 @@ Respond ONLY with this JSON:
                     decision_limb: decision ? decision.limb : null,
                     decision_reasoning: decision ? decision.reasoning : null,
                     decision_dialog: decision ? decision.dialog : null,
-                    response_source: source,
-                    model_used: modelUsed,
-                    latency_ms: latency,
-                    risk: RiskEvaluator.getSnapshotForLog(battleState),
-                    failure_chain: failureChain.slice()
-                };
+	                    response_source: source,
+	                    model_used: modelUsed,
+	                    latency_ms: latency,
+	                    llm_stats: llmStats,
+	                    prompt_tokens: llmStats ? llmStats.prompt_tokens : null,
+	                    completion_tokens: llmStats ? llmStats.completion_tokens : null,
+	                    completion_tokens_per_second: llmStats ? llmStats.completion_tokens_per_second : null,
+	                    risk: RiskEvaluator.getSnapshotForLog(battleState),
+	                    failure_chain: failureChain.slice()
+	                };
                 ThesisLogger.log('combat_decision', snapshot);
                 DebugState.captureCombat(snapshot);
             };
 
             // Helper: try a single sync request
-            const _trySyncRequest = (endpoint, headers, model, maxTokens, isLocal) => {
-                try {
-                    const xhr = new XMLHttpRequest();
+	            const _trySyncRequest = (endpoint, headers, model, maxTokens, isLocal) => {
+	                try {
+	                    const requestStart = performance.now();
+	                    const xhr = new XMLHttpRequest();
                     xhr.open('POST', endpoint, false); // synchronous — timeout not allowed
                     for (const key in headers) xhr.setRequestHeader(key, headers[key]);
-                    const messages = isLocal
-                        ? [
-                            { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
-                            { role: 'user', content: prompt },
-                            { role: 'assistant', content: '<think>\n\n</think>\n\n' }
-                          ]
-                        : [{ role: 'user', content: prompt }];
+	                    const messages = isLocal
+	                        ? [
+	                            { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
+	                            { role: 'user', content: prompt }
+	                          ]
+	                        : [{ role: 'user', content: prompt }];
                     Debug.log(`[Combat] Trying ${model} at ${endpoint.substring(0, 50)}...`);
                     xhr.send(JSON.stringify(Object.assign({
                         model: model,
                         messages: messages,
                         max_tokens: maxTokens
-	                    }, Config.getSamplingOptions(
-	                        { temperature: Math.min(Config.chatTemperature, 0.8) },
-	                        { includeTopK: isLocal }
-	                    ), isLocal ? { enable_thinking: false, stop: ['<turn|>'] } : {})));
+	                    }, isLocal
+	                        ? Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
+	                        : Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }, { includeTopK: false }))));
+	                    const requestLatency = Math.round(performance.now() - requestStart);
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
                         return { _requestFailed: true, _failure: { model: model, type: 'http', status: xhr.status, body: String(xhr.responseText || '').substring(0, 400) } };
                     }
-                    const response = JSON.parse(xhr.responseText);
+	                    const response = JSON.parse(xhr.responseText);
+	                    const llmStats = LlmTelemetry.fromResponse(response, requestLatency);
                     const rawContent = String(
                         response &&
                         response.choices &&
@@ -4593,8 +4638,9 @@ Respond ONLY with this JSON:
                         Debug.log('[Combat LLM]', rawContent);
                     }
                     let decision = this._parseResponse(response);
-                    if (decision) {
-                        console.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
+	                    if (decision) {
+	                        decision._llmStats = llmStats;
+	                        console.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                         Debug.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                         decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
                     }
@@ -5732,6 +5778,7 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('setTemperature', this.commandSetTemperature.bind(this));
         this._commandWindow.setHandler('setTopP', this.commandSetTopP.bind(this));
         this._commandWindow.setHandler('setTopK', this.commandSetTopK.bind(this));
+        this._commandWindow.setHandler('toggleLocalThinking', this.commandToggleLocalThinking.bind(this));
         this._commandWindow.setHandler('toggleAutonomy', this.commandToggleAutonomy.bind(this));
         this._commandWindow.setHandler('setAutonomyModel', this.commandSetAutonomyModel.bind(this));
         this._commandWindow.setHandler('setAutonomyTick', this.commandSetAutonomyTick.bind(this));
@@ -6047,13 +6094,19 @@ Respond ONLY with this JSON:
         this._refreshConfigScene(`top_p: ${next}`);
     };
 
-    Scene_AIConfig.prototype.commandSetTopK = function () {
-        const next = Config.cycleChatTopK();
-        SoundManager.playOk();
-        this._refreshConfigScene(`top_k: ${next === 0 ? 'off' : next}`);
-    };
+	    Scene_AIConfig.prototype.commandSetTopK = function () {
+	        const next = Config.cycleChatTopK();
+	        SoundManager.playOk();
+	        this._refreshConfigScene(`top_k: ${next === 0 ? 'off' : next}`);
+	    };
 
-    Scene_AIConfig.prototype.commandToggleAutonomy = function () {
+	    Scene_AIConfig.prototype.commandToggleLocalThinking = function () {
+	        const next = Config.toggleLocalThinkingEnabled();
+	        SoundManager.playOk();
+	        this._refreshConfigScene(`${Config.language === 'es' ? 'Thinking local' : 'Local thinking'}: ${next ? 'ON' : 'OFF'}`);
+	    };
+
+	    Scene_AIConfig.prototype.commandToggleAutonomy = function () {
         Config.setAutonomyEnabled(!Config.autonomyEnabled);
         SoundManager.playOk();
         this._refreshConfigScene(Config.language === 'es'
@@ -6225,6 +6278,9 @@ Respond ONLY with this JSON:
         this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
         this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
         this.addCommand(`top_k: ${Config.chatTopK || 'off'}`, 'setTopK');
+        if (Config.apiProvider === 'local') {
+            this.addCommand(`${es ? 'Thinking local' : 'Local thinking'}: ${Config.localThinkingEnabled ? 'ON' : 'OFF'}`, 'toggleLocalThinking');
+        }
         // Fetch free models (OpenRouter only)
         if (Config.apiProvider === 'openrouter') {
             const freeCount = Config.getFreeModels().length;
@@ -6268,10 +6324,11 @@ Respond ONLY with this JSON:
             setModel: es ? 'Cambia el modelo usado para chat y rol.' : 'Cycle the model used for chat and roleplay.',
             editLocalEndpoint: es ? 'Configura un endpoint local compatible OpenAI.' : 'Configure an OpenAI-compatible local endpoint.',
             editLocalModel: es ? 'Configura el ID del modelo local cargado.' : 'Configure the loaded local model ID.',
-            setTemperature: es ? 'Controla creatividad del modelo.' : 'Control model creativity.',
-            setTopP: es ? 'Controla muestreo nucleus/top_p.' : 'Control nucleus/top_p sampling.',
-            setTopK: es ? 'Controla muestreo top_k; 0 lo desactiva.' : 'Control top_k sampling; 0 disables it.',
-            fetchModels: es ? 'Busca modelos gratis disponibles en OpenRouter.' : 'Fetch available free models from OpenRouter.',
+	            setTemperature: es ? 'Controla creatividad del modelo.' : 'Control model creativity.',
+	            setTopP: es ? 'Controla muestreo nucleus/top_p.' : 'Control nucleus/top_p sampling.',
+	            setTopK: es ? 'Controla muestreo top_k; 0 lo desactiva.' : 'Control top_k sampling; 0 disables it.',
+	            toggleLocalThinking: es ? 'Activa/desactiva razonamiento local. Más lento si está ON.' : 'Toggle local reasoning. Slower when ON.',
+	            fetchModels: es ? 'Busca modelos gratis disponibles en OpenRouter.' : 'Fetch available free models from OpenRouter.',
             toggleAutonomy: es ? 'Activa la futura autonomía beta. Por ahora es preparación/configuración.' : 'Enable future beta autonomy. For now this is configuration prep.',
             setAutonomyModel: es ? 'Modelo preferido para la autonomía. Lo ideal es mantenerlo local.' : 'Preferred model for autonomy. Local is recommended.',
             setAutonomyTick: es ? 'Cada cuántos segundos tomaría decisiones la autonomía.' : 'How often autonomy would make decisions.',
@@ -8231,8 +8288,12 @@ Respond ONLY with this JSON:
                     mode: this._state.mode,
                     source: source,
                     latency_ms: latencyMs,
-                    model_used: source === 'local' ? Config.getAutonomyModel() : null,
-                    reason: decision ? decision.reason : null,
+	                    model_used: source === 'local' ? Config.getAutonomyModel() : null,
+	                    llm_stats: source === 'local' ? (this._state.lastLocalStats || null) : null,
+	                    prompt_tokens: source === 'local' && this._state.lastLocalStats ? this._state.lastLocalStats.prompt_tokens : null,
+	                    completion_tokens: source === 'local' && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens : null,
+	                    completion_tokens_per_second: source === 'local' && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens_per_second : null,
+	                    reason: decision ? decision.reason : null,
                     action: decision ? decision.action : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
                     frontier_index: decision && decision.frontierIndex != null ? decision.frontierIndex : null,
@@ -8347,28 +8408,24 @@ Respond ONLY with this JSON:
                 JSON.stringify(this._promptSnapshot(snapshot))
             ].join('\n');
 
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 4000);
-            let response;
+	            const controller = new AbortController();
+	            const timer = setTimeout(() => controller.abort(), 4000);
+	            const requestStart = performance.now();
+	            let response;
             try {
-                response = await fetch(Config.getLocalEndpoint(), {
-                    method: 'POST',
-                    headers: Config.getLocalHeaders(),
-                    signal: controller.signal,
-                    body: JSON.stringify({
-                        model: Config.getAutonomyModel(),
-                        messages: [
-                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
-                            { role: 'user', content: prompt }
-                        ],
-                        temperature: 1.0,
-                        top_p: 0.95,
-                        top_k: 64,
-                        max_tokens: 80,
-                        enable_thinking: false,
-                        stop: ['<turn|>']
-                    })
-                });
+	                response = await fetch(Config.getLocalEndpoint(), {
+	                    method: 'POST',
+	                    headers: Config.getLocalHeaders(),
+	                    signal: controller.signal,
+	                    body: JSON.stringify(Object.assign({
+	                        model: Config.getAutonomyModel(),
+	                        messages: [
+	                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+	                            { role: 'user', content: prompt }
+	                        ],
+	                        max_tokens: 80
+	                    }, Config.getLocalGenerationOptions({ temperature: 1.0, top_p: 0.95 })))
+	                });
             } catch (error) {
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
                     return Object.assign({ _autonomySource: 'llm_timeout' }, fallback);
@@ -8382,8 +8439,9 @@ Respond ONLY with this JSON:
                 return Object.assign({ _autonomySource: 'llm_http_error' }, fallback);
             }
 
-            const data = await response.json();
-            this._state.lastRawLocalContent = String(
+	            const data = await response.json();
+	            this._state.lastLocalStats = LlmTelemetry.fromResponse(data, performance.now() - requestStart);
+	            this._state.lastRawLocalContent = String(
                 data &&
                 data.choices &&
                 data.choices[0] &&
@@ -10546,12 +10604,16 @@ Respond ONLY with this JSON:
                     risk_assessment: context.risk_assessment,
                     response_text: finalResponse,
                     raw_response_text: response,
-                    response_source: validation.changed ? 'llm_validated' : 'llm',
-                    response_validated: validation.changed,
-                    validator_reason: validation.reason,
-                    latency_ms: chatLatency,
-                    model_used: this._lastModelUsed || null
-                });
+	                    response_source: validation.changed ? 'llm_validated' : 'llm',
+	                    response_validated: validation.changed,
+	                    validator_reason: validation.reason,
+	                    latency_ms: chatLatency,
+	                    model_used: this._lastModelUsed || null,
+	                    llm_stats: this._lastLlmStats || null,
+	                    prompt_tokens: this._lastLlmStats ? this._lastLlmStats.prompt_tokens : null,
+	                    completion_tokens: this._lastLlmStats ? this._lastLlmStats.completion_tokens : null,
+	                    completion_tokens_per_second: this._lastLlmStats ? this._lastLlmStats.completion_tokens_per_second : null
+	                });
                 DebugState.captureChat({
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -10561,11 +10623,15 @@ Respond ONLY with this JSON:
                     response_text: finalResponse,
                     raw_response_text: response,
                     response_source: validation.changed ? 'llm_validated' : 'llm',
-                    response_validated: validation.changed,
-                    validator_reason: validation.reason,
-                    latency_ms: chatLatency,
-                    model_used: this._lastModelUsed || null,
-                    context_map: context.current_map,
+	                    response_validated: validation.changed,
+	                    validator_reason: validation.reason,
+	                    latency_ms: chatLatency,
+	                    model_used: this._lastModelUsed || null,
+	                    llm_stats: this._lastLlmStats || null,
+	                    prompt_tokens: this._lastLlmStats ? this._lastLlmStats.prompt_tokens : null,
+	                    completion_tokens: this._lastLlmStats ? this._lastLlmStats.completion_tokens : null,
+	                    completion_tokens_per_second: this._lastLlmStats ? this._lastLlmStats.completion_tokens_per_second : null,
+	                    context_map: context.current_map,
                     nearby_objects: context.nearby_objects
                 });
                 return finalResponse;
@@ -10948,18 +11014,20 @@ CRITICAL GAME RULES (NEVER violate these):
             }
         },
 
-        async _sendChatRequest(prompt) {
-            if (Config.useMockAI) {
-                return "Mm. Let's keep moving.";
-            }
+	        async _sendChatRequest(prompt) {
+	            if (Config.useMockAI) {
+	                return "Mm. Let's keep moving.";
+	            }
+	            this._lastLlmStats = null;
 
-            // Helper: make a single API call and extract text
-	            const _tryRequest = async (endpoint, headers, model, maxTokens, timeoutMs, extraBody) => {
-	                const controller = new AbortController();
-	                const timer = setTimeout(() => controller.abort(), timeoutMs);
-	                const requestMeta = extraBody || {};
-	                const providerName = requestMeta.providerName || Config.apiProvider;
-	                try {
+	            // Helper: make a single API call and extract text
+		            const _tryRequest = async (endpoint, headers, model, maxTokens, timeoutMs, extraBody) => {
+		                const controller = new AbortController();
+		                const timer = setTimeout(() => controller.abort(), timeoutMs);
+		                const requestMeta = extraBody || {};
+		                const providerName = requestMeta.providerName || Config.apiProvider;
+		                const requestStart = performance.now();
+		                try {
 	                    const response = await fetch(endpoint, {
 	                        method: 'POST',
 	                        headers: headers,
@@ -10968,7 +11036,9 @@ CRITICAL GAME RULES (NEVER violate these):
 	                            model: model,
 	                            messages: requestMeta.messages || [{ role: 'user', content: prompt }],
 	                            max_tokens: maxTokens
-	                        }, Config.getSamplingOptions({}, { includeTopK: !!requestMeta.includeTopK }), requestMeta.extra || {}))
+	                        }, requestMeta.local
+	                            ? Config.getLocalGenerationOptions()
+	                            : Config.getSamplingOptions({}, { includeTopK: !!requestMeta.includeTopK }), requestMeta.extra || {}))
 	                    });
 	                    clearTimeout(timer);
 		                    if (!response.ok) {
@@ -10985,8 +11055,9 @@ CRITICAL GAME RULES (NEVER violate these):
 	                        Debug.warn(`[Chat] ${model} HTTP ${response.status}: ${failure.body}`);
 	                        return '';
 	                    }
-                    const data = await response.json();
-                    if (Config.debugMode) Debug.log('[Chat] Raw response:', JSON.stringify(data).substring(0, 500));
+	                    const data = await response.json();
+	                    this._lastLlmStats = LlmTelemetry.fromResponse(data, performance.now() - requestStart);
+	                    if (Config.debugMode) Debug.log('[Chat] Raw response:', JSON.stringify(data).substring(0, 500));
                     let text = '';
                     if (data.choices && data.choices[0]) {
                         const c = data.choices[0];
@@ -11024,7 +11095,7 @@ CRITICAL GAME RULES (NEVER violate these):
 	                    {
 	                        messages: [{ role: 'user', content: prompt }],
 	                        providerName: 'local',
-	                        includeTopK: true
+	                        local: true
 	                    }
 	                );
 	                if (text.length > 0) {
@@ -11771,6 +11842,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 	                const line = await this._generateSupportPromptAsync(need, es, this._generateSupportPromptSync(need, es));
 	                if (!line) return;
 	                source = line._source || 'llm';
+	                const llmStats = line._llmStats || null;
 	                const displayLine = typeof line === 'string' ? line : String(line.text || line);
 	                console.log('[SupportApproval Prompt]', displayLine);
 	                ThesisLogger.log('support_approval_prompt', {
@@ -11780,6 +11852,10 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 	                    target_self: !!need.targetSelf,
 	                    prompt_text: displayLine,
 	                    response_source: source,
+	                    llm_stats: llmStats,
+	                    prompt_tokens: llmStats ? llmStats.prompt_tokens : null,
+	                    completion_tokens: llmStats ? llmStats.completion_tokens : null,
+	                    completion_tokens_per_second: llmStats ? llmStats.completion_tokens_per_second : null,
 	                    latency_ms: Math.round(performance.now() - startedAt)
 	                });
 	                DialogueMemory.rememberFact(factKey, displayLine, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
@@ -11797,7 +11873,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
 	        async _generateSupportPromptAsync(need, es, fallback) {
 	            if (Config.useMockAI) return fallback;
-	            const markSource = (text, source) => ({ text: String(text || ''), _source: source });
+	            const markSource = (text, source, stats) => ({ text: String(text || ''), _source: source, _llmStats: stats || null });
 	            const isBadSupportLine = (text) => {
 	                const raw = String(text || '').replace(/\s+/g, ' ').trim();
 	                if (!raw) return true;
@@ -11830,11 +11906,11 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 	                    model: model,
 	                    messages: [{ role: 'system', content: prompt }],
 	                    max_tokens: 32
-	                }, Config.getSamplingOptions({ temperature: 0.45 }, { includeTopK: isLocal }), isLocal ? {
-	                    enable_thinking: false,
-	                    stop: ['<turn|>']
-	                } : {}));
+	                }, isLocal
+	                    ? Config.getLocalGenerationOptions({ temperature: 0.45 })
+	                    : Config.getSamplingOptions({ temperature: 0.45 }, { includeTopK: false })));
 	                let resp;
+	                const requestStart = performance.now();
 	                try {
 	                    resp = await fetch(endpoint, { method: 'POST', headers, signal: controller.signal, body });
 	                } finally {
@@ -11842,11 +11918,12 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 	                }
 	                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 	                const data = await resp.json();
+	                const llmStats = LlmTelemetry.fromResponse(data, performance.now() - requestStart);
 	                const text = data.choices?.[0]?.message?.content?.trim();
-	                if (!text) return markSource(fallback, 'fallback_empty');
+	                if (!text) return markSource(fallback, 'fallback_empty', llmStats);
 	                const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim();
-	                if (!cleaned || cleaned.length < 4 || isBadSupportLine(cleaned)) return markSource(fallback, 'fallback_validation');
-	                return markSource(cleaned, 'llm');
+	                if (!cleaned || cleaned.length < 4 || isBadSupportLine(cleaned)) return markSource(fallback, 'fallback_validation', llmStats);
+	                return markSource(cleaned, 'llm', llmStats);
 	            } catch (e) {
 	                Debug.warn('[SupportApproval] Prompt generation failed:', e.message);
 	                return markSource(fallback, 'fallback_error');
