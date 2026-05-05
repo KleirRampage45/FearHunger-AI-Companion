@@ -1434,11 +1434,12 @@
     //=========================================================================
     // IntentDetector — multi-label intent classification (Phase 4)
     //=========================================================================
-    const IntentDetector = {
-        // Keyword patterns for each intent type (Spanish + English)
-        _patterns: {
-            trade_recall: /(?:que|qué|what).{0,32}(?:compraste|compr[oó]|comprado|buy|bought|purchase|purchased)|(?:compraste|compr[oó]|bought|purchased).{0,32}(?:que|qué|what)|(?:(?:que|qué) hiciste|what did you do).{0,48}(?:mercader|merchant|tienda|shop|comerciante)/i,
-            item_info: /(?:que es|what is|para que sirve|what does|donde encuentro|where.*find|como usar|how.*use|tengo un[oa]?|hierba|herb|vial|pocion|potion|soul stone|piedra|cloth|fragmento|pinecone|dagger|espada|escudo|shield|ring|anillo|armor|armadura|weapon|arma)/i,
+	    const IntentDetector = {
+	        // Keyword patterns for each intent type (Spanish + English)
+	        _patterns: {
+	            trade_recall: /(?:que|qué|what).{0,32}(?:compraste|compr[oó]|comprado|buy|bought|purchase|purchased)|(?:compraste|compr[oó]|bought|purchased).{0,32}(?:que|qué|what)|(?:(?:que|qué) hiciste|what did you do).{0,48}(?:mercader|merchant|tienda|shop|comerciante)/i,
+	            memory_recall: /(?:que|qué|what).{0,48}(?:recuerdas|recordamos|hemos hecho|hicimos|logramos|objetivos?|metas?|progreso|remember|have we done|did we do|goals?|objectives?|progress)|(?:recuerdas|recordamos|objetivos?|metas?|progreso|remember|goals?|objectives?|progress)/i,
+	            item_info: /(?:que es|what is|para que sirve|what does|donde encuentro|where.*find|como usar|how.*use|tengo un[oa]?|hierba|herb|vial|pocion|potion|soul stone|piedra|cloth|fragmento|pinecone|dagger|espada|escudo|shield|ring|anillo|armor|armadura|weapon|arma)/i,
             tactical: /(?:que hago|what.*do|como.*mato|how.*kill|como.*peleo|how.*fight|estrategia|strategy|debilidad|weakness|vulnerab|atacar|attack|defender|defend|guard|guardia|coin flip|moneda|limb|miembro|brazo|arm|pierna|leg|cabeza|head|prioridad|priority|enemigo|enemy|pelea|pelear|combate|combat|monstruo|monster|criatura|creature)/i,
             npc_recall: /(?:con quien acabamos de hablar|con quién acabamos de hablar|con quien hablamos|con quién hablamos|con quien hable|con quién hablé|quien era ese npc|quién era ese npc|quien nos hablo|quién nos habló|que dijo ese npc|qué dijo ese npc|who did we just talk to|who was that npc|what did that npc say)/i,
             recent_battle: /(?:acabamos|derrotamos|matamos|vencimos|peleamos|que era eso|what was that|que matamos|what.*kill|last fight|ultima pelea|enemigo anterior|que acaba de pasar|recien|just fought|just killed|que paso en la pelea|batalla anterior)/i,
@@ -1605,10 +1606,11 @@
 
             const classifyPrompt = `Classify this game chat message into ONE category.
 
-Categories:
-- item_info: asking about items, weapons, armor, potions, herbs
-- trade_recall: asking what was bought, purchased, or done at a merchant/shop
-- tactical: asking about combat, enemies, strategy, how to fight
+	Categories:
+	- item_info: asking about items, weapons, armor, potions, herbs
+	- trade_recall: asking what was bought, purchased, or done at a merchant/shop
+	- memory_recall: asking what we remember, what we have done, goals, objectives, or progress
+	- tactical: asking about combat, enemies, strategy, how to fight
 - recent_battle: talking about a fight that just happened
 - lore: asking about game world, gods, characters, story
 - social: asking about party members, opinions, relationships
@@ -1893,12 +1895,90 @@ Reply with ONLY the category name, nothing else.`;
         }
     };
 
-    //=========================================================================
-    // KBFallback — LLM-free responses from KB data (Phase 6 safety net)
-    //=========================================================================
-    const KBFallback = {
-        respond(intent) {
-            if (!intent || !intent.types) return Config.language === 'es' ? 'No puedo pensar claramente ahora.' : "I can't think clearly right now.";
+	    //=========================================================================
+	    // KBFallback — LLM-free responses from KB data (Phase 6 safety net)
+	    //=========================================================================
+	    const KBFallback = {
+	        _playerName(context) {
+	            return context && context.player_name ? context.player_name : (Config.language === 'es' ? 'tú' : 'you');
+	        },
+
+	        _lineListFromBlock(block, heading, maxLines) {
+	            const text = String(block || '');
+	            const lines = text.split(/\n/);
+	            const out = [];
+	            let active = false;
+	            for (const raw of lines) {
+	                const line = raw.trim();
+	                if (!line) continue;
+	                if (line.toUpperCase().indexOf(heading.toUpperCase()) === 0) {
+	                    active = true;
+	                    continue;
+	                }
+	                if (active && /^[A-ZÁÉÍÓÚÑ /]+:$/.test(line)) break;
+	                if (active && /^-\s+/.test(line)) out.push(line.replace(/^-\s+/, ''));
+	                if (out.length >= maxLines) break;
+	            }
+	            return out;
+	        },
+
+	        _buildStoryRecall(context, playerMessage) {
+	            const es = Config.language === 'es';
+	            const playerName = this._playerName(context);
+	            const story = context && context.story_goal_memory ? context.story_goal_memory : '';
+	            const milestones = this._lineListFromBlock(story, 'HITOS RECIENTES OBSERVADOS:', 4);
+	            const leads = this._lineListFromBlock(story, 'SOSPECHAS / RUMBOS POSIBLES:', 2)
+	                .map(line => line.replace(/\s+\(\d+%\)$/, ''));
+	            const personal = this._lineListFromBlock(story, 'METAS PERSONALES DEL COMPAÑERO:', 2);
+	            const asksGoals = /objetiv|meta|goal|objective|progress|progreso|rumbo|next/i.test(playerMessage || '');
+
+	            if (asksGoals && leads.length > 0) {
+	                return es
+	                    ? `Ahora mismo, ${playerName}, creo que deberíamos ${leads[0].charAt(0).toLowerCase() + leads[0].slice(1)}. También quiero mantenernos vivos y no hacer daño innecesario.`
+	                    : `Right now, ${playerName}, I think we should ${leads[0].charAt(0).toLowerCase() + leads[0].slice(1)}. I also want to keep us alive and avoid needless cruelty.`;
+	            }
+
+	            if (milestones.length > 0) {
+	                const short = milestones.slice(0, 3).join('; ');
+	                const lead = leads.length > 0 ? leads[0].replace(/\.$/, '') : '';
+	                if (es) {
+	                    return lead
+	                        ? `Recuerdo esto, ${playerName}: ${short}. Por ahora parece más prudente ${lead.charAt(0).toLowerCase() + lead.slice(1)}.`
+	                        : `Recuerdo esto, ${playerName}: ${short}.`;
+	                }
+	                return lead
+	                    ? `I remember this, ${playerName}: ${short}. For now it seems safest to ${lead.charAt(0).toLowerCase() + lead.slice(1)}.`
+	                    : `I remember this, ${playerName}: ${short}.`;
+	            }
+
+	            if (personal.length > 0) {
+	                return es
+	                    ? `Aún no tengo mucho claro, ${playerName}, pero sé que quiero ${personal[0].charAt(0).toLowerCase() + personal[0].slice(1)}.`
+	                    : `I do not have much clear yet, ${playerName}, but I know I want to ${personal[0].charAt(0).toLowerCase() + personal[0].slice(1)}.`;
+	            }
+
+	            return es
+	                ? `Todavía recuerdo poco, ${playerName}. Sigamos mirando con cuidado y atando cabos.`
+	                : `I still remember little, ${playerName}. Let us keep looking carefully and piece things together.`;
+	        },
+
+	        _buildGeneric(context) {
+	            const es = Config.language === 'es';
+	            const playerName = this._playerName(context);
+	            if (context && context.current_map) {
+	                return es
+	                    ? `Estoy aquí contigo, ${playerName}. Estamos en ${context.current_map}, y por ahora conviene avanzar con cuidado.`
+	                    : `I am here with you, ${playerName}. We are in ${context.current_map}, and for now we should move carefully.`;
+	            }
+	            return es ? `Estoy aquí contigo, ${playerName}.` : `I am here with you, ${playerName}.`;
+	        },
+
+	        respond(intent, context, playerMessage) {
+	            if (!intent || !intent.types) return this._buildGeneric(context);
+
+	            if (intent.primary === 'memory_recall') {
+	                return this._buildStoryRecall(context, playerMessage);
+	            }
 
             // Try to give a KB-based answer for the primary intent
             if (intent.primary === 'item_info' && intent.entities.length > 0) {
@@ -1930,7 +2010,7 @@ Reply with ONLY the category name, nothing else.`;
                 }
             }
 
-            if (intent.primary === 'status_help') {
+	            if (intent.primary === 'status_help') {
                 // Try to find the status from entities or keywords
                 if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffect) {
                     for (const word of intent.entities.map(e => e.name).concat(intent.types)) {
@@ -1940,11 +2020,15 @@ Reply with ONLY the category name, nothing else.`;
                 }
                 const statusReference = KBLookupCache.statusEffectsPrompt();
                 if (statusReference) return statusReference.split('\n').slice(0, 6).join('\n');
-            }
+	            }
 
-            return Config.language === 'es' ? 'No puedo pensar claramente ahora.' : "I can't think clearly right now.";
-        }
-    };
+	            if (intent.primary === 'generic_query' || intent.primary === 'emotional' || intent.primary === 'social' || intent.primary === 'location') {
+	                return this._buildGeneric(context);
+	            }
+
+	            return this._buildStoryRecall(context, playerMessage);
+	        }
+	    };
 
     //=========================================================================
     // Combat State Hashing — skip API calls when state unchanged
@@ -10186,7 +10270,7 @@ Respond ONLY with this JSON:
                 const chatLatency = Math.round(performance.now() - chatStartTime);
                 if (!response || response.trim().length === 0) {
                     // KB fallback — no LLM dependency
-                    const fallback = KBFallback.respond(intent);
+	                    const fallback = KBFallback.respond(intent, context, playerMessage);
                     this.addToHistory('companion', fallback, exchangeContext);
                     this.addTranscriptMessage('companion', fallback, exchangeContext);
                     DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
@@ -10263,7 +10347,7 @@ Respond ONLY with this JSON:
                 const chatLatency = Math.round(performance.now() - chatStartTime);
                 Debug.error('[Chat] error:', error);
                 // KB fallback on API failure
-                const fallback = KBFallback.respond(intent);
+	                const fallback = KBFallback.respond(intent, context, playerMessage);
                 this.addToHistory('companion', fallback, exchangeContext);
                 this.addTranscriptMessage('companion', fallback, exchangeContext);
                 DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
@@ -10443,8 +10527,8 @@ CRITICAL GAME RULES (NEVER violate these):
                     }
                     return block;
                 }
-                case 'recent_battle': {
-                    let block = '';
+	                case 'recent_battle': {
+	                    let block = '';
                     if (context.last_battle && context.last_battle.enemies && context.last_battle.enemies.length > 0) {
                         block += '\nLAST BATTLE DATA:\n';
                         block += `Enemies: ${context.last_battle.enemies.join(', ')}\n`;
@@ -10468,9 +10552,19 @@ CRITICAL GAME RULES (NEVER violate these):
                             block += `Combat events: ${combatEvents.map(e => e.desc).join('; ')}\n`;
                         }
                     }
-                    return block;
-                }
-                case 'npc_recall': {
+	                    return block;
+	                }
+	                case 'memory_recall': {
+	                    let block = '';
+	                    if (context.story_goal_memory) {
+	                        block += `\nUSE STORY GOALS AND PROGRESS as the primary source for this answer.\n`;
+	                    }
+	                    if (context.current_map) {
+	                        block += `Current area: ${context.current_map}\n`;
+	                    }
+	                    return block;
+	                }
+	                case 'npc_recall': {
                     let block = '';
                     if (context.npc_dialogue_entries && context.npc_dialogue_entries.length > 0) {
                         const latest = context.npc_dialogue_entries[context.npc_dialogue_entries.length - 1];
@@ -10581,15 +10675,17 @@ CRITICAL GAME RULES (NEVER violate these):
                 return anchors + 'MODE: PURCHASE RECALL — The player is asking what you bought or did at a merchant/shop. Answer ONLY from PURCHASE MEMORY above. Do NOT mention found items, pickups, equipped gear, starting equipment, or inventory unless PURCHASE MEMORY explicitly says it was bought. If PURCHASE MEMORY says no trade memory is stored, admit you do not remember buying anything.\n';
             }
 
-            switch (intent.primary) {
-                case 'trade_recall':
-                    return anchors + 'MODE: PURCHASE RECALL — Answer ONLY from PURCHASE MEMORY above. Do NOT answer from pickups or equipment.\n';
-                case 'item_info':
+	            switch (intent.primary) {
+	                case 'trade_recall':
+	                    return anchors + 'MODE: PURCHASE RECALL — Answer ONLY from PURCHASE MEMORY above. Do NOT answer from pickups or equipment.\n';
+	                case 'memory_recall':
+	                    return anchors + 'MODE: STORY MEMORY — The player is asking what we remember, what we have done, or what our goals are. Answer from STORY GOALS AND PROGRESS, EVENT MEMORY, and conversation memory. Do NOT answer as if this is only about the last battle unless the player explicitly asks about combat.\n';
+	                case 'item_info':
                     return anchors + 'MODE: ITEM KNOWLEDGE — You MUST answer ONLY from the ITEM DATA section above. State each item\'s effect exactly as described in the data. Do NOT invent, guess, or assume any item effects. If an item is NOT listed in ITEM DATA above, say you don\'t recognize it. NEVER claim an item heals, cures, or does something that is not explicitly stated in the provided data. This is a horror game — items have SPECIFIC effects that differ from typical RPGs.\n';
                 case 'tactical':
                     return anchors + 'MODE: TACTICAL — Give combat advice ONLY from the KNOWLEDGE section above. If enemy data is provided, mention ONLY the limb priorities, coin flip turns, and tactics listed in that data. Do NOT invent weaknesses, resistances, attack patterns, or abilities. Do NOT claim enemies use "sorcery" or any attack type not explicitly listed. Refer to the player\'s ACTUAL equipped weapon (shown in equipment data). If no enemy data is provided, give only generic survival advice like "be careful" or "guard when unsure". NEVER make up game mechanics.\n';
-                case 'recent_battle':
-                    return anchors + 'MODE: RECALL — The player asks about a recent battle. Answer ONLY from the LAST BATTLE DATA above. Name the enemies you fought. Do NOT invent details not present in the data.\n';
+	                case 'recent_battle':
+	                    return anchors + 'MODE: RECALL — The player asks about a recent battle. Answer ONLY from the LAST BATTLE DATA above. Name the enemies you fought. Do NOT invent details not present in the data.\n';
                 case 'npc_recall':
                     return anchors + 'MODE: NPC RECALL — The player is asking who just spoke to us or what that NPC said. Answer from RECENT NPC DIALOGUE and RECENT NPC CONTACT only. Name the speaker explicitly. Do NOT answer from combat memory unless the NPC dialogue itself mentions combat.\n';
                 case 'lore':
