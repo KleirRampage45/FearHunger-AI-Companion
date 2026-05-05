@@ -1,75 +1,75 @@
 /*:
  * @plugindesc [RPG Maker MV] AI Companion Mod for Fear & Hunger - v1.0.0
  * @author Asukat
- * 
+ *
  * @help
  * ============================================================================
  * AI Companion Mod for Fear & Hunger
  * ============================================================================
- * 
+ *
  * This plugin adds an AI-controlled companion that:
  * - Follows the player on the map (via HIME_GuestFollowers)
  * - Acts autonomously in combat using Gemini 3.0 Flash API
  * - Understands and exploits Fear & Hunger's limb-based combat
  * - Maintains persistent memory across battles and save files
- * 
+ *
  * INSTALLATION:
  * 1. Place this file in www/js/plugins/
  * 2. Enable in Plugin Manager
  * 3. Configure API key and companion settings
  * 4. Add companion to party via script call:
  *    $gameParty.addActor(COMPANION_ACTOR_ID);
- * 
+ *
  * TURN TIMING:
  * The AI decision is made EXACTLY when the companion's turn begins.
  * No pre-caching, no stale data. Current battle state only.
- * 
+ *
  * ============================================================================
  * Plugin Parameters
  * ============================================================================
- * 
+ *
  * @param apiKey
  * @text Gemini API Key
  * @desc Your Google AI Studio API key for Gemini 3.0 Flash
  * @type string
- * @default 
- * 
+ * @default
+ *
  * @param companionActorId
  * @text Companion Actor ID
  * @desc The Actor ID to use for the AI companion (from database)
  * @type number
  * @default 15
- * 
+ *
  * @param companionName
  * @text Companion Name
  * @desc Display name for the AI companion
  * @type string
  * @default Wanderer
- * 
+ *
  * @param personality
  * @text Personality Traits
  * @desc Base personality for dialogue and decisions (comma-separated)
  * @type string
  * @default survival-first, cautious, trauma-aware, pragmatic
- * 
+ *
  * @param debugMode
  * @text Debug Mode
  * @desc Enable console logging for development
  * @type boolean
  * @default true
- * 
+ *
  * @param useMockAI
  * @text Use Mock AI (Force)
  * @desc Force mock AI even when API key is set. Set OFF to use real API.
  * @type boolean
  * @default false
- * 
+ *
  * @param autoJoinParty
  * @text Auto-Join Party
  * @desc Automatically add the AI companion when starting a new game
  * @type boolean
  * @default true
- * 
+ *
  * @param apiEndpoint
  * @text API Endpoint
  * @desc Gemini API endpoint URL
@@ -10948,28 +10948,30 @@ CRITICAL GAME RULES (NEVER violate these):
             }
 
             // Helper: make a single API call and extract text
-            const _tryRequest = async (endpoint, headers, model, maxTokens, timeoutMs, extraBody) => {
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), timeoutMs);
-                try {
-                    const response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: headers,
-                        signal: controller.signal,
-                        body: JSON.stringify(Object.assign({
-                            model: model,
-                            messages: extraBody.messages || [{ role: 'user', content: prompt }],
-                            max_tokens: maxTokens
-                        }, Config.getSamplingOptions(), extraBody.extra || {}))
-                    });
-                    clearTimeout(timer);
-	                    if (!response.ok) {
-	                        const body = await response.text().catch(() => '');
-	                        const failure = {
-	                            provider: Config.apiProvider === 'local' && Config.apiKey ? 'groq_fallback' : Config.apiProvider,
-	                            context: 'chat',
+	            const _tryRequest = async (endpoint, headers, model, maxTokens, timeoutMs, extraBody) => {
+	                const controller = new AbortController();
+	                const timer = setTimeout(() => controller.abort(), timeoutMs);
+	                const requestMeta = extraBody || {};
+	                const providerName = requestMeta.providerName || Config.apiProvider;
+	                try {
+	                    const response = await fetch(endpoint, {
+	                        method: 'POST',
+	                        headers: headers,
+	                        signal: controller.signal,
+	                        body: JSON.stringify(Object.assign({
 	                            model: model,
-	                            type: 'http',
+	                            messages: requestMeta.messages || [{ role: 'user', content: prompt }],
+	                            max_tokens: maxTokens
+	                        }, Config.getSamplingOptions({}, { includeTopK: !!requestMeta.includeTopK }), requestMeta.extra || {}))
+	                    });
+	                    clearTimeout(timer);
+		                    if (!response.ok) {
+		                        const body = await response.text().catch(() => '');
+		                        const failure = {
+		                            provider: providerName,
+		                            context: 'chat',
+		                            model: model,
+		                            type: 'http',
 	                            status: response.status,
 	                            body: String(body || '').substring(0, 500)
 	                        };
@@ -10995,54 +10997,87 @@ CRITICAL GAME RULES (NEVER violate these):
                     return text || '';
 	                } catch (error) {
 	                    clearTimeout(timer);
-	                    if (error.name === 'AbortError') Debug.warn('[Chat] Request timed out');
-	                    else Debug.warn('[Chat] Request error:', error.message);
-	                    ModelRouter.recordFailure({
-	                        provider: Config.apiProvider === 'local' && Config.apiKey ? 'groq_fallback' : Config.apiProvider,
-	                        context: 'chat',
-	                        model: model,
+		                    if (error.name === 'AbortError') Debug.warn('[Chat] Request timed out');
+		                    else Debug.warn('[Chat] Request error:', error.message);
+		                    ModelRouter.recordFailure({
+		                        provider: providerName,
+		                        context: 'chat',
+		                        model: model,
 	                        type: error.name === 'AbortError' ? 'timeout' : 'exception',
 	                        message: error.message
 	                    });
 	                    return '';
 	                }
-            };
+	            };
 
-            // === STRATEGY: Chat/RP ALWAYS uses Groq (70B) for quality ===
-            // Local model is only used for combat JSON decisions.
-            const groqHeaders = (Config.apiProvider === 'local' && Config.apiKey)
-                ? {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${Config.apiKey}`,
-                    'HTTP-Referer': 'https://fear-and-hunger-mod.local',
-                    'X-Title': 'Fear & Hunger AI Companion'
-                  }
-                : Config.getHeaders();
-            const groqEndpoint = (Config.apiProvider === 'local' && Config.apiKey)
-                ? Config.apiEndpoint
-                : Config.getEndpoint();
+	            const tryLocalChat = async (reason) => {
+	                if (!Config.localEndpoint || !Config.localModel) return '';
+	                Debug.log(`[Chat] Trying local LM Studio (${reason}):`, Config.localModel);
+	                const text = await _tryRequest(
+	                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 220, 12000,
+	                    {
+	                        messages: [{ role: 'user', content: prompt }],
+	                        providerName: 'local',
+	                        includeTopK: true
+	                    }
+	                );
+	                if (text.length > 0) {
+	                    Debug.log('[Chat] Local LM Studio responded:', Config.localModel, text.length, 'chars');
+	                    this._lastModelUsed = Config.localModel;
+	                    return text;
+	                }
+	                ModelRouter.markFailed(Config.localModel);
+	                return '';
+	            };
 
-            if (!Config.apiKey && Config.apiProvider === 'local') {
-                Debug.warn('[Chat] No Groq API key configured — cannot use cloud for chat.');
-                return '';
-            }
+	            if (Config.apiProvider === 'local') {
+	                const localText = await tryLocalChat('primary');
+	                if (localText) return localText;
+	                if (!Config.apiKey) return '';
+	                Debug.warn('[Chat] Local chat failed; trying Groq fallback because an API key is configured.');
+	            }
 
-            const models = ModelRouter.getModelsForContext('chat');
-            for (const model of models) {
-                const text = await _tryRequest(
-                    groqEndpoint, groqHeaders, model, 150, 8000,
-                    { messages: [{ role: 'user', content: prompt }] }
-                );
-                if (text.length > 0) {
-                    Debug.log('[Chat] Groq responded:', model, text.length, 'chars');
-                    this._lastModelUsed = model;
-                    return text;
-                }
-                ModelRouter.markFailed(model);
-            }
-            return '';
-        }
-    };
+	            if (!Config.apiKey && Config.apiProvider !== 'local') {
+	                Debug.warn('[Chat] No cloud API key configured; trying local chat fallback.');
+	                return await tryLocalChat('no cloud key');
+	            }
+
+	            const cloudHeaders = Config.apiProvider === 'local'
+	                ? {
+	                    'Content-Type': 'application/json',
+	                    'Authorization': `Bearer ${Config.apiKey}`,
+	                    'HTTP-Referer': 'https://fear-and-hunger-mod.local',
+	                    'X-Title': 'Fear & Hunger AI Companion'
+	                  }
+	                : Config.getHeaders();
+	            const cloudEndpoint = Config.apiProvider === 'local'
+	                ? Config.apiEndpoint
+	                : Config.getEndpoint();
+	            const cloudProviderName = Config.apiProvider === 'local' ? 'groq_fallback' : Config.apiProvider;
+	            const models = Config.apiProvider === 'local'
+	                ? ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'].filter(m => !ModelRouter._failedModels.has(m))
+	                : ModelRouter.getModelsForContext('chat');
+
+	            for (const model of models) {
+	                const text = await _tryRequest(
+	                    cloudEndpoint, cloudHeaders, model, 150, 8000,
+	                    { messages: [{ role: 'user', content: prompt }], providerName: cloudProviderName }
+	                );
+	                if (text.length > 0) {
+	                    Debug.log('[Chat] Cloud responded:', model, text.length, 'chars');
+	                    this._lastModelUsed = model;
+	                    return text;
+	                }
+	                ModelRouter.markFailed(model);
+	            }
+
+	            if (Config.apiProvider !== 'local') {
+	                const localText = await tryLocalChat('cloud failed');
+	                if (localText) return localText;
+	            }
+	            return '';
+	        }
+	    };
 
     //=========================================================================
     // PHASE 4.2: Ambient Dialogue System
@@ -14272,7 +14307,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const faceName = this._faceName || '';
             // Skip empty faces (pure narration/system messages)
             if (!faceName || faceName.length === 0) return;
-            
+
             // Skip the AI companion's own faces
             const companionFaces = ['Marcoh_faces', 'Marcoh_faces_7', 'Actor_white_thug'];
             if (companionFaces.some(f => faceName.includes(f))) return;
@@ -14289,7 +14324,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 'BuckmanFace': 'Buckman', 'TrorturFace': 'Trortur',
                 'NashrahFace': "Nas'hrah", 'MoonlessFace': 'Moonless',
             };
-            
+
             let speakerName = 'NPC';
             for (const [faceKey, name] of Object.entries(faceToName)) {
                 if (faceName.includes(faceKey)) {
