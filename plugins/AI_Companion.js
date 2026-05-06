@@ -8502,7 +8502,6 @@ Respond ONLY with this JSON:
             this._state.pending = true;
             try {
                 if (this.isBattleActive()) return;
-                if (!this._canAskForNewGoal()) return;
                 const snapshot = this._buildSnapshot();
                 if (this._isCurrentTaskStillValid(snapshot) && this._state.lastDecision) {
                     this._applyDecision(this._state.lastDecision, snapshot, true);
