@@ -745,6 +745,35 @@
         }
     };
 
+    const LocalModelHealth = {
+        _unavailableUntil: 0,
+        _lastReason: '',
+
+        canTry() {
+            return Date.now() >= (this._unavailableUntil || 0);
+        },
+
+        unavailableSeconds() {
+            return Math.ceil(Math.max(0, (this._unavailableUntil || 0) - Date.now()) / 1000);
+        },
+
+        markFailure(reason, ms) {
+            const duration = Math.max(5000, Number(ms) || 45000);
+            this._unavailableUntil = Math.max(this._unavailableUntil || 0, Date.now() + duration);
+            this._lastReason = reason || 'local model unavailable';
+            Debug.warn('[Local LLM] Generation unavailable:', this._lastReason, 'retry in', Math.ceil(duration / 1000) + 's');
+        },
+
+        markSuccess() {
+            this._unavailableUntil = 0;
+            this._lastReason = '';
+        },
+
+        reason() {
+            return this._lastReason || 'local model unavailable';
+        }
+    };
+
     // Starting equipment loadouts based on F&H characters
     const STARTING_LOADOUTS = {
         defensor: {
@@ -4794,17 +4823,10 @@ Respond ONLY with this JSON:
 
             // === STRATEGY: Local first, then Groq fallback ===
             if (Config.apiProvider === 'local') {
-                Debug.log('[Combat] Trying local AI...');
-	                const localResult = _trySyncRequest(
-	                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 160, true
-	                );
-                if (localResult && localResult._failure) failureChain.push(localResult._failure);
-                if (localResult && !localResult._validationFailed && !localResult._parseFailed && !localResult._requestFailed) {
-                    _logCombatDecision(localResult, Config.localModel, 'local');
-                    return localResult;
-                }
+                Debug.warn('[Combat] Skipping synchronous local AI to prevent battle freeze.');
+                failureChain.push({ model: Config.localModel, type: 'skipped', message: 'sync local combat disabled' });
 
-                // Local failed — fall back to Groq
+                // Synchronous local combat can freeze RPG Maker if the local server stalls.
                 if (Config.apiKey) {
                     Debug.warn('[Combat] Local failed — falling back to Groq...');
                     const groqHeaders = {
@@ -8547,6 +8569,12 @@ Respond ONLY with this JSON:
             const fallback = this._goalFreeFallback(snapshot, 'llm unavailable');
             if (this.isBattleActive()) return Object.assign({}, fallback, { _autonomySource: 'battle_skip', reason: 'battle active' });
             if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({}, fallback, { _autonomySource: 'no_model' });
+            if (!LocalModelHealth.canTry()) {
+                return Object.assign({}, fallback, {
+                    _autonomySource: 'local_unavailable',
+                    reason: LocalModelHealth.reason() + `; retry in ${LocalModelHealth.unavailableSeconds()}s`
+                });
+            }
             if (!LocalRequestGate.canStart('autonomy')) {
                 return Object.assign({}, fallback, {
                     _autonomySource: 'local_busy',
@@ -8577,7 +8605,7 @@ Respond ONLY with this JSON:
             ].join('\n');
 
 	            const controller = new AbortController();
-	            const timeoutMs = 30000;
+	            const timeoutMs = 8000;
 	            const timer = setTimeout(() => controller.abort(), timeoutMs);
             const requestStart = performance.now();
             let response;
@@ -8607,6 +8635,7 @@ Respond ONLY with this JSON:
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
                     const latencyMs = performance.now() - requestStart;
                     this._state.localTimeoutCount = (this._state.localTimeoutCount || 0) + 1;
+                    LocalModelHealth.markFailure('generation timed out', 45000);
                     this._state.lastLocalStats = {
                         prompt_tokens: null,
                         completion_tokens: null,
@@ -8626,6 +8655,7 @@ Respond ONLY with this JSON:
             }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
+                LocalModelHealth.markFailure('HTTP ' + response.status, 30000);
                 this._state.lastLocalStats = {
                     prompt_tokens: null,
                     completion_tokens: null,
@@ -8639,6 +8669,7 @@ Respond ONLY with this JSON:
             }
 
 	            const data = await response.json();
+	            LocalModelHealth.markSuccess();
 	            this._state.lastLocalStats = LlmTelemetry.fromResponse(data, performance.now() - requestStart);
 	            this._state.localTimeoutCount = 0;
 	            this._state.lastRawLocalContent = String(
@@ -11271,6 +11302,7 @@ CRITICAL GAME RULES (NEVER violate these):
                 } catch (error) {
                     clearTimeout(timer);
                     if (error.name === 'AbortError') {
+                        if (requestMeta.local) LocalModelHealth.markFailure('chat timed out', 45000);
                         Debug.warn('[Chat] Request timed out');
                     } else if (error.code === 'local_llm_busy') {
                         Debug.warn('[Chat] Local request skipped:', error.code);
@@ -11289,6 +11321,10 @@ CRITICAL GAME RULES (NEVER violate these):
 
             const tryLocalChat = async (reason) => {
                 if (!Config.localEndpoint || !Config.localModel) return '';
+                if (!LocalModelHealth.canTry()) {
+                    Debug.warn('[Chat] Local chat skipped; generation unavailable:', LocalModelHealth.reason());
+                    return '';
+                }
                 if (!LocalRequestGate.canStart('chat')) {
                     Debug.warn('[Chat] Local chat skipped; local model is busy.');
                     return '';
@@ -11303,10 +11339,12 @@ CRITICAL GAME RULES (NEVER violate these):
 	                    }
 	                );
 	                if (text.length > 0) {
+	                    LocalModelHealth.markSuccess();
 	                    Debug.log('[Chat] Local LM Studio responded:', Config.localModel, text.length, 'chars');
 	                    this._lastModelUsed = Config.localModel;
 	                    return text;
 	                }
+	                LocalModelHealth.markFailure('empty local response', 30000);
 	                ModelRouter.markFailed(Config.localModel);
 	                return '';
 	            };
