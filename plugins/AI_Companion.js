@@ -8308,7 +8308,7 @@ Respond ONLY with this JSON:
                     if (isReusableWorldObject && this._isEventOnCooldown(item.eventId)) return false;
                     if (isReusableWorldObject && this._isEventSearched(item.eventId)) return false;
                     return true;
-                }).slice(0, 10).map(item => ({
+                }).slice(0, 6).map(item => ({
                     eventId: item.eventId,
                     label: item.label,
                     type: item.type,
@@ -8538,6 +8538,7 @@ Respond ONLY with this JSON:
                 this._applyDecision(fallback, snapshot);
                 this._logTick(snapshot, fallback, 'error_fallback', Date.now() - start, error.message);
             } finally {
+                this._state.lastTickAt = Date.now();
                 this._state.pending = false;
             }
         },
@@ -8576,7 +8577,7 @@ Respond ONLY with this JSON:
             ].join('\n');
 
 	            const controller = new AbortController();
-	            const timeoutMs = 6000;
+	            const timeoutMs = 30000;
 	            const timer = setTimeout(() => controller.abort(), timeoutMs);
             const requestStart = performance.now();
             let response;
@@ -8592,7 +8593,7 @@ Respond ONLY with this JSON:
                                 { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
                                 { role: 'user', content: prompt }
                             ],
-                            max_tokens: 80
+                            max_tokens: 48
                         }, Config.getLocalFastGenerationOptions({ temperature: 1.0, top_p: 0.95 })))
                     });
                 });
