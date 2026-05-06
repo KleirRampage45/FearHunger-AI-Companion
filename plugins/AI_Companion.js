@@ -406,6 +406,14 @@
             );
         },
 
+        getLocalFastGenerationOptions(overrides) {
+            return Object.assign(
+                {},
+                this.getSamplingOptions(overrides || {}, { includeTopK: true }),
+                { enable_thinking: false, stop: ['<turn|>'] }
+            );
+        },
+
         shouldUseAmbientFallbacks() {
             return this.ambientFallbackMode === 'legacy';
         },
@@ -723,7 +731,7 @@
         },
 
         cooldown(ms, reason) {
-            const duration = Math.max(1000, Number(ms) || 8000);
+            const duration = Math.min(6000, Math.max(1000, Number(ms) || 3000));
             this._cooldownUntil = Math.max(this._cooldownUntil || 0, Date.now() + duration);
             if (reason) Debug.warn('[Local LLM] Cooldown', duration + 'ms:', reason);
         },
@@ -1844,17 +1852,21 @@ Reply with ONLY the category name, nothing else.`;
                 const models = ModelRouter.getModelsForContext('chat');
                 const model = models[0]; // Use fastest available model
 
-                const response = await fetch(endpoint, {
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                const body = JSON.stringify(Object.assign({
+                    model: model,
+                    messages: [{ role: 'user', content: classifyPrompt }],
+                    max_tokens: 20
+                }, isLocal
+                    ? Config.getLocalFastGenerationOptions({ temperature: 0.1 })
+                    : { temperature: 0.1 }));
+                const performFetch = async () => await fetch(endpoint, {
                     method: 'POST',
                     headers: headers,
                     signal: controller.signal,
-                    body: JSON.stringify({
-                        model: model,
-                        messages: [{ role: 'user', content: classifyPrompt }],
-                        temperature: 0.1,
-                        max_tokens: 20
-                    })
+                    body
                 });
+                const response = isLocal ? await LocalRequestGate.run('classify_chat', performFetch) : await performFetch();
                 clearTimeout(timer);
 
                 if (!response.ok) return null;
@@ -4519,7 +4531,7 @@ Respond ONLY with this JSON:
 	                        messages: messages,
 	                        max_tokens: maxTokens
 	                    }, isLocal
-                        ? Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
+                        ? Config.getLocalFastGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
                         : Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }, { includeTopK: false })))
                 });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -4543,14 +4555,14 @@ Respond ONLY with this JSON:
                                 model: model,
                                 messages: messages,
                                 max_tokens: maxTokens
-                            }, Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })))
+                            }, Config.getLocalFastGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })))
                         });
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
                         return await response.json();
                     });
                 } catch (error) {
                     if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
-                        LocalRequestGate.cooldown(15000, 'combat timeout');
+                        LocalRequestGate.cooldown(6000, 'combat timeout');
                     }
                     throw error;
                 } finally {
@@ -4724,7 +4736,7 @@ Respond ONLY with this JSON:
                         messages: messages,
                         max_tokens: maxTokens
 	                    }, isLocal
-	                        ? Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
+	                        ? Config.getLocalFastGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
 	                        : Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }, { includeTopK: false }))));
 	                    const requestLatency = Math.round(performance.now() - requestStart);
                     if (xhr.status !== 200) {
@@ -7918,6 +7930,7 @@ Respond ONLY with this JSON:
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
                 const model = Config.getChatModel();
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
                 const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `Write ONE short consent question, under 14 words.\n` +
@@ -7930,17 +7943,19 @@ Respond ONLY with this JSON:
                 const timer = setTimeout(() => controller.abort(), 1400);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    const performFetch = async () => await fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
-                        body: JSON.stringify({
+                        body: JSON.stringify(Object.assign({
                             model,
                             messages: [{ role: 'system', content: prompt }],
-                            max_tokens: 42,
-                            temperature: 0.8
-                        })
+                            max_tokens: 42
+                        }, isLocal
+                            ? Config.getLocalFastGenerationOptions({ temperature: 0.8 })
+                            : { temperature: 0.8 }))
                     });
+                    resp = isLocal ? await LocalRequestGate.run('consent_prompt', performFetch) : await performFetch();
                 } finally {
                     clearTimeout(timer);
                 }
@@ -8600,7 +8615,7 @@ Respond ONLY with this JSON:
                                 { role: 'user', content: prompt }
                             ],
                             max_tokens: 80
-                        }, Config.getLocalGenerationOptions({ temperature: 1.0, top_p: 0.95 })))
+                        }, Config.getLocalFastGenerationOptions({ temperature: 1.0, top_p: 0.95 })))
                     });
                 });
             } catch (error) {
@@ -8614,7 +8629,7 @@ Respond ONLY with this JSON:
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
                     const latencyMs = performance.now() - requestStart;
                     this._state.localTimeoutCount = (this._state.localTimeoutCount || 0) + 1;
-                    const cooldownMs = Math.min(30000, 8000 + (this._state.localTimeoutCount - 1) * 5000);
+                    const cooldownMs = 3000;
                     this._state.localCooldownUntil = Date.now() + cooldownMs;
                     LocalRequestGate.cooldown(cooldownMs, 'autonomy timeout');
                     this._state.lastLocalStats = {
@@ -8637,8 +8652,8 @@ Respond ONLY with this JSON:
             }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
-                this._state.localCooldownUntil = Date.now() + 8000;
-                LocalRequestGate.cooldown(8000, 'autonomy HTTP ' + response.status);
+                this._state.localCooldownUntil = Date.now() + 3000;
+                LocalRequestGate.cooldown(3000, 'autonomy HTTP ' + response.status);
                 this._state.lastLocalStats = {
                     prompt_tokens: null,
                     completion_tokens: null,
@@ -8647,7 +8662,7 @@ Respond ONLY with this JSON:
                     latency_ms: Math.round(performance.now() - requestStart),
                     has_usage: false,
                     http_status: response.status,
-                    cooldown_ms: 8000
+                    cooldown_ms: 3000
                 };
                 return Object.assign({}, fallback, { _autonomySource: 'llm_http_error', reason: 'local model HTTP error' });
             }
@@ -9180,6 +9195,7 @@ Respond ONLY with this JSON:
                     const endpoint = Config.getEndpoint();
                     const headers = Config.getHeaders();
                     const model = Config.getChatModel();
+                    const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
                     const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
                         `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                         `You just found loot while searching independently.\n` +
@@ -9189,17 +9205,19 @@ Respond ONLY with this JSON:
                     const timer = setTimeout(() => controller.abort(), 1400);
                     let resp;
                     try {
-                        resp = await fetch(endpoint, {
+                        const performFetch = async () => await fetch(endpoint, {
                             method: 'POST',
                             headers,
                             signal: controller.signal,
-                            body: JSON.stringify({
+                            body: JSON.stringify(Object.assign({
                                 model,
                                 messages: [{ role: 'system', content: prompt }],
-                                max_tokens: 36,
-                                temperature: 0.8
-                            })
+                                max_tokens: 36
+                            }, isLocal
+                                ? Config.getLocalFastGenerationOptions({ temperature: 0.8 })
+                                : { temperature: 0.8 }))
                         });
+                        resp = isLocal ? await LocalRequestGate.run('loot_comment', performFetch) : await performFetch();
                     } finally {
                         clearTimeout(timer);
                     }
@@ -11582,12 +11600,13 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
                 if (isLocal && !LocalRequestGate.canStart('ambient_item')) return;
 
-                const body = JSON.stringify({
+                const body = JSON.stringify(Object.assign({
                     model: model,
                     messages: [{ role: 'system', content: prompt }],
-                    max_tokens: 80,
-                    temperature: 0.8
-                });
+                    max_tokens: 80
+                }, isLocal
+                    ? Config.getLocalFastGenerationOptions({ temperature: 0.8 })
+                    : { temperature: 0.8 }));
 
                 const resp = isLocal
                     ? await LocalRequestGate.run('ambient_item', async () => await fetch(endpoint, { method: 'POST', headers, body }))
@@ -11870,12 +11889,13 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                         method: 'POST',
                         headers,
                         signal: controller.signal,
-                        body: JSON.stringify({
+                        body: JSON.stringify(Object.assign({
                             model,
                             messages: [{ role: 'system', content: prompt }],
-                            max_tokens: 36,
-                            temperature: 0.85
-                        })
+                            max_tokens: 36
+                        }, isLocal
+                            ? Config.getLocalFastGenerationOptions({ temperature: 0.85 })
+                            : { temperature: 0.85 }))
                     });
                     resp = isLocal ? await LocalRequestGate.run('proactive_chat', performFetch) : await performFetch();
                 } finally {
@@ -12018,12 +12038,13 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                         method: 'POST',
                         headers,
                         signal: controller.signal,
-                        body: JSON.stringify({
+                        body: JSON.stringify(Object.assign({
                             model,
                             messages: [{ role: 'system', content: prompt }],
-                            max_tokens: 30,
-                            temperature: 0.85
-                        })
+                            max_tokens: 30
+                        }, isLocal
+                            ? Config.getLocalFastGenerationOptions({ temperature: 0.85 })
+                            : { temperature: 0.85 }))
                     });
                     resp = isLocal ? await LocalRequestGate.run('autonomy_comment', performFetch) : await performFetch();
                 } finally {
@@ -12139,7 +12160,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 	                    messages: [{ role: 'system', content: prompt }],
 	                    max_tokens: 32
 	                }, isLocal
-	                    ? Config.getLocalGenerationOptions({ temperature: 0.45 })
+	                    ? Config.getLocalFastGenerationOptions({ temperature: 0.45 })
 	                    : Config.getSamplingOptions({ temperature: 0.45 }, { includeTopK: false })));
                 let resp;
                 const requestStart = performance.now();
@@ -12275,15 +12296,18 @@ React in one short sentence (max 60 chars). Stay in character. Express your hung
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
                 const model = Config.getChatModel();
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
 
-                const body = JSON.stringify({
+                const body = JSON.stringify(Object.assign({
                     model: model,
                     messages: [{ role: 'system', content: prompt }],
-                    max_tokens: 80,
-                    temperature: 0.8
-                });
+                    max_tokens: 80
+                }, isLocal
+                    ? Config.getLocalFastGenerationOptions({ temperature: 0.8 })
+                    : { temperature: 0.8 }));
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const performFetch = async () => await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = isLocal ? await LocalRequestGate.run('hunger_comment', performFetch) : await performFetch();
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -12353,15 +12377,18 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
                 const model = Config.getChatModel();
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
 
-                const body = JSON.stringify({
+                const body = JSON.stringify(Object.assign({
                     model: model,
                     messages: [{ role: 'system', content: prompt }],
-                    max_tokens: 80,
-                    temperature: 0.8
-                });
+                    max_tokens: 80
+                }, isLocal
+                    ? Config.getLocalFastGenerationOptions({ temperature: 0.8 })
+                    : { temperature: 0.8 }));
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const performFetch = async () => await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = isLocal ? await LocalRequestGate.run('party_join_comment', performFetch) : await performFetch();
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -12487,14 +12514,17 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                     return;
                 }
 
-                const body = JSON.stringify({
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                const body = JSON.stringify(Object.assign({
                     model: model,
                     messages: [{ role: 'system', content: prompt }],
-                    max_tokens: 60,
-                    temperature: 0.8
-                });
+                    max_tokens: 60
+                }, isLocal
+                    ? Config.getLocalFastGenerationOptions({ temperature: 0.8 })
+                    : { temperature: 0.8 }));
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const performFetch = async () => await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = isLocal ? await LocalRequestGate.run('room_comment', performFetch) : await performFetch();
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -12666,17 +12696,20 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const timer = setTimeout(() => controller.abort(), 1200);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                    const performFetch = async () => await fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
-                        body: JSON.stringify({
+                        body: JSON.stringify(Object.assign({
                             model,
                             messages: [{ role: 'system', content: prompt }],
-                            max_tokens: 50,
-                            temperature: 0.2
-                        })
+                            max_tokens: 50
+                        }, isLocal
+                            ? Config.getLocalFastGenerationOptions({ temperature: 0.2 })
+                            : { temperature: 0.2 }))
                     });
+                    resp = isLocal ? await LocalRequestGate.run('ambient_filter', performFetch) : await performFetch();
                 } finally {
                     clearTimeout(timer);
                 }
@@ -13092,17 +13125,20 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const timer = setTimeout(() => controller.abort(), 1400);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                    const performFetch = async () => await fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
-                        body: JSON.stringify({
+                        body: JSON.stringify(Object.assign({
                             model,
                             messages: [{ role: 'system', content: prompt }],
-                            max_tokens: 44,
-                            temperature: 0.8
-                        })
+                            max_tokens: 44
+                        }, isLocal
+                            ? Config.getLocalFastGenerationOptions({ temperature: 0.8 })
+                            : { temperature: 0.8 }))
                     });
+                    resp = isLocal ? await LocalRequestGate.run('equip_consent', performFetch) : await performFetch();
                 } finally {
                     clearTimeout(timer);
                 }
@@ -13913,17 +13949,21 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const timer = setTimeout(() => controller.abort(), 1800);
                 let resp;
                 try {
-                    resp = await fetch(Config.getEndpoint(), {
+                    const endpoint = Config.getEndpoint();
+                    const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                    const performFetch = async () => await fetch(endpoint, {
                         method: 'POST',
                         headers: Config.getHeaders(),
                         signal: controller.signal,
-                        body: JSON.stringify({
+                        body: JSON.stringify(Object.assign({
                             model: Config.getChatModel(),
                             messages: [{ role: 'system', content: prompt }],
-                            max_tokens: 60,
-                            temperature: 0.4
-                        })
+                            max_tokens: 60
+                        }, isLocal
+                            ? Config.getLocalFastGenerationOptions({ temperature: 0.4 })
+                            : { temperature: 0.4 }))
                     });
+                    resp = isLocal ? await LocalRequestGate.run('merchant_choice', performFetch) : await performFetch();
                 } finally {
                     clearTimeout(timer);
                 }
