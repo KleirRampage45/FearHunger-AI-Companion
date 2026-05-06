@@ -3339,7 +3339,37 @@ Reply with ONLY the category name, nothing else.`;
         // Fallback tips for maps identified by ID only (no display name in game data)
         mapTipsFallback: {
             '1': { displayName: 'Entrance / Starting area', tips: ['Dogs will chase and attack if you linger here too long.', 'Move quickly to avoid the pack.'] },
-            '2': { displayName: 'Basement / Lower levels', tips: ['Guards patrol. Consider disguise.'] }
+            '2': { displayName: 'Basement / Lower levels', tips: ['Guards patrol. Consider disguise.'] },
+            '72': { displayName: 'Unknown approach', tips: [] },
+            '74': { displayName: 'Fortress', tips: ['A hostile mercenary patrols nearby. Keep distance unless you are ready to fight.'] },
+            '183': { displayName: 'Level 1 - Entrance', tips: ['Early dungeon rooms contain doors, shelves, crates, and patrol routes. Move carefully.'] }
+        },
+
+        _unknownAreaName() {
+            return Config.language === 'es' ? 'Zona desconocida' : 'Unknown area';
+        },
+
+        _sanitizeEditorMapName(name) {
+            const raw = String(name || '').trim();
+            if (!raw || /^map\s*\d+$/i.test(raw) || /^map\d+$/i.test(raw) || /^MAP\d+$/.test(raw)) return '';
+            if (/^level\d+_[a-z]$/i.test(raw)) return '';
+            return Locale.text(raw.replace(/_/g, ' '));
+        },
+
+        getFriendlyMapName(mapId, displayName) {
+            const key = String(mapId || '');
+            const byId = this.mapTipsFallback[key];
+            const cleanDisplay = this._sanitizeEditorMapName(displayName);
+            if (cleanDisplay) return cleanDisplay;
+            if (byId && byId.displayName) return Locale.text(byId.displayName);
+            const mapInfoName = this._mapInfoName(mapId);
+            const cleanInfo = this._sanitizeEditorMapName(mapInfoName);
+            return cleanInfo || this._unknownAreaName();
+        },
+
+        _mapInfoName(mapId) {
+            if (typeof $dataMapInfos === 'undefined' || !$dataMapInfos || !$dataMapInfos[mapId]) return '';
+            return $dataMapInfos[mapId].name || '';
         },
 
         /**
@@ -3434,17 +3464,18 @@ Reply with ONLY the category name, nothing else.`;
         getMapContext() {
             if (!$gameMap) return { displayName: 'Unknown', tips: [] };
             const mapId = String($gameMap.mapId());
-	            const displayName = $gameMap.displayName() || ('Map ' + mapId);
+            const rawDisplayName = $gameMap.displayName() || this._mapInfoName(mapId);
+            const displayName = this.getFriendlyMapName(mapId, rawDisplayName);
 
             // Try KB matching first (dynamic)
             const kbMatch = this._matchKB(displayName);
-            if (kbMatch) return { ...kbMatch, rawDisplayName: displayName };
+            if (kbMatch) return { ...kbMatch, rawDisplayName: rawDisplayName || displayName };
 
             // Fallback to ID-based tips
             const byId = this.mapTipsFallback[mapId];
             return {
-	                displayName: byId ? byId.displayName : Locale.text(displayName),
-                rawDisplayName: displayName,
+                displayName: byId ? Locale.text(byId.displayName) : displayName,
+                rawDisplayName: rawDisplayName || displayName,
                 tips: byId && byId.tips ? byId.tips : []
             };
         }
@@ -8099,9 +8130,12 @@ Respond ONLY with this JSON:
             const risk = RiskEvaluator.evaluateMap(follower);
             const threatNearby = nearby.filter(n => n.danger === 'high');
             const interesting = pointsOfInterest.filter(n => n.type === 'container' || n.type === 'door' || n.type === 'loot' || n.type === 'npc');
+            const mapName = typeof MapContextHelper !== 'undefined'
+                ? MapContextHelper.getFriendlyMapName($gameMap.mapId(), $gameMap.displayName())
+                : ($gameMap.displayName() || 'Unknown area');
 
             const snapshot = {
-                mapName: $gameMap.displayName() || ('Map ' + $gameMap.mapId()),
+                mapName: mapName,
                 player: { x: player.x, y: player.y },
                 companion: { x: follower.x, y: follower.y },
                 leashDistance: this._distance(player, follower),
@@ -8304,10 +8338,15 @@ Respond ONLY with this JSON:
 
         _logTick(snapshot, decision, source, latencyMs, errorMessage) {
             try {
-                const hasLocalStats = /^(local|llm_|local_)/.test(String(source || ''));
+                const localSource = String(source || '');
+                const hasLocalStats = localSource === 'local' || localSource === 'local_follow_target' || localSource === 'local_cooldown' || /^llm_/.test(localSource);
+                const hasRawLocalResponse = localSource === 'local' || localSource === 'local_follow_target' || localSource === 'llm_parse_fallback';
+                const mapName = typeof MapContextHelper !== 'undefined' && $gameMap
+                    ? MapContextHelper.getFriendlyMapName($gameMap.mapId(), $gameMap.displayName())
+                    : ($gameMap ? ($gameMap.displayName() || null) : null);
                 ThesisLogger.log('autonomy_tick', {
                     map_id: $gameMap ? $gameMap.mapId() : null,
-                    map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
+                    map_name: mapName,
                     enabled: Config.autonomyEnabled,
                     mode: this._state.mode,
                     source: source,
@@ -8317,11 +8356,11 @@ Respond ONLY with this JSON:
 	                    prompt_tokens: hasLocalStats && this._state.lastLocalStats ? this._state.lastLocalStats.prompt_tokens : null,
 	                    completion_tokens: hasLocalStats && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens : null,
 	                    completion_tokens_per_second: hasLocalStats && this._state.lastLocalStats ? this._state.lastLocalStats.completion_tokens_per_second : null,
-	                    reason: decision ? decision.reason : null,
+                    reason: decision ? decision.reason : null,
                     action: decision ? decision.action : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
                     frontier_index: decision && decision.frontierIndex != null ? decision.frontierIndex : null,
-                    raw_response_content: this._state.lastRawLocalContent || null,
+                    raw_response_content: hasRawLocalResponse ? (this._state.lastRawLocalContent || null) : null,
                     error: errorMessage || null,
                     snapshot: snapshot ? {
                         leashDistance: snapshot.leashDistance,
