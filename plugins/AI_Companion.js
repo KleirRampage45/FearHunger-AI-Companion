@@ -684,11 +684,11 @@
 	        }
 	    };
 
-	    const LlmTelemetry = {
-	        fromResponse(response, latencyMs) {
-	            const usage = response && response.usage ? response.usage : {};
-	            const promptTokens = Number(usage.prompt_tokens || usage.input_tokens || 0) || null;
-	            const completionTokens = Number(usage.completion_tokens || usage.output_tokens || 0) || null;
+    const LlmTelemetry = {
+        fromResponse(response, latencyMs) {
+            const usage = response && response.usage ? response.usage : {};
+            const promptTokens = Number(usage.prompt_tokens || usage.input_tokens || 0) || null;
+            const completionTokens = Number(usage.completion_tokens || usage.output_tokens || 0) || null;
 	            const totalTokens = Number(usage.total_tokens || 0) || (promptTokens && completionTokens ? promptTokens + completionTokens : null);
 	            const seconds = Math.max(0.001, (Number(latencyMs) || 0) / 1000);
 	            const completionTokensPerSecond = completionTokens ? Number((completionTokens / seconds).toFixed(2)) : null;
@@ -699,11 +699,57 @@
 	                completion_tokens_per_second: completionTokensPerSecond,
 	                latency_ms: Math.round(Number(latencyMs) || 0),
 	                has_usage: !!(promptTokens || completionTokens || totalTokens)
-	            };
-	        }
-	    };
+            };
+        }
+    };
 
-	    // Starting equipment loadouts based on F&H characters
+    const LocalRequestGate = {
+        _active: false,
+        _context: '',
+        _cooldownUntil: 0,
+
+        isLocalEndpoint(endpoint) {
+            const local = Config && Config.getLocalEndpoint ? Config.getLocalEndpoint() : '';
+            return !!local && String(endpoint || '').trim() === String(local || '').trim();
+        },
+
+        canStart(context) {
+            if (Date.now() < this._cooldownUntil) return false;
+            if (this._active) {
+                Debug.log('[Local LLM] Busy; skipping', context || 'request', 'because', this._context || 'another request', 'is active.');
+                return false;
+            }
+            return true;
+        },
+
+        cooldown(ms, reason) {
+            const duration = Math.max(1000, Number(ms) || 8000);
+            this._cooldownUntil = Math.max(this._cooldownUntil || 0, Date.now() + duration);
+            if (reason) Debug.warn('[Local LLM] Cooldown', duration + 'ms:', reason);
+        },
+
+        remainingCooldownMs() {
+            return Math.max(0, (this._cooldownUntil || 0) - Date.now());
+        },
+
+        async run(context, fn) {
+            if (!this.canStart(context)) {
+                const error = new Error(Date.now() < this._cooldownUntil ? 'local_llm_cooldown' : 'local_llm_busy');
+                error.code = error.message;
+                throw error;
+            }
+            this._active = true;
+            this._context = context || 'request';
+            try {
+                return await fn();
+            } finally {
+                this._active = false;
+                this._context = '';
+            }
+        }
+    };
+
+    // Starting equipment loadouts based on F&H characters
     const STARTING_LOADOUTS = {
         defensor: {
             name: 'Defensor',
@@ -4459,8 +4505,8 @@ Respond ONLY with this JSON:
         static async _sendRequest(prompt, context = 'combat') {
             // Helper: try a single async request
             const _tryFetch = async (endpoint, headers, model, maxTokens, isLocal) => {
-	                    const messages = isLocal
-	                        ? [
+                const messages = isLocal
+                    ? [
 	                            { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
 	                            { role: 'user', content: prompt }
 	                          ]
@@ -4473,18 +4519,50 @@ Respond ONLY with this JSON:
 	                        messages: messages,
 	                        max_tokens: maxTokens
 	                    }, isLocal
-	                        ? Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
-	                        : Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }, { includeTopK: false })))
-	                });
+                        ? Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })
+                        : Config.getSamplingOptions({ temperature: Math.min(Config.chatTemperature, 0.8) }, { includeTopK: false })))
+                });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return await response.json();
+            };
+            const _tryFetchLocal = async (endpoint, headers, model, maxTokens) => {
+                if (!LocalRequestGate.canStart('combat')) throw new Error('local_llm_busy');
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 10000);
+                try {
+                    return await LocalRequestGate.run('combat', async () => {
+                        const messages = [
+                            { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
+                            { role: 'user', content: prompt }
+                        ];
+                        const response = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: headers,
+                            signal: controller.signal,
+                            body: JSON.stringify(Object.assign({
+                                model: model,
+                                messages: messages,
+                                max_tokens: maxTokens
+                            }, Config.getLocalGenerationOptions({ temperature: Math.min(Config.chatTemperature, 0.8) })))
+                        });
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        return await response.json();
+                    });
+                } catch (error) {
+                    if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
+                        LocalRequestGate.cooldown(15000, 'combat timeout');
+                    }
+                    throw error;
+                } finally {
+                    clearTimeout(timer);
+                }
             };
 
             // === Local-first for combat, Groq fallback ===
             if (Config.apiProvider === 'local') {
                 try {
                     Debug.log('[Combat Async] Trying local AI...');
-                    return await _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true);
+                    return await _tryFetchLocal(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512);
                 } catch (error) {
                     Debug.warn('[Combat Async] Local failed:', error.message);
                 }
@@ -7502,12 +7580,24 @@ Respond ONLY with this JSON:
 
             this._maintainMovement();
 
+            if (!this._canAskForNewGoal()) return;
+
             const now = Date.now();
             const tickMs = Math.max(2000, Config.autonomyTickSeconds * 1000);
             if (this._state.pending || now - this._state.lastTickAt < tickMs) return;
 
             this._state.lastTickAt = now;
             this._heartbeat();
+        },
+
+        _canAskForNewGoal() {
+            if (this._state.pending) return false;
+            if (this._state.mode === 'target_event' || this._state.mode === 'target_point') return false;
+            if (this._state.currentTask) return false;
+            if (this._state.lingerUntil && Date.now() < this._state.lingerUntil) return false;
+            if (this._state.manualUiHold || this._state.consentPromptPending) return false;
+            if ($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
+            return true;
         },
 
         _softReset() {
@@ -8412,6 +8502,7 @@ Respond ONLY with this JSON:
             this._state.pending = true;
             try {
                 if (this.isBattleActive()) return;
+                if (!this._canAskForNewGoal()) return;
                 const snapshot = this._buildSnapshot();
                 if (this._isCurrentTaskStillValid(snapshot) && this._state.lastDecision) {
                     this._applyDecision(this._state.lastDecision, snapshot, true);
@@ -8454,6 +8545,13 @@ Respond ONLY with this JSON:
             const fallback = this._goalFreeFallback(snapshot, 'llm unavailable');
             if (this.isBattleActive()) return Object.assign({}, fallback, { _autonomySource: 'battle_skip', reason: 'battle active' });
             if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({}, fallback, { _autonomySource: 'no_model' });
+            if (!LocalRequestGate.canStart('autonomy')) {
+                const remaining = Math.ceil(LocalRequestGate.remainingCooldownMs() / 1000);
+                return Object.assign({}, fallback, {
+                    _autonomySource: remaining > 0 ? 'local_cooldown' : 'local_busy',
+                    reason: remaining > 0 ? `local model cooling down (${remaining}s)` : 'local model busy with another request'
+                });
+            }
             const now = Date.now();
             if (this._state.localCooldownUntil && now < this._state.localCooldownUntil) {
                 const remaining = Math.ceil((this._state.localCooldownUntil - now) / 1000);
@@ -8488,28 +8586,38 @@ Respond ONLY with this JSON:
 	            const controller = new AbortController();
 	            const timeoutMs = 6000;
 	            const timer = setTimeout(() => controller.abort(), timeoutMs);
-	            const requestStart = performance.now();
-	            let response;
+            const requestStart = performance.now();
+            let response;
             try {
-	                response = await fetch(Config.getLocalEndpoint(), {
-	                    method: 'POST',
-	                    headers: Config.getLocalHeaders(),
-	                    signal: controller.signal,
-	                    body: JSON.stringify(Object.assign({
-	                        model: Config.getAutonomyModel(),
-	                        messages: [
-	                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
-	                            { role: 'user', content: prompt }
-	                        ],
-	                        max_tokens: 80
-	                    }, Config.getLocalGenerationOptions({ temperature: 1.0, top_p: 0.95 })))
-	                });
+                response = await LocalRequestGate.run('autonomy', async () => {
+                    return await fetch(Config.getLocalEndpoint(), {
+                        method: 'POST',
+                        headers: Config.getLocalHeaders(),
+                        signal: controller.signal,
+                        body: JSON.stringify(Object.assign({
+                            model: Config.getAutonomyModel(),
+                            messages: [
+                                { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+                                { role: 'user', content: prompt }
+                            ],
+                            max_tokens: 80
+                        }, Config.getLocalGenerationOptions({ temperature: 1.0, top_p: 0.95 })))
+                    });
+                });
             } catch (error) {
+                if (error && (error.code === 'local_llm_busy' || error.code === 'local_llm_cooldown')) {
+                    const remaining = Math.ceil(LocalRequestGate.remainingCooldownMs() / 1000);
+                    return Object.assign({}, fallback, {
+                        _autonomySource: error.code === 'local_llm_cooldown' ? 'local_cooldown' : 'local_busy',
+                        reason: remaining > 0 ? `local model cooling down (${remaining}s)` : 'local model busy with another request'
+                    });
+                }
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
                     const latencyMs = performance.now() - requestStart;
                     this._state.localTimeoutCount = (this._state.localTimeoutCount || 0) + 1;
                     const cooldownMs = Math.min(30000, 8000 + (this._state.localTimeoutCount - 1) * 5000);
                     this._state.localCooldownUntil = Date.now() + cooldownMs;
+                    LocalRequestGate.cooldown(cooldownMs, 'autonomy timeout');
                     this._state.lastLocalStats = {
                         prompt_tokens: null,
                         completion_tokens: null,
@@ -8531,6 +8639,7 @@ Respond ONLY with this JSON:
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
                 this._state.localCooldownUntil = Date.now() + 8000;
+                LocalRequestGate.cooldown(8000, 'autonomy HTTP ' + response.status);
                 this._state.lastLocalStats = {
                     prompt_tokens: null,
                     completion_tokens: null,
@@ -11132,28 +11241,32 @@ CRITICAL GAME RULES (NEVER violate these):
 		            const _tryRequest = async (endpoint, headers, model, maxTokens, timeoutMs, extraBody) => {
 		                const controller = new AbortController();
 		                const timer = setTimeout(() => controller.abort(), timeoutMs);
-		                const requestMeta = extraBody || {};
-		                const providerName = requestMeta.providerName || Config.apiProvider;
-		                const requestStart = performance.now();
-		                try {
-	                    const response = await fetch(endpoint, {
-	                        method: 'POST',
-	                        headers: headers,
-	                        signal: controller.signal,
-	                        body: JSON.stringify(Object.assign({
-	                            model: model,
-	                            messages: requestMeta.messages || [{ role: 'user', content: prompt }],
-	                            max_tokens: maxTokens
-	                        }, requestMeta.local
-	                            ? Config.getLocalGenerationOptions()
-	                            : Config.getSamplingOptions({}, { includeTopK: !!requestMeta.includeTopK }), requestMeta.extra || {}))
-	                    });
-	                    clearTimeout(timer);
-		                    if (!response.ok) {
-		                        const body = await response.text().catch(() => '');
-		                        const failure = {
-		                            provider: providerName,
-		                            context: 'chat',
+                const requestMeta = extraBody || {};
+                const providerName = requestMeta.providerName || Config.apiProvider;
+                const requestStart = performance.now();
+                try {
+                    const performFetch = async () => await fetch(endpoint, {
+                        method: 'POST',
+                        headers: headers,
+                        signal: controller.signal,
+                        body: JSON.stringify(Object.assign({
+                            model: model,
+                            messages: requestMeta.messages || [{ role: 'user', content: prompt }],
+                            max_tokens: maxTokens
+                        }, requestMeta.local
+                            ? Config.getLocalGenerationOptions()
+                            : Config.getSamplingOptions({}, { includeTopK: !!requestMeta.includeTopK }), requestMeta.extra || {}))
+                    });
+                    const response = requestMeta.local
+                        ? await LocalRequestGate.run('chat', performFetch)
+                        : await performFetch();
+                    clearTimeout(timer);
+                    if (!response.ok) {
+                        const body = await response.text().catch(() => '');
+                        if (requestMeta.local) LocalRequestGate.cooldown(8000, 'chat HTTP ' + response.status);
+                        const failure = {
+                            provider: providerName,
+                            context: 'chat',
 		                            model: model,
 		                            type: 'http',
 	                            status: response.status,
@@ -11180,13 +11293,18 @@ CRITICAL GAME RULES (NEVER violate these):
                         text = data.response.trim();
                     }
                     return text || '';
-	                } catch (error) {
-	                    clearTimeout(timer);
-		                    if (error.name === 'AbortError') Debug.warn('[Chat] Request timed out');
-		                    else Debug.warn('[Chat] Request error:', error.message);
-		                    ModelRouter.recordFailure({
-		                        provider: providerName,
-		                        context: 'chat',
+                } catch (error) {
+                    clearTimeout(timer);
+                    if (error.name === 'AbortError') {
+                        if (requestMeta.local) LocalRequestGate.cooldown(12000, 'chat timeout');
+                        Debug.warn('[Chat] Request timed out');
+                    } else if (error.code === 'local_llm_busy' || error.code === 'local_llm_cooldown') {
+                        Debug.warn('[Chat] Local request skipped:', error.code);
+                        return '';
+                    } else Debug.warn('[Chat] Request error:', error.message);
+                    ModelRouter.recordFailure({
+                        provider: providerName,
+                        context: 'chat',
 		                        model: model,
 	                        type: error.name === 'AbortError' ? 'timeout' : 'exception',
 	                        message: error.message
@@ -11195,10 +11313,14 @@ CRITICAL GAME RULES (NEVER violate these):
 	                }
 	            };
 
-	            const tryLocalChat = async (reason) => {
-	                if (!Config.localEndpoint || !Config.localModel) return '';
-	                Debug.log(`[Chat] Trying local LM Studio (${reason}):`, Config.localModel);
-	                const text = await _tryRequest(
+            const tryLocalChat = async (reason) => {
+                if (!Config.localEndpoint || !Config.localModel) return '';
+                if (!LocalRequestGate.canStart('chat')) {
+                    Debug.warn('[Chat] Local chat skipped; local model is busy or cooling down.');
+                    return '';
+                }
+                Debug.log(`[Chat] Trying local LM Studio (${reason}):`, Config.localModel);
+                const text = await _tryRequest(
 	                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 220, 12000,
 	                    {
 	                        messages: [{ role: 'user', content: prompt }],
@@ -11469,6 +11591,8 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
                 const model = Config.getChatModel();
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                if (isLocal && !LocalRequestGate.canStart('ambient_item')) return;
 
                 const body = JSON.stringify({
                     model: model,
@@ -11477,7 +11601,9 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     temperature: 0.8
                 });
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = isLocal
+                    ? await LocalRequestGate.run('ambient_item', async () => await fetch(endpoint, { method: 'POST', headers, body }))
+                    : await fetch(endpoint, { method: 'POST', headers, body });
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -11735,6 +11861,8 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
                 const model = Config.getChatModel();
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                if (isLocal && !LocalRequestGate.canStart('proactive_chat')) return;
                 const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `Speak first on your own initiative in ONE short line, under 16 words.\n` +
@@ -11750,7 +11878,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const timer = setTimeout(() => controller.abort(), 1400);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    const performFetch = async () => await fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
@@ -11761,6 +11889,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                             temperature: 0.85
                         })
                     });
+                    resp = isLocal ? await LocalRequestGate.run('proactive_chat', performFetch) : await performFetch();
                 } finally {
                     clearTimeout(timer);
                 }
@@ -11879,6 +12008,8 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
                 const model = Config.getChatModel();
+                const isLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                if (isLocal && !LocalRequestGate.canStart('autonomy_comment')) return;
                 const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `Say ONE short line, under 12 words, before you ${String(action).toLowerCase()} something.\n` +
@@ -11895,7 +12026,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const timer = setTimeout(() => controller.abort(), 1200);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    const performFetch = async () => await fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
@@ -11906,6 +12037,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                             temperature: 0.85
                         })
                     });
+                    resp = isLocal ? await LocalRequestGate.run('autonomy_comment', performFetch) : await performFetch();
                 } finally {
                     clearTimeout(timer);
                 }
@@ -11991,10 +12123,14 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 	                return false;
 	            };
 	            try {
-	                const endpoint = Config.getEndpoint();
-	                const headers = Config.getHeaders();
-	                const model = Config.getChatModel();
-	                const prompt = `You are ${Config.companionName}, a companion in Fear & Hunger.\n` +
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const endpointIsLocal = LocalRequestGate.isLocalEndpoint(endpoint);
+                if (endpointIsLocal && !LocalRequestGate.canStart('support_prompt')) {
+                    return markSource(fallback, 'fallback_local_busy');
+                }
+                const prompt = `You are ${Config.companionName}, a companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `You ARE ${Config.companionName}. Never refer to yourself as another person.\n` +
                     `Write ONE short approval request, under 14 words.\n` +
@@ -12017,13 +12153,14 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 	                }, isLocal
 	                    ? Config.getLocalGenerationOptions({ temperature: 0.45 })
 	                    : Config.getSamplingOptions({ temperature: 0.45 }, { includeTopK: false })));
-	                let resp;
-	                const requestStart = performance.now();
-	                try {
-	                    resp = await fetch(endpoint, { method: 'POST', headers, signal: controller.signal, body });
-	                } finally {
-	                    clearTimeout(timer);
-	                }
+                let resp;
+                const requestStart = performance.now();
+                try {
+                    const performFetch = async () => await fetch(endpoint, { method: 'POST', headers, signal: controller.signal, body });
+                    resp = endpointIsLocal ? await LocalRequestGate.run('support_prompt', performFetch) : await performFetch();
+                } finally {
+                    clearTimeout(timer);
+                }
 	                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 	                const data = await resp.json();
 	                const llmStats = LlmTelemetry.fromResponse(data, performance.now() - requestStart);
