@@ -8881,19 +8881,8 @@ Respond ONLY with this JSON:
             const leashLimit = Math.max(1, this._state.mode === 'return' ? 0 : Config.autonomyMaxDetourDistance);
             const distToPlayer = this._distance(follower, player);
             if (this._state.mode === 'follow') {
-                if (this._isRoomSettling() && distToPlayer <= 1) return;
-                if (distToPlayer <= 2) return;
-                if (!this._state.followAnchor || this._state.followAnchor.expiresAt <= now || this._distance(follower, this._state.followAnchor) <= 0) {
-                    this._state.followAnchor = this._pickFollowAnchor(player);
-                }
-                const anchor = this._state.followAnchor;
                 if (distToPlayer > leashLimit + 1) {
                     const dir = follower.findDirectionTo(player.x, player.y);
-                    if (dir > 0) this._tryMoveStraight(follower, dir);
-                    return;
-                }
-                if (anchor && this._distance(follower, anchor) > 0 && distToPlayer >= 1 && distToPlayer <= Math.max(2, leashLimit + 1)) {
-                    const dir = follower.findDirectionTo(anchor.x, anchor.y);
                     if (dir > 0) this._tryMoveStraight(follower, dir);
                 }
                 return;
