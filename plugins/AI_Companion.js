@@ -10338,7 +10338,7 @@ Respond ONLY with this JSON:
 	            const uncertaintyRule = Config.language === 'es'
 	                ? 'Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.'
 	                : 'Do NOT say "I do not know" or "I am not sure" unless the information is truly not available in the context above.';
-	            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. ${uncertaintyRule}\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. ${uncertaintyRule}\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nSTYLE RULE: Dialogue only. Do NOT write parentheticals, roleplay narration, body language, facial expressions, or imagined surroundings. Do NOT say things like "(Mark glances...)" or narrate what you do unless the game context explicitly provides it.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
             pushSection('RESPONSE CONTRACT', playerSection);
 
             return sections;
@@ -11079,45 +11079,46 @@ CRITICAL GAME RULES (NEVER violate these):
         /**
          * Answer mode instructions based on intent
          */
-	        _buildInstructions(intent) {
-	            const unknownExample = Config.language === 'es'
-	                ? 'e.g. "No lo reconozco..." or "No sé qué es..."'
-	                : 'e.g. "I do not recognize it..." or "I do not know what it is..."';
-	            const anchors = `\nHARD ANCHORS (NEVER violate):\n- Never betray the player\n- Never sacrifice allies without consent\n- Never break immersion\n- Always maintain core loyalty\n- NEVER mention "database", "base de datos", "KB", "data", or any technical/meta terms. You are a CHARACTER IN THE GAME, not an AI.\n- If you don't have information, say it naturally in character (${unknownExample}) — NEVER reference data sources.\n`;
+        _buildInstructions(intent) {
+            const unknownExample = Config.language === 'es'
+                ? 'e.g. "No lo reconozco..." or "No sé qué es..."'
+                : 'e.g. "I do not recognize it..." or "I do not know what it is..."';
+            const anchors = `\nHARD ANCHORS (NEVER violate):\n- Never betray the player\n- Never sacrifice allies without consent\n- Never break immersion\n- Always maintain core loyalty\n- NEVER mention "database", "base de datos", "KB", "data", or any technical/meta terms. You are a CHARACTER IN THE GAME, not an AI.\n- If you don't have information, say it naturally in character (${unknownExample}) — NEVER reference data sources.\n`;
+            const noStageDirections = 'STYLE RULE: Speak as dialogue only. Do NOT write stage directions, parentheticals, body language, facial expressions, camera-like narration, or imagined surroundings. No lines like "(Mark glances...)" or "he shifts his weight." Do not narrate what is not explicitly visible in LIVE NEARBY DETECTION.\n';
 
             if (intent && intent.containerQuery) {
-                return anchors + 'MODE: CONTAINER JUDGMENT — The player is asking what might be inside nearby containers. You do NOT have exact loot data unless it is explicitly shown above. Do NOT invent specific item names, rare artifacts, enemies, rituals, or stat gains. Speak only in broad terms like supplies, scraps, something useful, or say we need to open the container to know for sure.\n';
+                return anchors + noStageDirections + 'MODE: CONTAINER JUDGMENT — The player is asking what might be inside nearby containers. You do NOT have exact loot data unless it is explicitly shown above. Do NOT invent specific item names, rare artifacts, enemies, rituals, or stat gains. Speak only in broad terms like supplies, scraps, something useful, or say we need to open the container to know for sure.\n';
             }
 
             if (intent && intent.primary === 'trade_recall') {
-                return anchors + 'MODE: PURCHASE RECALL — The player is asking what you bought or did at a merchant/shop. Answer ONLY from PURCHASE MEMORY above. Do NOT mention found items, pickups, equipped gear, starting equipment, or inventory unless PURCHASE MEMORY explicitly says it was bought. If PURCHASE MEMORY says no trade memory is stored, admit you do not remember buying anything.\n';
+                return anchors + noStageDirections + 'MODE: PURCHASE RECALL — The player is asking what you bought or did at a merchant/shop. Answer ONLY from PURCHASE MEMORY above. Do NOT mention found items, pickups, equipped gear, starting equipment, or inventory unless PURCHASE MEMORY explicitly says it was bought. If PURCHASE MEMORY says no trade memory is stored, admit you do not remember buying anything.\n';
             }
 
-	            switch (intent.primary) {
-	                case 'trade_recall':
-	                    return anchors + 'MODE: PURCHASE RECALL — Answer ONLY from PURCHASE MEMORY above. Do NOT answer from pickups or equipment.\n';
-	                case 'memory_recall':
-	                    return anchors + 'MODE: STORY MEMORY — The player is asking what we remember, what we have done, or what our goals are. Answer from STORY GOALS AND PROGRESS, EVENT MEMORY, and conversation memory. Do NOT answer as if this is only about the last battle unless the player explicitly asks about combat.\n';
-	                case 'item_info':
-                    return anchors + 'MODE: ITEM KNOWLEDGE — You MUST answer ONLY from the ITEM DATA section above. State each item\'s effect exactly as described in the data. Do NOT invent, guess, or assume any item effects. If an item is NOT listed in ITEM DATA above, say you don\'t recognize it. NEVER claim an item heals, cures, or does something that is not explicitly stated in the provided data. This is a horror game — items have SPECIFIC effects that differ from typical RPGs.\n';
+            switch (intent.primary) {
+                case 'trade_recall':
+                    return anchors + noStageDirections + 'MODE: PURCHASE RECALL — Answer ONLY from PURCHASE MEMORY above. Do NOT answer from pickups or equipment.\n';
+                case 'memory_recall':
+                    return anchors + noStageDirections + 'MODE: STORY MEMORY — The player is asking what we remember, what we have done, or what our goals are. Answer from STORY GOALS AND PROGRESS, EVENT MEMORY, and conversation memory. Do NOT answer as if this is only about the last battle unless the player explicitly asks about combat.\n';
+                case 'item_info':
+                    return anchors + noStageDirections + 'MODE: ITEM KNOWLEDGE — You MUST answer ONLY from the ITEM DATA section above. State each item\'s effect exactly as described in the data. Do NOT invent, guess, or assume any item effects. If an item is NOT listed in ITEM DATA above, say you don\'t recognize it. NEVER claim an item heals, cures, or does something that is not explicitly stated in the provided data. This is a horror game — items have SPECIFIC effects that differ from typical RPGs.\n';
                 case 'tactical':
-                    return anchors + 'MODE: TACTICAL — Give combat advice ONLY from the KNOWLEDGE section above. If enemy data is provided, mention ONLY the limb priorities, coin flip turns, and tactics listed in that data. Do NOT invent weaknesses, resistances, attack patterns, or abilities. Do NOT claim enemies use "sorcery" or any attack type not explicitly listed. Refer to the player\'s ACTUAL equipped weapon (shown in equipment data). If no enemy data is provided, give only generic survival advice like "be careful" or "guard when unsure". NEVER make up game mechanics.\n';
-	                case 'recent_battle':
-	                    return anchors + 'MODE: RECALL — The player asks about a recent battle. Answer ONLY from the LAST BATTLE DATA above. Name the enemies you fought. Do NOT invent details not present in the data.\n';
+                    return anchors + noStageDirections + 'MODE: TACTICAL — Give combat advice ONLY from the KNOWLEDGE section above. If enemy data is provided, mention ONLY the limb priorities, coin flip turns, and tactics listed in that data. Do NOT invent weaknesses, resistances, attack patterns, or abilities. Do NOT claim enemies use "sorcery" or any attack type not explicitly listed. Refer to the player\'s ACTUAL equipped weapon (shown in equipment data). If no enemy data is provided, give only generic survival advice like "be careful" or "guard when unsure". NEVER make up game mechanics.\n';
+                case 'recent_battle':
+                    return anchors + noStageDirections + 'MODE: RECALL — The player asks about a recent battle. Answer ONLY from the LAST BATTLE DATA above. Name the enemies you fought. Do NOT invent details not present in the data.\n';
                 case 'npc_recall':
-                    return anchors + 'MODE: NPC RECALL — The player is asking who just spoke to us or what that NPC said. Answer from RECENT NPC DIALOGUE and RECENT NPC CONTACT only. Name the speaker explicitly. Do NOT answer from combat memory unless the NPC dialogue itself mentions combat.\n';
+                    return anchors + noStageDirections + 'MODE: NPC RECALL — The player is asking who just spoke to us or what that NPC said. Answer from RECENT NPC DIALOGUE and RECENT NPC CONTACT only. Name the speaker explicitly. Do NOT answer from combat memory unless the NPC dialogue itself mentions combat.\n';
                 case 'lore':
-                    return anchors + 'MODE: LORE — Be atmospheric and descriptive about the location/character. Draw ONLY from provided data. If no lore data is provided, respond atmospherically without inventing specific game facts. STATIC LOCATION KNOWLEDGE describes the area in general; do NOT claim you currently see an NPC, enemy, or object unless LIVE NEARBY DETECTION or RECENT NPC DIALOGUE explicitly shows it.\n';
+                    return anchors + noStageDirections + 'MODE: LORE — Be atmospheric and descriptive about the location/character. Draw ONLY from provided data. If no lore data is provided, respond with mood only, not invented sights. STATIC LOCATION KNOWLEDGE describes the area in general; do NOT claim you currently see an NPC, enemy, object, gesture, or environmental detail unless LIVE NEARBY DETECTION or RECENT NPC DIALOGUE explicitly shows it.\n';
                 case 'status_help':
-                    return anchors + 'MODE: HEALER — Answer ONLY from the STATUS EFFECTS data above. A status effect (like Fasmofobia) is a PERMANENT debuff on the character until cured — it does NOT go away on its own, it does NOT depend on what enemy you are fighting, and it does NOT deal direct damage. State ONLY the cure listed in the data. Do NOT invent cures or claim the effect will "pass" or "fade".\n';
+                    return anchors + noStageDirections + 'MODE: HEALER — Answer ONLY from the STATUS EFFECTS data above. A status effect (like Fasmofobia) is a PERMANENT debuff on the character until cured — it does NOT go away on its own, it does NOT depend on what enemy you are fighting, and it does NOT deal direct damage. State ONLY the cure listed in the data. Do NOT invent cures or claim the effect will "pass" or "fade".\n';
                 case 'social':
-                    return anchors + 'MODE: COMPANION SOCIAL — The player is asking about party members or the group. Focus your response on the current party makeup (shown in context) or the specific member mentioned. Give your personal opinion in character based on your backstory. Do NOT talk about items or inventory.\n';
+                    return anchors + noStageDirections + 'MODE: COMPANION SOCIAL — The player is asking about party members or the group. Focus your response on the current party makeup (shown in context) or the specific member mentioned. Give your personal opinion in character based on your backstory. Do NOT talk about items or inventory.\n';
                 case 'location':
-                    return anchors + 'MODE: LOCATION — Distinguish STATIC LOCATION KNOWLEDGE from LIVE NEARBY DETECTION. Use STATIC LOCATION KNOWLEDGE for general area facts only. If the player asks what you see or what is nearby, answer ONLY from LIVE NEARBY DETECTION. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now.\n';
+                    return anchors + noStageDirections + 'MODE: LOCATION — Distinguish STATIC LOCATION KNOWLEDGE from LIVE NEARBY DETECTION. Use STATIC LOCATION KNOWLEDGE for general area facts only. If the player asks what you see or what is nearby, answer ONLY from LIVE NEARBY DETECTION. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now.\n';
                 case 'generic_query':
-                    return anchors + 'MODE: COMPANION — Respond naturally in character. Be brief. Use ONLY the context provided above. Do NOT invent game mechanics, item effects, combat advice, or current visual details. If you don\'t know something, say so in character.\n';
+                    return anchors + noStageDirections + 'MODE: COMPANION — Respond naturally in character. Be brief. Use ONLY the context provided above. Do NOT invent game mechanics, item effects, combat advice, or current visual details. If you don\'t know something, say so in character.\n';
                 default:
-                    return anchors + 'MODE: COMPANION — Respond naturally in character. Be brief. Do NOT invent game mechanics or give specific tactical advice unless data is provided above.\n';
+                    return anchors + noStageDirections + 'MODE: COMPANION — Respond naturally in character. Be brief. Do NOT invent game mechanics or give specific tactical advice unless data is provided above.\n';
             }
         },
 
