@@ -714,7 +714,6 @@
     const LocalRequestGate = {
         _active: false,
         _context: '',
-        _cooldownUntil: 0,
 
         isLocalEndpoint(endpoint) {
             const local = Config && Config.getLocalEndpoint ? Config.getLocalEndpoint() : '';
@@ -722,7 +721,6 @@
         },
 
         canStart(context) {
-            if (Date.now() < this._cooldownUntil) return false;
             if (this._active) {
                 Debug.log('[Local LLM] Busy; skipping', context || 'request', 'because', this._context || 'another request', 'is active.');
                 return false;
@@ -730,19 +728,9 @@
             return true;
         },
 
-        cooldown(ms, reason) {
-            const duration = Math.min(6000, Math.max(1000, Number(ms) || 3000));
-            this._cooldownUntil = Math.max(this._cooldownUntil || 0, Date.now() + duration);
-            if (reason) Debug.warn('[Local LLM] Cooldown', duration + 'ms:', reason);
-        },
-
-        remainingCooldownMs() {
-            return Math.max(0, (this._cooldownUntil || 0) - Date.now());
-        },
-
         async run(context, fn) {
             if (!this.canStart(context)) {
-                const error = new Error(Date.now() < this._cooldownUntil ? 'local_llm_cooldown' : 'local_llm_busy');
+                const error = new Error('local_llm_busy');
                 error.code = error.message;
                 throw error;
             }
@@ -4562,7 +4550,7 @@ Respond ONLY with this JSON:
                     });
                 } catch (error) {
                     if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
-                        LocalRequestGate.cooldown(6000, 'combat timeout');
+                        Debug.warn('[Combat] Local request timed out.');
                     }
                     throw error;
                 } finally {
@@ -7516,7 +7504,6 @@ Respond ONLY with this JSON:
             consentPromptPending: false,
             merchantSessionEventId: null,
             merchantSessionUntil: 0,
-            localCooldownUntil: 0,
             localTimeoutCount: 0,
             eventCooldowns: {},
             searchedEvents: {}
@@ -7664,7 +7651,6 @@ Respond ONLY with this JSON:
             this._state.consentPromptPending = false;
             this._state.merchantSessionEventId = null;
             this._state.merchantSessionUntil = 0;
-            this._state.localCooldownUntil = 0;
             this._state.localTimeoutCount = 0;
         },
 
@@ -8444,7 +8430,7 @@ Respond ONLY with this JSON:
         _logTick(snapshot, decision, source, latencyMs, errorMessage) {
             try {
                 const localSource = String(source || '');
-                const hasLocalStats = localSource === 'local' || localSource === 'local_follow_target' || localSource === 'local_cooldown' || /^llm_/.test(localSource);
+                const hasLocalStats = localSource === 'local' || localSource === 'local_follow_target' || /^llm_/.test(localSource);
                 const hasRawLocalResponse = localSource === 'local' || localSource === 'local_follow_target' || localSource === 'llm_parse_fallback';
                 const mapName = typeof MapContextHelper !== 'undefined' && $gameMap
                     ? MapContextHelper.getFriendlyMapName($gameMap.mapId(), $gameMap.displayName())
@@ -8531,6 +8517,7 @@ Respond ONLY with this JSON:
                     return;
                 }
                 const decision = await this._requestDecision(snapshot);
+                if (!this.canRun()) return;
                 const finalDecision = decision || this._goalFreeFallback(snapshot, 'llm unavailable');
                 this._applyDecision(finalDecision, snapshot);
                 this._logTick(snapshot, finalDecision, (finalDecision && finalDecision._autonomySource) || 'fallback', Date.now() - start, null);
@@ -8560,18 +8547,9 @@ Respond ONLY with this JSON:
             if (this.isBattleActive()) return Object.assign({}, fallback, { _autonomySource: 'battle_skip', reason: 'battle active' });
             if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({}, fallback, { _autonomySource: 'no_model' });
             if (!LocalRequestGate.canStart('autonomy')) {
-                const remaining = Math.ceil(LocalRequestGate.remainingCooldownMs() / 1000);
                 return Object.assign({}, fallback, {
-                    _autonomySource: remaining > 0 ? 'local_cooldown' : 'local_busy',
-                    reason: remaining > 0 ? `local model cooling down (${remaining}s)` : 'local model busy with another request'
-                });
-            }
-            const now = Date.now();
-            if (this._state.localCooldownUntil && now < this._state.localCooldownUntil) {
-                const remaining = Math.ceil((this._state.localCooldownUntil - now) / 1000);
-                return Object.assign({}, fallback, {
-                    _autonomySource: 'local_cooldown',
-                    reason: `local model cooling down (${remaining}s)`
+                    _autonomySource: 'local_busy',
+                    reason: 'local model busy with another request'
                 });
             }
             this._state.lastRawLocalContent = '';
@@ -8619,19 +8597,15 @@ Respond ONLY with this JSON:
                     });
                 });
             } catch (error) {
-                if (error && (error.code === 'local_llm_busy' || error.code === 'local_llm_cooldown')) {
-                    const remaining = Math.ceil(LocalRequestGate.remainingCooldownMs() / 1000);
+                if (error && error.code === 'local_llm_busy') {
                     return Object.assign({}, fallback, {
-                        _autonomySource: error.code === 'local_llm_cooldown' ? 'local_cooldown' : 'local_busy',
-                        reason: remaining > 0 ? `local model cooling down (${remaining}s)` : 'local model busy with another request'
+                        _autonomySource: 'local_busy',
+                        reason: 'local model busy with another request'
                     });
                 }
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
                     const latencyMs = performance.now() - requestStart;
                     this._state.localTimeoutCount = (this._state.localTimeoutCount || 0) + 1;
-                    const cooldownMs = 3000;
-                    this._state.localCooldownUntil = Date.now() + cooldownMs;
-                    LocalRequestGate.cooldown(cooldownMs, 'autonomy timeout');
                     this._state.lastLocalStats = {
                         prompt_tokens: null,
                         completion_tokens: null,
@@ -8640,10 +8614,9 @@ Respond ONLY with this JSON:
                         latency_ms: Math.round(latencyMs),
                         has_usage: false,
                         timed_out: true,
-                        timeout_ms: timeoutMs,
-                        cooldown_ms: cooldownMs
+                        timeout_ms: timeoutMs
                     };
-                    Debug.warn('[Autonomy] Local request timed out; cooling down for', cooldownMs + 'ms');
+                    Debug.warn('[Autonomy] Local request timed out.');
                     return Object.assign({}, fallback, { _autonomySource: 'llm_timeout', reason: 'local model timed out' });
                 }
                 throw error;
@@ -8652,8 +8625,6 @@ Respond ONLY with this JSON:
             }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
-                this._state.localCooldownUntil = Date.now() + 3000;
-                LocalRequestGate.cooldown(3000, 'autonomy HTTP ' + response.status);
                 this._state.lastLocalStats = {
                     prompt_tokens: null,
                     completion_tokens: null,
@@ -8661,15 +8632,13 @@ Respond ONLY with this JSON:
                     completion_tokens_per_second: null,
                     latency_ms: Math.round(performance.now() - requestStart),
                     has_usage: false,
-                    http_status: response.status,
-                    cooldown_ms: 3000
+                    http_status: response.status
                 };
                 return Object.assign({}, fallback, { _autonomySource: 'llm_http_error', reason: 'local model HTTP error' });
             }
 
 	            const data = await response.json();
 	            this._state.lastLocalStats = LlmTelemetry.fromResponse(data, performance.now() - requestStart);
-	            this._state.localCooldownUntil = 0;
 	            this._state.localTimeoutCount = 0;
 	            this._state.lastRawLocalContent = String(
                 data &&
@@ -11269,7 +11238,6 @@ CRITICAL GAME RULES (NEVER violate these):
                     clearTimeout(timer);
                     if (!response.ok) {
                         const body = await response.text().catch(() => '');
-                        if (requestMeta.local) LocalRequestGate.cooldown(8000, 'chat HTTP ' + response.status);
                         const failure = {
                             provider: providerName,
                             context: 'chat',
@@ -11302,9 +11270,8 @@ CRITICAL GAME RULES (NEVER violate these):
                 } catch (error) {
                     clearTimeout(timer);
                     if (error.name === 'AbortError') {
-                        if (requestMeta.local) LocalRequestGate.cooldown(12000, 'chat timeout');
                         Debug.warn('[Chat] Request timed out');
-                    } else if (error.code === 'local_llm_busy' || error.code === 'local_llm_cooldown') {
+                    } else if (error.code === 'local_llm_busy') {
                         Debug.warn('[Chat] Local request skipped:', error.code);
                         return '';
                     } else Debug.warn('[Chat] Request error:', error.message);
@@ -11322,7 +11289,7 @@ CRITICAL GAME RULES (NEVER violate these):
             const tryLocalChat = async (reason) => {
                 if (!Config.localEndpoint || !Config.localModel) return '';
                 if (!LocalRequestGate.canStart('chat')) {
-                    Debug.warn('[Chat] Local chat skipped; local model is busy or cooling down.');
+                    Debug.warn('[Chat] Local chat skipped; local model is busy.');
                     return '';
                 }
                 Debug.log(`[Chat] Trying local LM Studio (${reason}):`, Config.localModel);
