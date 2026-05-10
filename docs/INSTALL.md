@@ -18,6 +18,18 @@ chmod +x install.sh
 ./install.sh
 ```
 
+Install directly into a specific test copy:
+
+```bash
+./install.sh --install --path "/home/user/Games/Fear & Hunger English Clean"
+```
+
+Skip auto-detection if you have multiple local copies:
+
+```bash
+./install.sh --install --no-detect
+```
+
 If auto-detection fails, paste the full game folder path when prompted. The folder must contain:
 
 ```text
@@ -132,3 +144,35 @@ Run the installer and choose uninstall, or manually remove:
 ```
 
 Restore `plugins.js.bak` if the installer created one.
+
+## Fresh English Install Test
+
+Do not copy the English game into this repository. Keep it next to the repo or in a games folder:
+
+```text
+Fear And Hunger modding/
+  FearHunger-AI-Companion/        # git repo, mod only
+  Fear & Hunger V1.4.1/           # Spanish patched test copy
+  Fear & Hunger English Clean/    # clean English test copy, not committed
+```
+
+Install into the English copy explicitly:
+
+```bash
+cd "/home/asukate/Development/Fear And Hunger modding/FearHunger-AI-Companion"
+./install.sh --install --path "/home/asukate/Development/Fear And Hunger modding/Fear & Hunger English Clean"
+```
+
+Then launch that English copy and check:
+
+1. The title menu shows `AI Companion`.
+2. `FearHungerKB` is listed before `AI_Companion` in `www/js/plugins.js`.
+3. Chat opens with `C`.
+4. One battle completes without command-name errors.
+5. Logs appear under that English copy's `ai_companion_logs/` folder.
+
+Uninstall from that copy:
+
+```bash
+./install.sh --uninstall --path "/home/asukate/Development/Fear And Hunger modding/Fear & Hunger English Clean"
+```

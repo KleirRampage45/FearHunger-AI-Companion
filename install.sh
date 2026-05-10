@@ -15,6 +15,60 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ACTION=""
+GAME_PATH=""
+NO_DETECT=0
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./install.sh [options]
+
+Options:
+  --path <game_dir>     Install/uninstall against this Fear & Hunger folder.
+  --install             Install without showing the action menu.
+  --uninstall           Uninstall without showing the action menu.
+  --no-detect           Skip auto-detection and ask for a path if --path is absent.
+  -h, --help            Show this help.
+
+Examples:
+  ./install.sh --path "/home/user/Games/Fear & Hunger English Clean"
+  ./install.sh --install --path "/home/user/Games/Fear & Hunger English Clean"
+  ./install.sh --uninstall --path "/home/user/Games/Fear & Hunger English Clean"
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --path)
+            shift
+            if [ -z "${1:-}" ]; then
+                echo "Missing value for --path"
+                exit 1
+            fi
+            GAME_PATH="$1"
+            ;;
+        --install)
+            ACTION="install"
+            ;;
+        --uninstall)
+            ACTION="uninstall"
+            ;;
+        --no-detect)
+            NO_DETECT=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 echo -e "${CYAN}${BOLD}"
 echo "═══════════════════════════════════════════════════════════"
@@ -247,29 +301,35 @@ if [ ! -f "$SCRIPT_DIR/plugins/AI_Companion.js" ]; then
     exit 1
 fi
 
-# Menu
-echo ""
-echo -e "  ${BOLD}1)${NC} Install mod"
-echo -e "  ${BOLD}2)${NC} Uninstall mod"
-echo -e "  ${BOLD}3)${NC} Exit"
-echo ""
-read -rp "$(echo -e "${CYAN}Choose an option [1-3]: ${NC}")" choice
+if [ -z "$ACTION" ]; then
+    # Menu
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Install mod"
+    echo -e "  ${BOLD}2)${NC} Uninstall mod"
+    echo -e "  ${BOLD}3)${NC} Exit"
+    echo ""
+    read -rp "$(echo -e "${CYAN}Choose an option [1-3]: ${NC}")" choice
 
-case "$choice" in
-    2) ACTION="uninstall" ;;
-    3) echo "Bye!"; exit 0 ;;
-    *) ACTION="install" ;;
-esac
+    case "$choice" in
+        2) ACTION="uninstall" ;;
+        3) echo "Bye!"; exit 0 ;;
+        *) ACTION="install" ;;
+    esac
+fi
 
 # Find or ask for game path
 echo ""
-echo -e "${CYAN}Searching for Fear & Hunger installation...${NC}"
+if [ -n "$GAME_PATH" ]; then
+    echo -e "${CYAN}Using provided game path: ${BOLD}$GAME_PATH${NC}"
+elif [ "$NO_DETECT" -eq 0 ]; then
+    echo -e "${CYAN}Searching for Fear & Hunger installation...${NC}"
 
-if find_game_path; then
-    echo -e "${GREEN}✓ Found game at: ${BOLD}$GAME_PATH${NC}"
-    read -rp "$(echo -e "${CYAN}Use this path? [Y/n]: ${NC}")" confirm
-    if [[ "$confirm" =~ ^[Nn] ]]; then
-        GAME_PATH=""
+    if find_game_path; then
+        echo -e "${GREEN}✓ Found game at: ${BOLD}$GAME_PATH${NC}"
+        read -rp "$(echo -e "${CYAN}Use this path? [Y/n]: ${NC}")" confirm
+        if [[ "$confirm" =~ ^[Nn] ]]; then
+            GAME_PATH=""
+        fi
     fi
 fi
 
