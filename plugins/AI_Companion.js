@@ -761,6 +761,18 @@
             return models.filter(m => !this._failedModels.has(m));
         },
 
+        getGroqFallbackModels(context) {
+            let models;
+            if (context === 'combat') {
+                models = PROVIDERS.groq.defaultModels.slice();
+            } else if (context === 'ambient') {
+                models = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'];
+            } else {
+                models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+            }
+            return models.filter(m => !this._failedModels.has(m));
+        },
+
 	        markFailed(model) {
 	            this._failedModels.add(model);
 	            this._failedTimestamps[model] = Date.now();
@@ -4431,7 +4443,7 @@ Respond ONLY with this JSON:
                         'HTTP-Referer': 'https://fear-and-hunger-mod.local',
                         'X-Title': 'Fear & Hunger AI Companion'
                     };
-                    const models = ModelRouter.getModelsForContext(context);
+                    const models = ModelRouter.getGroqFallbackModels(context);
                     for (const model of models) {
                         try {
                             const data = await _tryFetch(Config.apiEndpoint, groqHeaders, model, 300, false);
@@ -4662,7 +4674,7 @@ Respond ONLY with this JSON:
                         'HTTP-Referer': 'https://fear-and-hunger-mod.local',
                         'X-Title': 'Fear & Hunger AI Companion'
                     };
-                    const models = ModelRouter.getModelsForContext('combat');
+                    const models = ModelRouter.getGroqFallbackModels('combat');
                     for (const model of models) {
                         const groqResult = _trySyncRequest(
                             Config.apiEndpoint, groqHeaders, model, 300, false
@@ -11027,7 +11039,9 @@ CRITICAL GAME RULES (NEVER violate these):
                 return '';
             }
 
-            const models = ModelRouter.getModelsForContext('chat');
+            const models = (Config.apiProvider === 'local' && Config.apiKey)
+                ? ModelRouter.getGroqFallbackModels('chat')
+                : ModelRouter.getModelsForContext('chat');
             for (const model of models) {
                 const text = await _tryRequest(
                     groqEndpoint, groqHeaders, model, 150, 8000,
@@ -14540,7 +14554,9 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
                 ? Config.apiEndpoint
                 : Config.getEndpoint();
 
-            const models = ModelRouter.getModelsForContext('chat');
+            const models = (Config.apiProvider === 'local' && Config.apiKey)
+                ? ModelRouter.getGroqFallbackModels('chat')
+                : ModelRouter.getModelsForContext('chat');
             for (const model of models) {
                 try {
                     const xhr = new XMLHttpRequest();
