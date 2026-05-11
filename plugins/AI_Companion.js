@@ -804,6 +804,58 @@
         battleState: null
     };
 
+    const LocalRequestQueue = {
+        _tail: Promise.resolve(),
+        _active: false,
+        _pending: 0,
+        _activeLabel: null,
+
+        isBusy() {
+            return this._active || this._pending > 0;
+        },
+
+        async run(label, fn, options) {
+            options = options || {};
+            if (options.skipIfBusy && this.isBusy()) {
+                throw new Error('local busy');
+            }
+            this._pending++;
+            const job = this._tail.then(async () => {
+                this._pending = Math.max(0, this._pending - 1);
+                this._active = true;
+                this._activeLabel = label || 'local';
+                const start = Date.now();
+                try {
+                    Debug.log('[Local LLM] start:', this._activeLabel);
+                    return await fn();
+                } finally {
+                    Debug.log('[Local LLM] done:', this._activeLabel, Date.now() - start + 'ms');
+                    this._active = false;
+                    this._activeLabel = null;
+                }
+            });
+            this._tail = job.catch(() => {});
+            return job;
+        },
+
+        enterSync(label) {
+            if (this.isBusy()) return false;
+            this._active = true;
+            this._activeLabel = label || 'local_sync';
+            return true;
+        },
+
+        leaveSync() {
+            this._active = false;
+            this._activeLabel = null;
+        },
+
+        runOptional(label, fn) {
+            if (Config.apiProvider !== 'local') return fn();
+            return this.run(label, fn, { skipIfBusy: true });
+        }
+    };
+
     //=========================================================================
     // Thesis Logger — Persistent telemetry for research data collection
     //=========================================================================
@@ -1761,7 +1813,7 @@ Reply with ONLY the category name, nothing else.`;
                 const models = ModelRouter.getModelsForContext('chat');
                 const model = models[0]; // Use fastest available model
 
-                const response = await fetch(endpoint, {
+                const response = await LocalRequestQueue.runOptional('intent_classify', () => fetch(endpoint, {
                     method: 'POST',
                     headers: headers,
                     signal: controller.signal,
@@ -1771,7 +1823,7 @@ Reply with ONLY the category name, nothing else.`;
                         temperature: 0.1,
                         max_tokens: 20
                     })
-                });
+                }));
                 clearTimeout(timer);
 
                 if (!response.ok) return null;
@@ -4418,7 +4470,9 @@ Respond ONLY with this JSON:
             if (Config.apiProvider === 'local') {
                 try {
                     Debug.log('[Combat Async] Trying local AI...');
-                    return await _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true);
+                    return await LocalRequestQueue.run('combat_async', () =>
+                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true)
+                    );
                 } catch (error) {
                     Debug.warn('[Combat Async] Local failed:', error.message);
                 }
@@ -4643,10 +4697,20 @@ Respond ONLY with this JSON:
 
             // === STRATEGY: Local first, then Groq fallback ===
             if (Config.apiProvider === 'local') {
-                Debug.log('[Combat] Trying local AI...');
-                const localResult = _trySyncRequest(
-                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true
-                );
+                let localResult = null;
+                if (LocalRequestQueue.enterSync('combat_sync')) {
+                    try {
+                        Debug.log('[Combat] Trying local AI...');
+                        localResult = _trySyncRequest(
+                            Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true
+                        );
+                    } finally {
+                        LocalRequestQueue.leaveSync();
+                    }
+                } else {
+                    Debug.warn('[Combat] Local AI busy; skipping local sync request');
+                    localResult = { _requestFailed: true, _failure: { model: Config.localModel, type: 'busy', message: 'local request already running' } };
+                }
                 if (localResult && localResult._failure) failureChain.push(localResult._failure);
                 if (localResult && !localResult._validationFailed && !localResult._parseFailed && !localResult._requestFailed) {
                     _logCombatDecision(localResult, Config.localModel, 'local');
@@ -7723,7 +7787,7 @@ Respond ONLY with this JSON:
                 const timer = setTimeout(() => controller.abort(), 1400);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    resp = await LocalRequestQueue.runOptional('consent_text', () => fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
@@ -7733,7 +7797,7 @@ Respond ONLY with this JSON:
                             max_tokens: 42,
                             temperature: 0.8
                         })
-                    });
+                    }));
                 } finally {
                     clearTimeout(timer);
                 }
@@ -8318,6 +8382,7 @@ Respond ONLY with this JSON:
         async _requestDecision(snapshot) {
             const fallback = this._goalFreeFallback(snapshot, 'llm unavailable');
             if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'no_model' }, fallback);
+            if (LocalRequestQueue.isBusy()) return Object.assign({ _autonomySource: 'local_busy' }, fallback);
             this._state.lastRawLocalContent = '';
 
             const prompt = [
@@ -8345,7 +8410,7 @@ Respond ONLY with this JSON:
             const timer = setTimeout(() => controller.abort(), 4000);
             let response;
             try {
-                response = await fetch(Config.getLocalEndpoint(), {
+                response = await LocalRequestQueue.run('autonomy', () => fetch(Config.getLocalEndpoint(), {
                     method: 'POST',
                     headers: Config.getLocalHeaders(),
                     signal: controller.signal,
@@ -8362,8 +8427,11 @@ Respond ONLY with this JSON:
                         enable_thinking: false,
                         stop: ['<turn|>']
                     })
-                });
+                }), { skipIfBusy: true });
             } catch (error) {
+                if (error && /local busy/i.test(String(error.message || ''))) {
+                    return Object.assign({ _autonomySource: 'local_busy' }, fallback);
+                }
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
                     return Object.assign({ _autonomySource: 'llm_timeout' }, fallback);
                 }
@@ -8921,7 +8989,7 @@ Respond ONLY with this JSON:
                     const timer = setTimeout(() => controller.abort(), 1400);
                     let resp;
                     try {
-                        resp = await fetch(endpoint, {
+                        resp = await LocalRequestQueue.runOptional('loot_summary', () => fetch(endpoint, {
                             method: 'POST',
                             headers,
                             signal: controller.signal,
@@ -8931,7 +8999,7 @@ Respond ONLY with this JSON:
                                 max_tokens: 36,
                                 temperature: 0.8
                             })
-                        });
+                        }));
                     } finally {
                         clearTimeout(timer);
                     }
@@ -11257,7 +11325,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     temperature: 0.8
                 });
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = await LocalRequestQueue.runOptional('item_comment', () => fetch(endpoint, { method: 'POST', headers, body }));
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -11530,7 +11598,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const timer = setTimeout(() => controller.abort(), 1400);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    resp = await LocalRequestQueue.runOptional('proactive_comment', () => fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
@@ -11540,7 +11608,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                             max_tokens: 36,
                             temperature: 0.85
                         })
-                    });
+                    }));
                 } finally {
                     clearTimeout(timer);
                 }
@@ -11675,7 +11743,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const timer = setTimeout(() => controller.abort(), 1200);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    resp = await LocalRequestQueue.runOptional('autonomy_comment', () => fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
@@ -11685,7 +11753,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                             max_tokens: 30,
                             temperature: 0.85
                         })
-                    });
+                    }));
                 } finally {
                     clearTimeout(timer);
                 }
@@ -11765,7 +11833,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     max_tokens: 40,
                     temperature: 0.8
                 });
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = await LocalRequestQueue.runOptional('support_prompt', () => fetch(endpoint, { method: 'POST', headers, body }));
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -11899,7 +11967,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your hung
                     temperature: 0.8
                 });
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = await LocalRequestQueue.runOptional('hunger_comment', () => fetch(endpoint, { method: 'POST', headers, body }));
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -11977,7 +12045,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
                     temperature: 0.8
                 });
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = await LocalRequestQueue.runOptional('party_comment', () => fetch(endpoint, { method: 'POST', headers, body }));
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -12110,7 +12178,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                     temperature: 0.8
                 });
 
-                const resp = await fetch(endpoint, { method: 'POST', headers, body });
+                const resp = await LocalRequestQueue.runOptional('room_comment', () => fetch(endpoint, { method: 'POST', headers, body }));
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
@@ -12282,7 +12350,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const timer = setTimeout(() => controller.abort(), 1200);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    resp = await LocalRequestQueue.runOptional('ambient_gate', () => fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
@@ -12292,7 +12360,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                             max_tokens: 50,
                             temperature: 0.2
                         })
-                    });
+                    }));
                 } finally {
                     clearTimeout(timer);
                 }
@@ -12708,7 +12776,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const timer = setTimeout(() => controller.abort(), 1400);
                 let resp;
                 try {
-                    resp = await fetch(endpoint, {
+                    resp = await LocalRequestQueue.runOptional('equipment_prompt', () => fetch(endpoint, {
                         method: 'POST',
                         headers,
                         signal: controller.signal,
@@ -12718,7 +12786,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                             max_tokens: 44,
                             temperature: 0.8
                         })
-                    });
+                    }));
                 } finally {
                     clearTimeout(timer);
                 }
