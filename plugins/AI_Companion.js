@@ -809,9 +809,16 @@
         _active: false,
         _pending: 0,
         _activeLabel: null,
+        _serverBusyUntil: 0,
 
         isBusy() {
-            return this._active || this._pending > 0;
+            return this._active || this._pending > 0 || Date.now() < this._serverBusyUntil;
+        },
+
+        markDraining(ms, label) {
+            const until = Date.now() + Math.max(0, Number(ms) || 0);
+            if (until > this._serverBusyUntil) this._serverBusyUntil = until;
+            if (ms > 0) Debug.warn('[Local LLM] draining after abort:', label || this._activeLabel || 'local', ms + 'ms');
         },
 
         async run(label, fn, options) {
@@ -828,6 +835,11 @@
                 try {
                     Debug.log('[Local LLM] start:', this._activeLabel);
                     return await fn();
+                } catch (error) {
+                    if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
+                        this.markDraining(options.drainMs != null ? options.drainMs : 2500, this._activeLabel);
+                    }
+                    throw error;
                 } finally {
                     Debug.log('[Local LLM] done:', this._activeLabel, Date.now() - start + 'ms');
                     this._active = false;
@@ -852,7 +864,7 @@
 
         runOptional(label, fn) {
             if (Config.apiProvider !== 'local') return fn();
-            return this.run(label, fn, { skipIfBusy: true });
+            return this.run(label, fn, { skipIfBusy: true, drainMs: 1500 });
         }
     };
 
@@ -8381,8 +8393,12 @@ Respond ONLY with this JSON:
 
         async _requestDecision(snapshot) {
             const fallback = this._goalFreeFallback(snapshot, 'llm unavailable');
-            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return Object.assign({ _autonomySource: 'no_model' }, fallback);
-            if (LocalRequestQueue.isBusy()) return Object.assign({ _autonomySource: 'local_busy' }, fallback);
+            const withSource = (source, reason) => Object.assign({}, fallback, {
+                reason: reason || fallback.reason,
+                _autonomySource: source
+            });
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return withSource('no_model', 'no local model configured');
+            if (LocalRequestQueue.isBusy()) return withSource('local_busy', 'local model busy');
             this._state.lastRawLocalContent = '';
 
             const prompt = [
@@ -8407,7 +8423,7 @@ Respond ONLY with this JSON:
             ].join('\n');
 
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 4000);
+            const timer = setTimeout(() => controller.abort(), 6000);
             let response;
             try {
                 response = await LocalRequestQueue.run('autonomy', () => fetch(Config.getLocalEndpoint(), {
@@ -8427,13 +8443,13 @@ Respond ONLY with this JSON:
                         enable_thinking: false,
                         stop: ['<turn|>']
                     })
-                }), { skipIfBusy: true });
+                }), { skipIfBusy: true, drainMs: 7000 });
             } catch (error) {
                 if (error && /local busy/i.test(String(error.message || ''))) {
-                    return Object.assign({ _autonomySource: 'local_busy' }, fallback);
+                    return withSource('local_busy', 'local model busy');
                 }
                 if (error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || '')))) {
-                    return Object.assign({ _autonomySource: 'llm_timeout' }, fallback);
+                    return withSource('llm_timeout', 'local model timed out');
                 }
                 throw error;
             } finally {
@@ -8441,7 +8457,7 @@ Respond ONLY with this JSON:
             }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
-                return Object.assign({ _autonomySource: 'llm_http_error' }, fallback);
+                return withSource('llm_http_error', 'local http error ' + response.status);
             }
 
             const data = await response.json();
@@ -8459,7 +8475,7 @@ Respond ONLY with this JSON:
             }
             let decision = GeminiAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
-                return Object.assign({ _autonomySource: 'llm_parse_fallback' }, fallback);
+                return withSource('llm_parse_fallback', 'local response parse failed');
             }
             decision.action = String(decision.action).toUpperCase();
             Debug.log('[Autonomy Parsed]', 'action=' + decision.action, 'eventId=' + (decision.eventId != null ? decision.eventId : 'null'), 'reason=' + String(decision.reason || ''));
