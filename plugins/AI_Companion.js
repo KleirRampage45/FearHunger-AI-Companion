@@ -409,7 +409,10 @@
             let out = String(text || '');
             out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
             out = out.replace(/\((?:I|I'm|I am|We|We're|We are|He|She|They|Mark)\s+[^)]{2,120}\)/g, '');
+            out = out.replace(/\((?:Al|Al\s+encontrar|Abre|Abrir|Usando|Uso|Revisa|Revisando|Busca|Buscando|Mira|Mirando|Toma|Tomando|Enciende|Encendiendo)\s+[^)]{2,120}\)/gi, '');
+            out = out.replace(/\((?:opens?|using|checking|searching|looking|taking|lighting|finds?|upon finding)\s+[^)]{2,120}\)/gi, '');
             out = out.replace(/\bI\s+(?:peer|look|open|grab|take|search|walk|move|stand|feel|think|notice)\b[^.?!]*(?:[.?!]|$)/gi, '');
+            out = out.replace(/\b(?:Lo miro bien|I look carefully|What is inside\?|Qué hay dentro\?)\b\.?/gi, '');
             out = out.replace(/\*\*/g, '').replace(/\*/g, '');
             return out.replace(/\s+/g, ' ').trim();
         },
@@ -8546,6 +8549,9 @@ Respond ONLY with this JSON:
 
         async _heartbeat() {
             const start = Date.now();
+            if ($gameParty && $gameParty.inBattle && $gameParty.inBattle()) {
+                return;
+            }
             this._state.pending = true;
             try {
                 const snapshot = this._buildSnapshot();
@@ -8562,6 +8568,10 @@ Respond ONLY with this JSON:
                     return;
                 }
                 const decision = await this._requestDecision(snapshot);
+                if ($gameParty && $gameParty.inBattle && $gameParty.inBattle()) {
+                    Debug.log('[Autonomy] Dropping decision because battle started');
+                    return;
+                }
                 const finalDecision = decision || this._goalFreeFallback(snapshot, 'llm unavailable');
                 this._applyDecision(finalDecision, snapshot);
                 this._logTick(snapshot, finalDecision, (finalDecision && finalDecision._autonomySource) || 'fallback', Date.now() - start, null);
@@ -11253,7 +11263,7 @@ CRITICAL GAME RULES (NEVER violate these):
 	                    if (!response.ok) {
 	                        const body = await response.text().catch(() => '');
 	                        const failure = {
-	                            provider: Config.apiProvider === 'local' && Config.apiKey ? 'groq_fallback' : Config.apiProvider,
+	                            provider: extraBody.providerLabel || Config.apiProvider,
 	                            context: 'chat',
 	                            model: model,
 	                            type: 'http',
@@ -11286,7 +11296,7 @@ CRITICAL GAME RULES (NEVER violate these):
 	                    if (error.name === 'AbortError') Debug.warn('[Chat] Request timed out');
 	                    else Debug.warn('[Chat] Request error:', error.message);
 	                    ModelRouter.recordFailure({
-	                        provider: Config.apiProvider === 'local' && Config.apiKey ? 'groq_fallback' : Config.apiProvider,
+	                        provider: extraBody.providerLabel || Config.apiProvider,
 	                        context: 'chat',
 	                        model: model,
 	                        type: error.name === 'AbortError' ? 'timeout' : 'exception',
@@ -11296,9 +11306,24 @@ CRITICAL GAME RULES (NEVER violate these):
 	                }
             };
 
-            // === STRATEGY: Chat/RP ALWAYS uses Groq (70B) for quality ===
-            // Local model is only used for combat JSON decisions.
-            const groqHeaders = (Config.apiProvider === 'local' && Config.apiKey)
+            if (Config.apiProvider === 'local') {
+                const messages = [
+                    { role: 'system', content: 'Answer as the companion character. Do not use chain-of-thought. Do not output markdown.' },
+                    { role: 'user', content: prompt }
+                ];
+                const text = await LocalRequestQueue.run('chat_local', () => _tryRequest(
+                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 220, 15000,
+                    { messages, extra: { enable_thinking: false, stop: ['<turn|>'] }, providerLabel: 'local' }
+                ), { skipIfBusy: false, drainMs: 2500 });
+                if (text.length > 0) {
+                    Debug.log('[Chat] Local responded:', Config.localModel, text.length, 'chars');
+                    this._lastModelUsed = Config.localModel;
+                    return Config.cleanGeneratedText(text);
+                }
+                if (!Config.apiKey) return '';
+            }
+
+            const groqHeaders = Config.apiProvider === 'local'
                 ? {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${Config.apiKey}`,
@@ -11306,25 +11331,19 @@ CRITICAL GAME RULES (NEVER violate these):
                     'X-Title': 'Fear & Hunger AI Companion'
                   }
                 : Config.getHeaders();
-            const groqEndpoint = (Config.apiProvider === 'local' && Config.apiKey)
-                ? Config.apiEndpoint
-                : Config.getEndpoint();
-
-            if (!Config.apiKey && Config.apiProvider === 'local') {
-                Debug.warn('[Chat] No Groq API key configured — cannot use cloud for chat.');
-                return '';
-            }
-
-            const models = ModelRouter.getModelsForContext('chat');
+            const groqEndpoint = Config.apiProvider === 'local' ? Config.apiEndpoint : Config.getEndpoint();
+            const models = Config.apiProvider === 'local'
+                ? (Config.chatModel ? [Config.chatModel, 'llama-3.3-70b-versatile'] : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'])
+                : ModelRouter.getModelsForContext('chat');
             for (const model of models) {
                 const text = await _tryRequest(
                     groqEndpoint, groqHeaders, model, 150, 8000,
-                    { messages: [{ role: 'user', content: prompt }] }
+                    { messages: [{ role: 'user', content: prompt }], providerLabel: Config.apiProvider === 'local' ? 'groq_fallback' : Config.apiProvider }
                 );
                 if (text.length > 0) {
                     Debug.log('[Chat] Groq responded:', model, text.length, 'chars');
                     this._lastModelUsed = model;
-                    return text;
+                    return Config.cleanGeneratedText(text);
                 }
                 ModelRouter.markFailed(model);
             }
@@ -11952,6 +11971,8 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     `Say ONE short line, under 12 words, before you ${String(action).toLowerCase()} something.\n` +
                     `You ARE ${Config.companionName}. Speak in first person.\n` +
                     `Do not say generic filler like "I am here", "still here", or your own name.\n` +
+                    `No parenthetical stage directions. Do not narrate actions in parentheses.\n` +
+                    `No poetic roleplay. State intent plainly.\n` +
                     `Target type: ${target.type}\n` +
                     `Target subtype: ${target.subtype || 'none'}\n` +
                     `Target label: ${targetLabel}\n` +
@@ -11980,7 +12001,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
-                const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim() : '';
+                const cleaned = text ? Config.cleanGeneratedText(text) : '';
                 const finalText = this._normalizeAutonomyComment(cleaned, target, '', es);
                 if (!finalText) return;
                 console.log('[Autonomy Comment]', finalText);
@@ -12435,8 +12456,14 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
             if (!raw || raw.length < 4) return { speak: false, thought: 'empty or too short', source: 'heuristic' };
             if (this._shouldAlwaysSpeak(topic)) return { speak: true, thought: 'mandatory prompt', source: 'heuristic' };
             const lower = raw.toLowerCase();
+            if (raw.length > 64 && /^autonomy_/.test(String(topic || ''))) {
+                return { speak: false, thought: 'too verbose for quick autonomy line', source: 'heuristic' };
+            }
             if (/^(estoy aqu[ií]|aqu[ií] estoy|sigo aqu[ií]|here\b|i am here\b|still here\b|we are here\b)/i.test(lower) || Config.isSelfIntroFiller(raw)) {
                 return { speak: false, thought: 'generic presence filler', source: 'heuristic' };
+            }
+            if (/^(aqu[ií] est[aá] algo|algo m[aá]s|veo algo|hay algo|what is inside|qu[eé] hay dentro)/i.test(lower)) {
+                return { speak: false, thought: 'generic object narration', source: 'heuristic' };
             }
             if (/^(mm+\.?|eh+\.?|bueno\.?|vale\.?|ok\.?)$/i.test(lower)) {
                 return { speak: false, thought: 'single filler token', source: 'heuristic' };
