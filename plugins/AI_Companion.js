@@ -167,6 +167,7 @@
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
         ambientFallbackMode: localStorage.getItem('AI_Companion_AmbientFallbackMode') || 'silent',
+        asyncCombatEnabled: localStorage.getItem('AI_Companion_AsyncCombatEnabled') !== 'false',
 
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
@@ -357,6 +358,11 @@
         setChatTopP(value) {
             this.chatTopP = Math.max(0.1, Math.min(1, Number(value) || 0.95));
             localStorage.setItem('AI_Companion_ChatTopP', String(this.chatTopP));
+        },
+
+        setAsyncCombatEnabled(on) {
+            this.asyncCombatEnabled = !!on;
+            localStorage.setItem('AI_Companion_AsyncCombatEnabled', on ? 'true' : 'false');
         },
 
         cycleChatTopP() {
@@ -4238,10 +4244,20 @@ Reply with ONLY the category name, nothing else.`;
                 return this._getMockDecision(battleState);
             }
 
+            const startTime = performance.now();
+            const failureChain = [];
+            let prompt = '';
             try {
-                const prompt = this._buildPrompt(battleState, retryContext);
-                const response = await this._sendRequest(prompt);
-                const decision = this._parseResponse(response);
+                prompt = this._buildPrompt(battleState, retryContext);
+                const response = await this._sendRequest(prompt, 'combat');
+                let decision = this._parseResponse(response);
+                if (decision) {
+                    const requestLatency = response && response._requestLatencyMs ? response._requestLatencyMs : Math.round(performance.now() - startTime);
+                    decision._llmUsage = LLMStats.extract(response, requestLatency);
+                    console.log('[Combat Async Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
+                    Debug.log('[Combat Async Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
+                    decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
+                }
 
                 if (!this._validateDecision(decision, battleState)) {
                     if (AIState.retryCount < AIState.maxRetries) {
@@ -4252,20 +4268,75 @@ Reply with ONLY the category name, nothing else.`;
                             error: 'Invalid action or target'
                         });
                     }
+                    this._logCombatDecision(battleState, prompt, this._getFallbackDecision(), null, 'async_fallback_invalid', startTime, failureChain);
                     return this._getFallbackDecision();
                 }
 
                 AIState.retryCount = 0;
+                this._updateCombatStrategy(decision, battleState);
+                this._logCombatDecision(battleState, prompt, decision, this._extractModelName(response), response && response._source ? response._source : (Config.apiProvider === 'local' ? 'local_async' : 'groq_async'), startTime, failureChain);
                 return decision;
 
             } catch (error) {
                 Debug.error('API error:', error);
-                return this._getFallbackDecision();
+                const fallback = this._getFallbackDecision();
+                failureChain.push({ type: 'async_exception', message: error.message, name: error.name });
+                this._logCombatDecision(battleState, prompt || '(prompt build failed)', fallback, null, 'async_fallback_error', startTime, failureChain);
+                return fallback;
             }
+        }
+
+        static _extractModelName(response) {
+            return response && (response.model || (response.system_fingerprint ? response.system_fingerprint : null));
+        }
+
+        static _updateCombatStrategy(decision, battleState) {
+            if (!decision) return;
+            if (decision.strategy && decision.strategy.length > 0) {
+                AIState.currentStrategy = {
+                    plan: decision.strategy,
+                    turnsRemaining: 3,
+                    startTurn: battleState.turn_number
+                };
+                Debug.log('[Combat] Strategy set:', decision.strategy);
+            } else if (AIState.currentStrategy) {
+                AIState.currentStrategy.turnsRemaining--;
+                if (AIState.currentStrategy.turnsRemaining <= 0) {
+                    Debug.log('[Combat] Strategy expired');
+                    AIState.currentStrategy = null;
+                }
+            }
+        }
+
+        static _logCombatDecision(battleState, prompt, decision, modelUsed, source, startTime, failureChain) {
+            const latency = Math.round(performance.now() - startTime);
+            const llmUsage = decision && decision._llmUsage ? decision._llmUsage : null;
+            const snapshot = {
+                battle_turn: battleState.turn_number,
+                enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
+                companion_battle_hp: battleState.companion ? battleState.companion.hp : null,
+                prompt_length: prompt ? prompt.length : 0,
+                prompt_text: prompt || '',
+                decision_action: decision ? decision.action : null,
+                decision_target: decision ? decision.target : null,
+                decision_limb: decision ? decision.limb : null,
+                decision_reasoning: decision ? decision.reasoning : null,
+                decision_dialog: decision ? decision.dialog : null,
+                response_source: source,
+                model_used: modelUsed,
+                latency_ms: latency,
+                llm_usage: llmUsage,
+                tokens_per_second: llmUsage ? llmUsage.tokens_per_second : null,
+                risk: RiskEvaluator.getSnapshotForLog(battleState),
+                failure_chain: failureChain ? failureChain.slice() : []
+            };
+            ThesisLogger.log('combat_decision', snapshot);
+            DebugState.captureCombat(snapshot);
         }
 
         static _buildPrompt(battleState, retryContext) {
             const companion = battleState.companion;
+            const compactLocal = Config.apiProvider === 'local';
             const memory = MemoryManager.getLongTermMemory();
             const memoryBeliefs = MemoryManager.getPromptSummary();
             const enemyTactics = this._getEnemyTactics(battleState.enemies);
@@ -4290,7 +4361,7 @@ Reply with ONLY the category name, nothing else.`;
 	                        } else if (kb.coinFlipTurn && kb.coinFlipLimb) {
 	                            knowledgeHints += `  - Coin flip threat is disabled because ${kb.coinFlipLimb} is destroyed. Do NOT defend for coin flip; keep attacking.\n`;
 	                        }
-                        kb.hints.slice(0, 2).forEach(h => {
+                        kb.hints.slice(0, compactLocal ? 1 : 2).forEach(h => {
                             knowledgeHints += `  - ${h}\n`;
                         });
                         if (kb.mistakes.length > 0) {
@@ -4314,12 +4385,12 @@ Reply with ONLY the category name, nothing else.`;
 
             // Recent dialogs for variety
             const recentDialogBlock = AIState.recentDialogs.length > 0
-                ? `\nYOUR RECENT DIALOG (do NOT repeat these):\n${AIState.recentDialogs.map(d => `- "${d}"`).join('\n')}`
+                ? `\nRECENT DIALOG, DO NOT REPEAT:\n${AIState.recentDialogs.slice(compactLocal ? -3 : 0).map(d => `- "${d}"`).join('\n')}`
                 : '';
 
             // Player action history for coordination
             const playerActionBlock = AIState.playerActionHistory && AIState.playerActionHistory.length > 0
-                ? `\nPLAYER'S ACTIONS THIS BATTLE:\n${AIState.playerActionHistory.map(a => `Turn ${a.turn}: ${a.actor} -> ${a.action} -> ${a.target}${a.limb ? ' [' + a.limb + ']' : ''}`).join('\n')}\n`
+                ? `\nPLAYER ACTIONS:\n${AIState.playerActionHistory.slice(compactLocal ? -3 : 0).map(a => `T${a.turn}: ${a.actor}->${a.action}->${a.target}${a.limb ? '[' + a.limb + ']' : ''}`).join('\n')}\n`
                 : '';
 
             // Sanity modifier for combat speech
@@ -4330,6 +4401,14 @@ Reply with ONLY the category name, nothing else.`;
             // Build identity with party awareness (declared early — used by coinFlip + prompt)
             const playerName = $gameParty && $gameParty.leader() ? $gameParty.leader().name() : 'the player';
             const otherAllies = battleState.allies.filter(a => a.name !== Config.companionName && a.name !== playerName).map(a => a.name).join(', ');
+            const personaBlock = compactLocal
+                ? `IDENTITY: You are ${Config.companionName}. Voice: ${Config.personality}. Stay immersed.`
+                : Config.getPersonaPromptBlock();
+            const previousActions = AIState.combatActionHistory && AIState.combatActionHistory.length > 0
+                ? AIState.combatActionHistory.slice(compactLocal ? -4 : 0).map(a => `T${a.turn}: ${a.action}->${a.target}${a.limb ? '[' + a.limb + ']' : ''}`).join('\n')
+                : '';
+            const itemList = companion.items.slice(0, compactLocal ? 8 : companion.items.length).map(i => i.name).join(', ');
+            const skillsList = companion.skills.map(s => compactLocal ? s.name : `${s.name} [${s.category}${s.deals_damage ? ', deals damage' : ''}]`).join(', ');
 
             // Coin-flip turn detection
             let coinFlipWarning = '';
@@ -4351,11 +4430,23 @@ Reply with ONLY the category name, nothing else.`;
                 healingAlert = `\nCRITICAL HP: ${critNames} — Prioritize healing if you have healing skills or herbs. Mention urgency in dialog.`;
             }
 
-            let prompt = `You are ${Config.companionName}, a companion fighting alongside ${playerName} in the dungeons of Fear & Hunger.
+            let prompt = compactLocal ? `COMBAT JSON. You are ${Config.companionName}, ally of ${playerName}. ${otherAllies ? 'Other allies: ' + otherAllies + '. ' : ''}Never break role.
+${personaBlock}
+Rules: no XP/leveling. Basic attack action is "Atacar". Do not use self-buffs as attacks. Coin flips kill; defend ONLY if live coin-flip warning says so.
+Turn ${battleState.turn_number}
+Enemies: ${compactEnemies}
+Allies: ${compactAllies}
+${previousActions ? 'Your actions:\n' + previousActions + '\n' : ''}${playerActionBlock}
+You: HP ${companion.hp}/${companion.max_hp}, MP ${companion.mp}/${companion.max_mp}, gear ${EquipmentHelper.formatEquipmentForPrompt(companion.equipment || {})}
+Skills: ${skillsList}
+Items: ${itemList || 'none'}
+Knowledge:${knowledgeHints || '\n  No specific knowledge.'}
+Risk: ${riskSummary}
+${enemyTactics ? `Tactics:\n${enemyTactics}\n` : ''}${memoryBeliefs && !compactLocal ? `Memory:\n${memoryBeliefs}\n` : ''}${coinFlipWarning}${healingAlert}` : `You are ${Config.companionName}, a companion fighting alongside ${playerName} in the dungeons of Fear & Hunger.
 You are one of the party's allies — do NOT address ${playerName} as if you are separate from the group.
 ${otherAllies ? 'Other allies in this fight: ' + otherAllies + '.' : ''}
 You speak from experience, cautiously and with weight. NEVER break immersion.
-${Config.getPersonaPromptBlock()}
+${personaBlock}
 SANITY: ${sanityMod}
 ${fearState.prompt}
 ${driftPrompt}
@@ -4363,13 +4454,13 @@ GAME RULES: NO leveling/XP exists. COIN FLIP = instant death mechanic on specifi
 BATTLE STATE (Turn ${battleState.turn_number}):
 - Enemies: ${compactEnemies}
 - Allies: ${compactAllies}
-${AIState.combatActionHistory && AIState.combatActionHistory.length > 0 ? '\nYOUR PREVIOUS ACTIONS THIS BATTLE:\n' + AIState.combatActionHistory.map(a => `Turn ${a.turn}: ${a.action} -> ${a.target} [${a.limb}]`).join('\n') + '\n' : ''}
+${previousActions ? '\nYOUR PREVIOUS ACTIONS THIS BATTLE:\n' + previousActions + '\n' : ''}
 ${playerActionBlock}
 YOUR CAPABILITIES (use ONLY what is listed here—do not invent equipment):
 - YOUR EQUIPPED GEAR: ${EquipmentHelper.formatEquipmentForPrompt(companion.equipment || {})}
-- Skills: ${companion.skills.map(s => `${s.name} [${s.category}${s.deals_damage ? ', deals damage' : ''}]`).join(', ')}
+- Skills: ${skillsList}
 IMPORTANT: To ATTACK an enemy, use "Atacar" (the basic attack). Skills marked [self-buff] do NOT deal damage to enemies.
-- Items in party: ${companion.items.map(i => i.name).join(', ')}
+- Items in party: ${itemList}
 - HP: ${companion.hp}/${companion.max_hp}, MP: ${companion.mp}/${companion.max_mp}
 - Allies' equipped gear (for reference): ${(battleState.allies || []).map(a => a.name + ': ' + EquipmentHelper.formatEquipmentForPrompt(a.equipment || {})).join(' | ')}
 
@@ -4396,7 +4487,18 @@ VALID TARGETS: [${aliveEnemies.join(', ')}]
 Please correct your response. Use EXACT names from the lists above.`;
             }
 
-            prompt += `
+            prompt += compactLocal ? `
+
+Targeting:
+- Use ONLY alive limbs from Enemies.
+- If head is destroyed, choose torso/arms/legs.
+- Prefer attacking; do not spam defend.
+- Reply only in ${Config.language === 'es' ? 'Spanish' : 'English'}.
+- Dialog: one survivor line, max 50 chars, varied, or empty.
+${recentDialogBlock}
+
+JSON only:
+{"action":"Atacar|Defenderse|skill|item","target":"enemy_name","limb":"head|right arm|left arm|torso|legs|null","reasoning":"max 18 words","dialog":"max 50 chars","strategy":"max 18 words"}` : `
 
 IMPORTANT TARGETING RULES:
 1. ONLY target limbs that are ALIVE (alive: true in the limbs data)
@@ -4494,6 +4596,7 @@ Respond ONLY with this JSON:
                         { role: 'assistant', content: '<think>\n\n</think>\n\n' }
                       ]
                     : [{ role: 'user', content: prompt }];
+                const requestStart = performance.now();
                 const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: headers,
@@ -4507,7 +4610,22 @@ Respond ONLY with this JSON:
                     ), isLocal ? { enable_thinking: false, stop: ['<turn|>'] } : {}))
                 });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                return await response.json();
+                const data = await response.json();
+                data._requestLatencyMs = Math.round(performance.now() - requestStart);
+                const rawContent = String(
+                    data &&
+                    data.choices &&
+                    data.choices[0] &&
+                    data.choices[0].message &&
+                    data.choices[0].message.content
+                        ? data.choices[0].message.content
+                        : ''
+                );
+                if (rawContent) {
+                    console.log('[Combat Async LLM]', rawContent);
+                    Debug.log('[Combat Async LLM]', rawContent);
+                }
+                return data;
             };
 
             // === Local-first for combat, Groq fallback ===
@@ -4515,7 +4633,10 @@ Respond ONLY with this JSON:
                 try {
                     Debug.log('[Combat Async] Trying local AI...');
                     return await LocalRequestQueue.run('combat_async', () =>
-                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 180, true)
+                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 180, true).then(data => {
+                            data._source = 'local_async';
+                            return data;
+                        })
                     );
                 } catch (error) {
                     Debug.warn('[Combat Async] Local failed:', error.message);
@@ -4533,6 +4654,7 @@ Respond ONLY with this JSON:
                     for (const model of models) {
                         try {
                             const data = await _tryFetch(Config.apiEndpoint, groqHeaders, model, 300, false);
+                            data._source = 'groq_fallback_async';
                             Debug.log('[Combat Async] Groq succeeded:', model);
                             return data;
                         } catch (error) {
@@ -4550,6 +4672,7 @@ Respond ONLY with this JSON:
                 try {
                     Debug.log(`Trying model: ${model}`);
                     const data = await _tryFetch(Config.getEndpoint(), Config.getHeaders(), model, 300, false);
+                    data._source = 'groq_async';
                     Debug.log(`Model ${model} succeeded`);
                     return data;
                 } catch (error) {
@@ -5711,6 +5834,10 @@ Respond ONLY with this JSON:
     //=========================================================================
     const _BattleManager_selectNextCommand = BattleManager.selectNextCommand;
     BattleManager.selectNextCommand = function () {
+        if (this._aiCompanionPendingDecision) {
+            return;
+        }
+
         // First, call parent to advance to next actor
         _BattleManager_selectNextCommand.call(this);
 
@@ -5724,6 +5851,34 @@ Respond ONLY with this JSON:
                 if (Config.useMockAI) {
                     Debug.log('Turn ' + battleState.turn_number + ' (Mock AI)');
                     decision = GeminiAPIHandler._getMockDecision(battleState);
+                } else if (Config.asyncCombatEnabled) {
+                    this._aiCompanionPendingDecision = true;
+                    this._aiCompanionPendingActorId = actor.actorId();
+                    if (Config.debugMode) Debug.log('[Combat Async] Waiting for AI decision for', Config.companionName);
+                    const scene = SceneManager._scene;
+                    if (scene && scene._actorCommandWindow) {
+                        scene._actorCommandWindow.deactivate();
+                        scene._actorCommandWindow.close();
+                    }
+                    GeminiAPIHandler.getDecision(battleState).then(asyncDecision => {
+                        try {
+                            const currentActor = BattleManager.actor();
+                            if (currentActor && currentActor.actorId() === this._aiCompanionPendingActorId) {
+                                if (Config.debugMode) Debug.log('[Combat Async] Executing AI turn for', Config.companionName, 'decision:', asyncDecision.action, asyncDecision.target);
+                                ActionExecutor.execute(currentActor, asyncDecision);
+                            } else {
+                                Debug.warn('[Combat Async] Actor changed before decision resolved; discarding stale decision');
+                            }
+                        } catch (error) {
+                            Debug.warn('[Combat Async] Failed to execute decision:', error.message);
+                            if (actor && actor.numActions && actor.numActions() > 0) actor.action(0).setGuard();
+                        } finally {
+                            this._aiCompanionPendingDecision = false;
+                            this._aiCompanionPendingActorId = null;
+                            this.selectNextCommand();
+                        }
+                    });
+                    return;
                 } else {
                     decision = GeminiAPIHandler.getDecisionSync(battleState);
                 }
