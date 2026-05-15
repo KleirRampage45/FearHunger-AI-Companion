@@ -3912,6 +3912,29 @@ Reply with ONLY the category name, nothing else.`;
 	            return this._isLimbAlive(enemy, gate);
 	        }
 
+        static _coinFlipTurns(kbEnemy) {
+            if (!kbEnemy || !kbEnemy.coinFlipTurn) return [];
+            const turns = [];
+            const addTurn = value => {
+                const n = Number(value);
+                if (Number.isFinite(n) && n > 0 && turns.indexOf(n) === -1) turns.push(n);
+            };
+            addTurn(kbEnemy.coinFlipTurn);
+            const text = [kbEnemy.tactics, ...(kbEnemy.strategy || [])].join(' ');
+            const guardList = text.match(/guard(?:ing)?\s+on\s+turns?\s+([0-9,\s]+)/i);
+            if (guardList && guardList[1]) {
+                guardList[1].split(/[,\s]+/).forEach(addTurn);
+            }
+            return turns.sort((a, b) => a - b);
+        }
+
+        static _isCoinFlipThreatActive(enemy, kbEnemy, turnNumber) {
+            if (!this._isCoinFlipStillLive(enemy, kbEnemy)) return false;
+            const turn = Number(turnNumber);
+            if (!Number.isFinite(turn)) return false;
+            return this._coinFlipTurns(kbEnemy).indexOf(turn) !== -1;
+        }
+
         static _findAliveLimbKey(enemy, token) {
             if (!enemy || !enemy.limbs) return null;
             const aliases = this._getLimbAliases(token);
@@ -3985,6 +4008,12 @@ Reply with ONLY the category name, nothing else.`;
         static normalizeDecisionForBattle(decision, battleState) {
             if (!decision || !battleState) return decision;
             const normalized = Object.assign({}, decision);
+            if (normalized.dialog) {
+                normalized.dialog = Config.cleanGeneratedText(normalized.dialog);
+                if (/\([^)]{2,120}\)/.test(normalized.dialog) || normalized.dialog.length > 50 || /^(m-?m+|mm+|espero|por favor|a ver si)/i.test(normalized.dialog)) {
+                    normalized.dialog = '';
+                }
+            }
             const enemy = this._findBattleEnemyByName(battleState, normalized.target);
             if (!enemy) return normalized;
 
@@ -3992,15 +4021,15 @@ Reply with ONLY the category name, nothing else.`;
 
 	            const normalizedAction = this._normalizeActionName(normalized.action);
 	            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? KBLookupCache.enemy(enemy.name) : null;
-	            if (normalizedAction === 'guard' && kbEnemy && kbEnemy.coinFlipTurn && battleState.turn_number >= kbEnemy.coinFlipTurn && !this._isCoinFlipStillLive(enemy, kbEnemy)) {
+	            if (normalizedAction === 'guard' && kbEnemy && kbEnemy.coinFlipTurn && !this._isCoinFlipThreatActive(enemy, kbEnemy, battleState.turn_number)) {
 	                normalized.action = 'Atacar';
 	                normalized.limb = this._pickBestAliveLimb(enemy);
-	                normalized.reasoning = 'Coin flip limb is destroyed; attacking instead of wasting a defend turn.';
+	                normalized.reasoning = 'No active coin flip this turn; attacking instead of wasting a defend turn.';
 	                normalized.dialog = this._generateQuickDialog(normalized);
 	                AIState.currentStrategy = null;
 	            } else if (normalizedAction !== 'attack') {
 	                return normalized;
-	            }
+            }
 
 	            const requestedLimb = this._normalizeLimbName(normalized.limb).replace(/_/g, ' ');
             let chosenLimb = null;
@@ -4296,6 +4325,13 @@ Reply with ONLY the category name, nothing else.`;
         static _updateCombatStrategy(decision, battleState) {
             if (!decision) return;
             if (decision.strategy && decision.strategy.length > 0) {
+                const strategyText = String(decision.strategy || '').toLowerCase();
+                const action = ActionExecutor._normalizeActionName ? ActionExecutor._normalizeActionName(decision.action) : String(decision.action || '').toLowerCase();
+                if (action === 'guard' || /defend|defender|guard|coin\s*flip|moneda|flip/.test(strategyText)) {
+                    AIState.currentStrategy = null;
+                    Debug.log('[Combat] Not persisting defensive/coin-flip strategy:', decision.strategy);
+                    return;
+                }
                 AIState.currentStrategy = {
                     plan: decision.strategy,
                     turnsRemaining: 3,
@@ -4359,8 +4395,11 @@ Reply with ONLY the category name, nothing else.`;
                         knowledgeHints += `\n${prefix}${kb.name || enemy.name}:\n`;
                         if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
                         knowledgeHints += `  - Priority: ${kb.priority.join(' → ')}\n`;
-	                        if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
-	                            knowledgeHints += `  - ⚠ COIN FLIP on turn ${kb.coinFlipTurn} — KILL BEFORE THIS TURN!\n`;
+	                        if (kb.coinFlipTurn && ActionExecutor._isCoinFlipThreatActive(enemy, kb, battleState.turn_number)) {
+	                            knowledgeHints += `  - ⚠ COIN FLIP THIS TURN (${battleState.turn_number}) — DEFEND NOW.\n`;
+	                        } else if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
+                                const turns = ActionExecutor._coinFlipTurns(kb);
+	                            knowledgeHints += `  - Coin flip turns: ${turns.join(', ') || kb.coinFlipTurn}. Defend ONLY on those turns.\n`;
 	                        } else if (kb.coinFlipTurn && kb.coinFlipLimb) {
 	                            knowledgeHints += `  - Coin flip threat is disabled because ${kb.coinFlipLimb} is destroyed. Do NOT defend for coin flip; keep attacking.\n`;
 	                        }
@@ -4419,7 +4458,7 @@ Reply with ONLY the category name, nothing else.`;
                 for (const enemy of battleState.enemies) {
                     if (!enemy.alive) continue;
                     const kb = KBLookupCache.enemyHints(enemy.name);
-	                    if (kb && kb.coinFlipTurn && battleState.turn_number === kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
+	                    if (kb && kb.coinFlipTurn && ActionExecutor._isCoinFlipThreatActive(enemy, kb, battleState.turn_number)) {
 	                        coinFlipWarning = `\n⚠️ COIN FLIP WARNING: ${enemy.name} has a LETHAL coin flip attack on turn ${kb.coinFlipTurn}! You MUST Defend this turn. Warn ${playerName} in your dialog.`;
 	                    }
                 }
@@ -4496,6 +4535,7 @@ Targeting:
 - Use ONLY alive limbs from Enemies.
 - If head is destroyed, choose torso/arms/legs.
 - Prefer attacking; do not spam defend.
+- Choose Defenderse ONLY when the prompt says COIN FLIP THIS TURN or HP is critically low.
 - Reply only in ${Config.language === 'es' ? 'Spanish' : 'English'}.
 - Dialog: one survivor line, max 50 chars, varied, or empty.
 ${recentDialogBlock}
@@ -4554,6 +4594,15 @@ Respond ONLY with this JSON:
         static _isStrategyStillRelevant(battleState, plan) {
             if (!plan || !battleState || !battleState.enemies) return false;
             const text = plan.toLowerCase();
+            if (/coin\s*flip|moneda|defend|defender|guard/.test(text)) {
+                const active = battleState.enemies
+                    .filter(e => e && e.alive)
+                    .some(enemy => {
+                        const kb = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? KBLookupCache.enemy(enemy.name) : null;
+                        return kb && ActionExecutor._isCoinFlipThreatActive(enemy, kb, battleState.turn_number);
+                    });
+                if (!active) return false;
+            }
             const aliveLimbs = new Set();
 
             battleState.enemies.filter(e => e.alive).forEach(enemy => {
@@ -4833,21 +4882,7 @@ Respond ONLY with this JSON:
                         decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
                     }
                     if (decision && this._validateDecision(decision, battleState)) {
-                        // Branch 3: Extract and store multi-turn strategy
-                        if (decision.strategy && decision.strategy.length > 0) {
-                            AIState.currentStrategy = {
-                                plan: decision.strategy,
-                                turnsRemaining: 3,  // Strategies persist for 3 turns
-                                startTurn: battleState.turn_number
-                            };
-                            Debug.log('[Combat] Strategy set:', decision.strategy);
-                        } else if (AIState.currentStrategy) {
-                            AIState.currentStrategy.turnsRemaining--;
-                            if (AIState.currentStrategy.turnsRemaining <= 0) {
-                                Debug.log('[Combat] Strategy expired');
-                                AIState.currentStrategy = null;
-                            }
-                        }
+                        this._updateCombatStrategy(decision, battleState);
                         if (Config.debugMode) {
                             Debug.log('[Combat] Decision:', decision.action, '->', decision.target, decision.limb ? '[' + decision.limb + ']' : '', 'reasoning:', decision.reasoning);
                             if (decision.dialog) Debug.log('[Combat] Dialog:', decision.dialog);
@@ -7470,10 +7505,10 @@ Respond ONLY with this JSON:
 	                        score += 2;
 	                    }
 		                    if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
-		                        if (turnNumber >= kb.coinFlipTurn) {
+		                        if (ActionExecutor._isCoinFlipThreatActive(enemy, kb, turnNumber)) {
 		                            score += 5;
 		                            details.push(Config.language === 'es' ? `${name}: coin flip ahora` : `${name}: coin flip now`);
-                        } else if (turnNumber === kb.coinFlipTurn - 1) {
+                        } else if (ActionExecutor._isCoinFlipThreatActive(enemy, kb, turnNumber + 1)) {
                             score += 3;
                             details.push(Config.language === 'es' ? `${name}: coin flip próximo` : `${name}: coin flip soon`);
                         }
@@ -7525,7 +7560,10 @@ Respond ONLY with this JSON:
             const level = this._level(score);
             const es = Config.language === 'es';
             let recommendedAction = es ? 'atacar con precisión' : 'attack precisely';
-            if (level === 'critical') recommendedAction = es ? 'defender o curar si el coin flip/HP lo exige' : 'guard or heal if coin flip/HP demands it';
+            const hasActiveCoinFlip = enemyDetails.some(text => /coin flip ahora|coin flip now/i.test(text));
+            if (level === 'critical') recommendedAction = hasActiveCoinFlip
+                ? (es ? 'defender este turno' : 'guard this turn')
+                : (es ? 'atacar o curar si el HP lo exige' : 'attack or heal if HP demands it');
             else if (level === 'high') recommendedAction = es ? 'priorizar brazo/amenaza letal' : 'prioritize weapon arm/lethal threat';
             return {
                 mode: 'battle',
