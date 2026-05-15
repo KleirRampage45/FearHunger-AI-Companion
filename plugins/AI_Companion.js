@@ -167,7 +167,7 @@
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
         ambientFallbackMode: localStorage.getItem('AI_Companion_AmbientFallbackMode') || 'silent',
-        asyncCombatEnabled: localStorage.getItem('AI_Companion_AsyncCombatEnabled') !== 'false',
+        asyncCombatEnabled: localStorage.getItem('AI_Companion_AsyncCombatEnabled') === 'true',
 
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
@@ -11927,6 +11927,9 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 return fallback;
             }
             if (type === 'door' && !/(puerta|door|abrir|open)/i.test(lower)) {
+                return fallback;
+            }
+            if (type === 'npc' && /(oscur|encend|luz|dark|light|yesquero|s[ií]quero|torch|candle|vela|antorcha)/i.test(lower)) {
                 return fallback;
             }
             if (type === 'npc' && /(cofre|caja|mesa|door|puerta|book|libro)/i.test(lower)) {
