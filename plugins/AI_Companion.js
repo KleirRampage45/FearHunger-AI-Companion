@@ -399,6 +399,15 @@
             return raw.indexOf(`soy ${name}`) === 0 || raw.indexOf(`i am ${name}`) === 0 || raw.indexOf(`i'm ${name}`) === 0;
         },
 
+        cleanGeneratedText(text) {
+            let out = String(text || '');
+            out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
+            out = out.replace(/\((?:I|I'm|I am|We|We're|We are|He|She|They|Mark)\s+[^)]{2,120}\)/g, '');
+            out = out.replace(/\bI\s+(?:peer|look|open|grab|take|search|walk|move|stand|feel|think|notice)\b[^.?!]*(?:[.?!]|$)/gi, '');
+            out = out.replace(/\*\*/g, '').replace(/\*/g, '');
+            return out.replace(/\s+/g, ' ').trim();
+        },
+
         get useMockAI() {
             if (this.apiProvider === 'local') return this.forceMockAI;
             return this.forceMockAI || !this.apiKey;
@@ -412,6 +421,9 @@
         setLanguage(lang) {
             this.language = lang;
             localStorage.setItem('AI_Companion_Language', lang);
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'language', value: lang });
+            }
         },
 
         setDebugMode(on) {
@@ -865,6 +877,26 @@
         runOptional(label, fn) {
             if (Config.apiProvider !== 'local') return fn();
             return this.run(label, fn, { skipIfBusy: true, drainMs: 1500 });
+        }
+    };
+
+    const LLMStats = {
+        extract(data, latencyMs) {
+            const usage = data && data.usage ? data.usage : {};
+            const prompt = Number(usage.prompt_tokens || 0);
+            const completion = Number(usage.completion_tokens || 0);
+            const total = Number(usage.total_tokens || (prompt + completion) || 0);
+            const seconds = Math.max(0.001, Number(latencyMs || 0) / 1000);
+            const stats = data && data.stats ? data.stats : {};
+            return {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: total,
+                reasoning_tokens: usage.completion_tokens_details ? Number(usage.completion_tokens_details.reasoning_tokens || 0) : 0,
+                tokens_per_second: completion > 0 ? Math.round((completion / seconds) * 10) / 10 : null,
+                total_tokens_per_second: total > 0 ? Math.round((total / seconds) * 10) / 10 : null,
+                lmstudio_stats: stats && Object.keys(stats).length ? stats : null
+            };
         }
     };
 
@@ -4396,9 +4428,9 @@ Respond ONLY with this JSON:
   "action": "Attack | Defend | [skill_name] | [item_name]",
   "target": "[enemy_name]",
   "limb": "head | right arm | left arm | torso | legs | null",
-  "reasoning": "brief tactical reasoning",
+  "reasoning": "brief tactical reasoning, max 18 words",
   "dialog": "immersive survivor dialog (max 50 chars)",
-  "strategy": "optional: multi-turn plan if you have one (e.g. 'Destroy right arm then head')"
+  "strategy": "optional short plan, max 18 words"
 }`;
 
             // Branch 3: Inject active multi-turn strategy only while it still matches the live battle state
@@ -4472,7 +4504,7 @@ Respond ONLY with this JSON:
                     }, Config.getSamplingOptions(
                         { temperature: Math.min(Config.chatTemperature, 0.8) },
                         { includeTopK: isLocal }
-                    ), isLocal ? { enable_thinking: false } : {}))
+                    ), isLocal ? { enable_thinking: false, stop: ['<turn|>'] } : {}))
                 });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return await response.json();
@@ -4483,7 +4515,7 @@ Respond ONLY with this JSON:
                 try {
                     Debug.log('[Combat Async] Trying local AI...');
                     return await LocalRequestQueue.run('combat_async', () =>
-                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true)
+                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 180, true)
                     );
                 } catch (error) {
                     Debug.warn('[Combat Async] Local failed:', error.message);
@@ -4601,6 +4633,7 @@ Respond ONLY with this JSON:
             // Telemetry helper for combat logging
             const _logCombatDecision = (decision, modelUsed, source) => {
                 const latency = Math.round(performance.now() - startTime);
+                const llmUsage = decision && decision._llmUsage ? decision._llmUsage : null;
                 const snapshot = {
                     battle_turn: battleState.turn_number,
                     enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
@@ -4615,6 +4648,8 @@ Respond ONLY with this JSON:
                     response_source: source,
                     model_used: modelUsed,
                     latency_ms: latency,
+                    llm_usage: llmUsage,
+                    tokens_per_second: llmUsage ? llmUsage.tokens_per_second : null,
                     risk: RiskEvaluator.getSnapshotForLog(battleState),
                     failure_chain: failureChain.slice()
                 };
@@ -4636,6 +4671,7 @@ Respond ONLY with this JSON:
                           ]
                         : [{ role: 'user', content: prompt }];
                     Debug.log(`[Combat] Trying ${model} at ${endpoint.substring(0, 50)}...`);
+                    const requestStart = performance.now();
                     xhr.send(JSON.stringify(Object.assign({
                         model: model,
                         messages: messages,
@@ -4643,12 +4679,13 @@ Respond ONLY with this JSON:
                     }, Config.getSamplingOptions(
                         { temperature: Math.min(Config.chatTemperature, 0.8) },
                         { includeTopK: isLocal }
-                    ), isLocal ? { enable_thinking: false } : {})));
+                    ), isLocal ? { enable_thinking: false, stop: ['<turn|>'] } : {})));
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
                         return { _requestFailed: true, _failure: { model: model, type: 'http', status: xhr.status, body: String(xhr.responseText || '').substring(0, 400) } };
                     }
                     const response = JSON.parse(xhr.responseText);
+                    const requestLatency = Math.round(performance.now() - requestStart);
                     const rawContent = String(
                         response &&
                         response.choices &&
@@ -4664,6 +4701,7 @@ Respond ONLY with this JSON:
                     }
                     let decision = this._parseResponse(response);
                     if (decision) {
+                        decision._llmUsage = LLMStats.extract(response, requestLatency);
                         console.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                         Debug.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                         decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
@@ -4714,7 +4752,7 @@ Respond ONLY with this JSON:
                     try {
                         Debug.log('[Combat] Trying local AI...');
                         localResult = _trySyncRequest(
-                            Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 512, true
+                            Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 180, true
                         );
                     } finally {
                         LocalRequestQueue.leaveSync();
@@ -8306,7 +8344,9 @@ Respond ONLY with this JSON:
                     action: decision ? decision.action : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
                     frontier_index: decision && decision.frontierIndex != null ? decision.frontierIndex : null,
-                    raw_response_content: this._state.lastRawLocalContent || null,
+                    raw_response_content: source === 'local' ? (this._state.lastRawLocalContent || null) : null,
+                    llm_usage: source === 'local' ? (this._state.lastLocalUsage || null) : null,
+                    tokens_per_second: source === 'local' && this._state.lastLocalUsage ? this._state.lastLocalUsage.tokens_per_second : null,
                     error: errorMessage || null,
                     snapshot: snapshot ? {
                         leashDistance: snapshot.leashDistance,
@@ -8400,6 +8440,7 @@ Respond ONLY with this JSON:
             if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return withSource('no_model', 'no local model configured');
             if (LocalRequestQueue.isBusy()) return withSource('local_busy', 'local model busy');
             this._state.lastRawLocalContent = '';
+            this._state.lastLocalUsage = null;
 
             const prompt = [
                 'You control a cautious RPG companion in Fear & Hunger.',
@@ -8425,6 +8466,7 @@ Respond ONLY with this JSON:
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 6000);
             let response;
+            const requestStart = Date.now();
             try {
                 response = await LocalRequestQueue.run('autonomy', () => fetch(Config.getLocalEndpoint(), {
                     method: 'POST',
@@ -8461,6 +8503,7 @@ Respond ONLY with this JSON:
             }
 
             const data = await response.json();
+            this._state.lastLocalUsage = LLMStats.extract(data, Date.now() - requestStart);
             this._state.lastRawLocalContent = String(
                 data &&
                 data.choices &&
@@ -10628,7 +10671,9 @@ Respond ONLY with this JSON:
                     response_validated: validation.changed,
                     validator_reason: validation.reason,
                     latency_ms: chatLatency,
-                    model_used: this._lastModelUsed || null
+                    model_used: this._lastModelUsed || null,
+                    llm_usage: this._lastUsage || null,
+                    tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null
                 });
                 DebugState.captureChat({
                     player_message: playerMessage,
@@ -10643,6 +10688,8 @@ Respond ONLY with this JSON:
                     validator_reason: validation.reason,
                     latency_ms: chatLatency,
                     model_used: this._lastModelUsed || null,
+                    llm_usage: this._lastUsage || null,
+                    tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null,
                     context_map: context.current_map,
                     nearby_objects: context.nearby_objects
                 });
@@ -11035,6 +11082,7 @@ CRITICAL GAME RULES (NEVER violate these):
             const _tryRequest = async (endpoint, headers, model, maxTokens, timeoutMs, extraBody) => {
                 const controller = new AbortController();
                 const timer = setTimeout(() => controller.abort(), timeoutMs);
+                const requestStart = performance.now();
                 try {
                     const response = await fetch(endpoint, {
                         method: 'POST',
@@ -11062,6 +11110,7 @@ CRITICAL GAME RULES (NEVER violate these):
 	                        return '';
 	                    }
                     const data = await response.json();
+                    this._lastUsage = LLMStats.extract(data, Math.round(performance.now() - requestStart));
                     if (Config.debugMode) Debug.log('[Chat] Raw response:', JSON.stringify(data).substring(0, 500));
                     let text = '';
                     if (data.choices && data.choices[0]) {
@@ -11640,7 +11689,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
         },
 
         _normalizeProactiveChat(text, target, fallback, es) {
-            const raw = String(text || '').replace(/\s+/g, ' ').trim();
+            const raw = Config.cleanGeneratedText(text);
             if (!raw) return fallback;
             const lower = raw.toLowerCase();
             if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) return fallback;
@@ -11663,7 +11712,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
         },
 
         _normalizeAutonomyComment(text, target, fallback, es) {
-            const raw = String(text || '').replace(/\s+/g, ' ').trim();
+            const raw = Config.cleanGeneratedText(text);
             if (!raw) return fallback;
             const lower = raw.toLowerCase();
             const subtype = String(target && target.subtype || '').toLowerCase();
@@ -12216,8 +12265,9 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         },
 
         async _speakWithThought(text, topic, context) {
-            if (await this._shouldSpeak(text, topic, context || {})) {
-                this._speak(text, topic);
+            const clean = Config.cleanGeneratedText(text);
+            if (await this._shouldSpeak(clean, topic, context || {})) {
+                this._speak(clean, topic);
             }
         },
 
@@ -12226,7 +12276,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         },
 
         _heuristicShouldSpeak(text, topic) {
-            const raw = String(text || '').replace(/\s+/g, ' ').trim();
+            const raw = Config.cleanGeneratedText(text);
             if (!raw || raw.length < 4) return { speak: false, thought: 'empty or too short', source: 'heuristic' };
             if (this._shouldAlwaysSpeak(topic)) return { speak: true, thought: 'mandatory prompt', source: 'heuristic' };
             const lower = raw.toLowerCase();
