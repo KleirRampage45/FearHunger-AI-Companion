@@ -7642,11 +7642,13 @@ Respond ONLY with this JSON:
             consentPromptPending: false,
             merchantSessionEventId: null,
             merchantSessionUntil: 0,
+            lastThreatCheckAt: 0,
+            lastThreatEvasionAt: 0,
             eventCooldowns: {},
             searchedEvents: {}
         },
 
-        ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT', 'CONSENT'],
+        ACTIONS: ['FOLLOW', 'HOLD', 'RETURN', 'LOOT', 'INTERACT', 'SCOUT', 'CONSENT', 'EVADE'],
 
         getFollower() {
             if (!$gamePlayer || !$gamePlayer._followers || !$gamePlayer._followers.forEach) return null;
@@ -7695,6 +7697,7 @@ Respond ONLY with this JSON:
                 return;
             }
 
+            this._applyThreatEvasionIfNeeded('threat_evasion');
             this._maintainMovement();
 
             const now = Date.now();
@@ -7757,6 +7760,8 @@ Respond ONLY with this JSON:
             this._state.consentPromptPending = false;
             this._state.merchantSessionEventId = null;
             this._state.merchantSessionUntil = 0;
+            this._state.lastThreatCheckAt = 0;
+            this._state.lastThreatEvasionAt = 0;
         },
 
         _distance(a, b) {
@@ -7868,6 +7873,106 @@ Respond ONLY with this JSON:
                 }
                 return false;
             }) || null;
+        },
+
+        _activeMovingThreat(snapshot, maxDistance) {
+            const nearby = (snapshot && snapshot.nearby) || [];
+            const limit = maxDistance != null ? maxDistance : 4;
+            return nearby
+                .filter(item => item &&
+                    item.type === 'enemy' &&
+                    (item.danger === 'high' || item.danger === 'medium') &&
+                    item.distance <= limit)
+                .sort((a, b) => a.distance - b.distance)[0] || null;
+        },
+
+        _isTileOccupiedByBlockingEvent(x, y) {
+            if (!$gameMap || !$gameMap.eventsXyNt) return false;
+            const events = $gameMap.eventsXyNt(x, y) || [];
+            return events.some(event => event && event.isNormalPriority && event.isNormalPriority());
+        },
+
+        _findEvasionPoint(snapshot, threat) {
+            const follower = this.getFollower();
+            if (!snapshot || !threat || !follower) return null;
+            const origin = snapshot.companion || { x: follower.x, y: follower.y };
+            const player = snapshot.player || ($gamePlayer ? { x: $gamePlayer.x, y: $gamePlayer.y } : origin);
+            const currentThreatDistance = this._distance(origin, threat);
+            const maxLeash = Math.max(4, Config.autonomyMaxDetourDistance + 3);
+            let best = null;
+
+            for (let radius = 1; radius <= 4; radius++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    for (let dy = -radius; dy <= radius; dy++) {
+                        if (Math.abs(dx) + Math.abs(dy) !== radius) continue;
+                        const x = origin.x + dx;
+                        const y = origin.y + dy;
+                        const point = { x, y };
+                        if (!$gameMap || !$gameMap.isValid(x, y)) continue;
+                        if (!EnvironmentScanner._tileStandable(x, y)) continue;
+                        if (this._isTileOccupiedByBlockingEvent(x, y)) continue;
+                        if (this._distance(point, player) > maxLeash) continue;
+                        if (this._distance(point, threat) <= currentThreatDistance) continue;
+                        const dir = follower.findDirectionTo ? follower.findDirectionTo(x, y) : 0;
+                        if (dir <= 0) continue;
+                        if (follower.canPass && !follower.canPass(follower.x, follower.y, dir)) continue;
+
+                        const threatDistance = this._distance(point, threat);
+                        const playerDistance = this._distance(point, player);
+                        const travelDistance = this._distance(point, origin);
+                        const score = (threatDistance * 12) - (playerDistance * 3) - travelDistance;
+                        if (!best || score > best.score) best = { x, y, score };
+                    }
+                }
+            }
+
+            return best ? { x: best.x, y: best.y } : null;
+        },
+
+        _enemyAvoidanceDecision(snapshot) {
+            if (!snapshot || !snapshot.autoReturn) return null;
+            const threat = this._activeMovingThreat(snapshot, 4);
+            if (!threat) return null;
+            const closeEnoughToInterrupt = threat.distance <= 3 ||
+                this._state.mode === 'target_event' ||
+                this._state.mode === 'target_point';
+            if (!closeEnoughToInterrupt) return null;
+
+            const point = this._findEvasionPoint(snapshot, threat);
+            const label = threat.label || threat.type || 'enemy';
+            if (point) {
+                return {
+                    action: 'EVADE',
+                    point,
+                    eventId: threat.eventId != null ? threat.eventId : null,
+                    reason: 'enemy too close: ' + label,
+                    _autonomySource: 'threat_evasion'
+                };
+            }
+            return {
+                action: 'RETURN',
+                eventId: threat.eventId != null ? threat.eventId : null,
+                reason: 'enemy too close: ' + label,
+                _autonomySource: 'threat_evasion'
+            };
+        },
+
+        _applyThreatEvasionIfNeeded(source) {
+            const now = Date.now();
+            if (now - (this._state.lastThreatCheckAt || 0) < 450) return false;
+            this._state.lastThreatCheckAt = now;
+            const snapshot = this._buildSnapshot();
+            const decision = this._enemyAvoidanceDecision(snapshot);
+            if (!decision) return false;
+            if (this._state.mode === 'target_point' &&
+                this._state.targetLabel === 'Evasion' &&
+                now - (this._state.lastThreatEvasionAt || 0) < 900) {
+                return true;
+            }
+            this._state.lastThreatEvasionAt = now;
+            this._applyDecision(decision, snapshot);
+            this._logTick(snapshot, decision, source || 'threat_evasion', 0, null);
+            return true;
         },
 
         _beginTask(action, payload, snapshot) {
@@ -8290,6 +8395,8 @@ Respond ONLY with this JSON:
         },
 
         _localPurposeDecision(snapshot) {
+            const evasion = this._enemyAvoidanceDecision(snapshot);
+            if (evasion) return evasion;
             const immediateThreat = this._panicThreat(snapshot);
             if (immediateThreat && snapshot.autoReturn) {
                 return { action: 'RETURN', reason: 'immediate danger nearby', _autonomySource: 'local_purpose' };
@@ -8600,7 +8707,7 @@ Respond ONLY with this JSON:
                 }
                 if (this._state.currentTask) this._clearTask();
                 const localPurpose = this._localPurposeDecision(snapshot);
-                if (localPurpose && localPurpose.action === 'RETURN') {
+                if (localPurpose && (localPurpose.action === 'RETURN' || localPurpose.action === 'EVADE')) {
                     this._applyDecision(localPurpose, snapshot);
                     this._logTick(snapshot, localPurpose, localPurpose._autonomySource || 'local_purpose', Date.now() - start, null);
                     return;
@@ -8755,6 +8862,25 @@ Respond ONLY with this JSON:
                 this._state.targetApproach = null;
                 this._state.targetLabel = '';
                 if (!preserveTask) this._clearTask();
+                return;
+            }
+
+            if (action === 'EVADE') {
+                if (decision && decision.point && decision.point.x != null && decision.point.y != null) {
+                    this._state.mode = 'target_point';
+                    this._state.targetEventId = null;
+                    this._state.targetPoint = { x: Number(decision.point.x), y: Number(decision.point.y) };
+                    this._state.targetApproach = null;
+                    this._state.targetLabel = 'Evasion';
+                    this._clearTask();
+                } else {
+                    this._state.mode = 'return';
+                    this._state.targetEventId = null;
+                    this._state.targetPoint = null;
+                    this._state.targetApproach = null;
+                    this._state.targetLabel = '';
+                    this._clearTask();
+                }
                 return;
             }
 
