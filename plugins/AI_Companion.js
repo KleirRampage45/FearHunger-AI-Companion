@@ -566,7 +566,57 @@
         // Groq hardcoded endpoint for chat fallback (used by _sendChatRequest, combat fallback)
         get apiEndpoint() {
             return PROVIDERS.groq.endpoint;
-	        }
+	        },
+
+        // ── Hybrid RAG ─────────────────────────────────────────────────
+        hybridRagEnabled: localStorage.getItem('AI_Companion_HybridRagEnabled') === 'true',
+        hybridRagEndpoint: localStorage.getItem('AI_Companion_HybridRagEndpoint') || 'http://127.0.0.1:1234/v1/embeddings',
+        hybridRagModel: localStorage.getItem('AI_Companion_HybridRagModel') || 'text-embedding-nomic-embed-text-v1.5',
+        hybridRagMaxChunks: Number(localStorage.getItem('AI_Companion_HybridRagMaxChunks') || '4'),
+        hybridRagSimilarityThreshold: Number(localStorage.getItem('AI_Companion_HybridRagSimilarityThreshold') || '0.70'),
+        hybridRagSpoilerLevel: Number(localStorage.getItem('AI_Companion_HybridRagSpoilerLevel') || '1'),
+        hybridRagIncludeSaveMemory: localStorage.getItem('AI_Companion_HybridRagIncludeSaveMemory') !== 'false',
+        hybridRagLanguage: localStorage.getItem('AI_Companion_HybridRagLanguage') || 'auto',
+
+        setHybridRagEnabled(on) {
+            this.hybridRagEnabled = !!on;
+            localStorage.setItem('AI_Companion_HybridRagEnabled', on ? 'true' : 'false');
+        },
+
+        setHybridRagEndpoint(url) {
+            this.hybridRagEndpoint = String(url || '').trim();
+            localStorage.setItem('AI_Companion_HybridRagEndpoint', this.hybridRagEndpoint);
+        },
+
+        setHybridRagModel(model) {
+            this.hybridRagModel = model;
+            localStorage.setItem('AI_Companion_HybridRagModel', model);
+        },
+
+        setHybridRagMaxChunks(n) {
+            this.hybridRagMaxChunks = Math.max(0, Math.min(6, Number(n) || 4));
+            localStorage.setItem('AI_Companion_HybridRagMaxChunks', String(this.hybridRagMaxChunks));
+        },
+
+        setHybridRagSimilarityThreshold(t) {
+            this.hybridRagSimilarityThreshold = Math.max(0.40, Math.min(0.95, Number(t) || 0.70));
+            localStorage.setItem('AI_Companion_HybridRagSimilarityThreshold', String(this.hybridRagSimilarityThreshold));
+        },
+
+        setHybridRagSpoilerLevel(level) {
+            this.hybridRagSpoilerLevel = Math.max(0, Math.min(4, Number(level) || 1));
+            localStorage.setItem('AI_Companion_HybridRagSpoilerLevel', String(this.hybridRagSpoilerLevel));
+        },
+
+        setHybridRagIncludeSaveMemory(on) {
+            this.hybridRagIncludeSaveMemory = on !== false;
+            localStorage.setItem('AI_Companion_HybridRagIncludeSaveMemory', on ? 'true' : 'false');
+        },
+
+        setHybridRagLanguage(lang) {
+            this.hybridRagLanguage = lang;
+            localStorage.setItem('AI_Companion_HybridRagLanguage', lang);
+        }
 	    };
 
 	    const Locale = {
@@ -2273,6 +2323,272 @@ Reply with ONLY the category name, nothing else.`;
 	            return this._buildStoryRecall(context, playerMessage);
 	        }
 	    };
+
+    //=========================================================================
+    // HybridRAG — Vector-based semantic retrieval supplementing structured KB
+    //=========================================================================
+    const HybridRAG = {
+        _index: null,
+        _loaded: false,
+        _loadAttempted: false,
+
+        /**
+         * Load the vector index from data/rag/index.json.
+         * Uses NW.js fs module; degrades gracefully in environments without fs.
+         */
+        loadIndex() {
+            if (this._loadAttempted) return this._loaded;
+            this._loadAttempted = true;
+
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const gameDir = path.dirname(process.execPath);
+                const indexPath = path.join(gameDir, 'data', 'rag', 'index.json');
+
+                if (!fs.existsSync(indexPath)) {
+                    Debug.log('[HybridRAG] No index.json found at', indexPath);
+                    return false;
+                }
+
+                const raw = fs.readFileSync(indexPath, 'utf-8');
+                this._index = JSON.parse(raw);
+
+                if (!this._index || !this._index.chunks || !Array.isArray(this._index.chunks)) {
+                    Debug.warn('[HybridRAG] index.json has invalid format');
+                    this._index = null;
+                    return false;
+                }
+
+                this._loaded = true;
+                Debug.log('[HybridRAG] Index loaded:', this._index.chunks.length, 'chunks, model:', this._index.embedding_model);
+                return true;
+            } catch (e) {
+                Debug.warn('[HybridRAG] Failed to load index:', e.message);
+                this._index = null;
+                return false;
+            }
+        },
+
+        /**
+         * Check if vector RAG is available (config ON + index loaded).
+         */
+        isAvailable() {
+            return Config.hybridRagEnabled && this.loadIndex() && this._index !== null;
+        },
+
+        /**
+         * Decide whether to retrieve for this query.
+         * Rules:
+         * - Do NOT retrieve for: combat, per-heartbeat autonomy, loot/door/NPC interactions,
+         *   status healing prompts, short ambient comments.
+         * - DO retrieve for: lore, NPC, endings, locations, mechanics, story-goal,
+         *   broad "where next", long-term memory recall.
+         */
+        shouldRetrieve(context, playerMessage, intent) {
+            if (!this.isAvailable()) return false;
+            if (Config.hybridRagMaxChunks <= 0) return false;
+
+            // Never use vectors in active combat
+            if (context.in_battle) return false;
+
+            const blockedIntents = new Set([
+                'combat_decision', 'autonomy_tick', 'ambient_comment',
+                'item_consent', 'status_heal', 'loot_interaction',
+                'door_interaction', 'npc_interaction'
+            ]);
+
+            if (!intent || !intent.primary) return false;
+            if (blockedIntents.has(intent.primary)) return false;
+
+            // Short messages (under 10 chars) are probably not semantic queries
+            if (playerMessage && playerMessage.trim().length < 10) return false;
+
+            const allowedIntents = new Set([
+                'lore_question', 'npc_question', 'location_question',
+                'ending_question', 'mechanic_question', 'story_goal',
+                'generic_query', 'social', 'emotional',
+                'character_question', 'backstory', 'memory_recall',
+                'quest_hint'
+            ]);
+
+            if (allowedIntents.has(intent.primary)) return true;
+            if (intent.types && intent.types.some(t => allowedIntents.has(t))) return true;
+
+            // Heuristic: if the message looks like a broad question
+            const msg = (playerMessage || '').toLowerCase();
+            if (/what.+(know|can you tell|happened)|where.+(go|next|find)|who.+(is|are|was)|tell me about/i.test(msg)) {
+                return true;
+            }
+
+            return false;
+        },
+
+        /**
+         * Embed a query through the configured endpoint and retrieve top chunks.
+         * Returns an array of {id, type, title, text, tags, source, source_url,
+         *   spoiler_level, save_id, score}
+         */
+        async retrieve(query, options) {
+            const opts = Object.assign({
+                language: Config.hybridRagLanguage === 'auto' ? Config.language : Config.hybridRagLanguage,
+                spoilerLevel: Config.hybridRagSpoilerLevel,
+                maxChunks: Config.hybridRagMaxChunks,
+                threshold: Config.hybridRagSimilarityThreshold,
+                includeSaveMemory: Config.hybridRagIncludeSaveMemory,
+                saveId: null,
+                currentMap: null,
+                endpoint: Config.hybridRagEndpoint,
+                model: Config.hybridRagModel
+            }, options || {});
+
+            if (!this._index || !this._index.chunks || this._index.chunks.length === 0) {
+                return [];
+            }
+
+            const queryVector = await this._embedQuery(query, opts);
+            if (!queryVector) return [];
+
+            const scored = [];
+            for (const chunk of this._index.chunks) {
+                if (!chunk.vector || !chunk.metadata) continue;
+
+                // Language filter
+                if (opts.language !== 'auto') {
+                    if (chunk.metadata.language !== opts.language) continue;
+                }
+
+                // Spoiler filter
+                if (chunk.metadata.spoiler_level > opts.spoilerLevel) continue;
+
+                // Save-memory filter
+                if (chunk.metadata.type === 'save_memory' && !opts.includeSaveMemory) continue;
+                if (chunk.metadata.type === 'save_memory' && opts.saveId &&
+                    chunk.metadata.save_id && chunk.metadata.save_id !== opts.saveId) continue;
+
+                // Map filter (optional, boost chunks for current map)
+                const score = this._cosineSimilarity(queryVector, chunk.vector);
+
+                if (score >= opts.threshold) {
+                    scored.push({
+                        id: chunk.id,
+                        score: score,
+                        ...chunk.metadata
+                    });
+                }
+            }
+
+            // Sort by score descending, take top N
+            scored.sort((a, b) => b.score - a.score);
+            return scored.slice(0, opts.maxChunks);
+        },
+
+        /**
+         * Format retrieved chunks for prompt injection.
+         * Returns a string ready for insertion into the assembled prompt.
+         */
+        formatForPrompt(results) {
+            if (!results || results.length === 0) return '';
+
+            let block = 'RETRIEVED KNOWLEDGE:\n';
+            for (const r of results) {
+                const label = `[${r.type || 'knowledge'} | ${r.title || r.id} | source: ${r.source || 'unknown'} | confidence: ${r.score.toFixed(2)}]`;
+                block += `- ${label}\n  ${r.text}\n`;
+            }
+
+            block += '\nGROUNDING RULES:\n';
+            block += '- Live game state and structured memory override retrieved knowledge.\n';
+            block += '- Do not invent NPCs, enemies, recruitable characters, item locations, or story events.\n';
+            block += '- If retrieved knowledge does not support an answer, say you are not sure.\n';
+            block += '- If a fact may be a spoiler above the configured level, do not reveal it.\n';
+
+            return block;
+        },
+
+        /**
+         * Classify the grounding level of an answer.
+         * Returns { mode: 'structured_confirmed'|'rag_supported'|'uncertain'|'unsupported' }
+         */
+        classifyGrounding(ragResults, structuredContext) {
+            if (structuredContext && (
+                structuredContext.in_battle ||
+                (structuredContext.battle_state && structuredContext.battle_state.enemies && structuredContext.battle_state.enemies.length > 0) ||
+                (structuredContext.nearby_objects && structuredContext.nearby_objects.length > 0)
+            )) {
+                return { mode: 'structured_confirmed' };
+            }
+            if (ragResults && ragResults.length > 0) {
+                return { mode: 'rag_supported' };
+            }
+            return { mode: 'uncertain' };
+        },
+
+        /**
+         * Get a summary of save-specific memory chunks.
+         */
+        getSaveMemorySummary(saveId) {
+            if (!this._index || !this._index.chunks) return [];
+            const threshold = Config.hybridRagSimilarityThreshold;
+            // Return all save_memory chunks for this save, sorted by recency
+            return this._index.chunks
+                .filter(c => c.metadata && c.metadata.type === 'save_memory' &&
+                    c.metadata.save_id === saveId)
+                .map(c => ({
+                    id: c.id,
+                    title: c.metadata.title,
+                    text: c.metadata.text,
+                    timestamp: c.metadata.timestamp || 0,
+                    spoiler_level: c.metadata.spoiler_level || 0
+                }))
+                .sort((a, b) => b.timestamp - a.timestamp);
+        },
+
+        // ── Internal helpers ────────────────────────────────────────────
+        async _embedQuery(query, opts) {
+            try {
+                const url = opts.endpoint.replace(/\/+$/, '');
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer lm-studio'
+                    },
+                    body: JSON.stringify({
+                        model: opts.model,
+                        input: query.trim()
+                    })
+                });
+
+                if (!resp.ok) {
+                    Debug.warn('[HybridRAG] Embedding API error:', resp.status);
+                    return null;
+                }
+
+                const data = await resp.json();
+                if (!data.data || !data.data[0] || !data.data[0].embedding) {
+                    Debug.warn('[HybridRAG] Unexpected embedding response format');
+                    return null;
+                }
+
+                return data.data[0].embedding;
+            } catch (e) {
+                Debug.warn('[HybridRAG] Embedding request failed:', e.message);
+                return null;
+            }
+        },
+
+        _cosineSimilarity(a, b) {
+            if (!a || !b || a.length !== b.length) return 0;
+            let dot = 0, normA = 0, normB = 0;
+            for (let i = 0; i < a.length; i++) {
+                dot += a[i] * b[i];
+                normA += a[i] * a[i];
+                normB += b[i] * b[i];
+            }
+            if (normA === 0 || normB === 0) return 0;
+            return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+        }
+    };
 
     //=========================================================================
     // Combat State Hashing — skip API calls when state unchanged
@@ -10534,7 +10850,7 @@ Respond ONLY with this JSON:
 	            }
         },
 
-        _buildPromptSections(playerMessage, context, intent) {
+        _buildPromptSections(playerMessage, context, intent, ragResults) {
             const sections = [];
             const pushSection = (title, body) => {
                 const rendered = this._renderPromptSection(title, body);
@@ -10625,6 +10941,11 @@ Respond ONLY with this JSON:
 	                : 'Do NOT say "I do not know" or "I am not sure" unless the information is truly not available in the context above.';
 	            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. ${uncertaintyRule}\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
             pushSection('RESPONSE CONTRACT', playerSection);
+
+            // Hybrid RAG: inject retrieved knowledge after all structured sections
+            if (ragResults && ragResults.length > 0) {
+                pushSection('RETRIEVED KNOWLEDGE', HybridRAG.formatForPrompt(ragResults));
+            }
 
             return sections;
         },
@@ -10893,7 +11214,9 @@ Respond ONLY with this JSON:
                         response_text: approvalResponse,
                         response_source: 'support_approval',
                         latency_ms: 0,
-                        model_used: null
+                        model_used: null,
+                        rag_chunk_ids: null,
+                        grounding_mode: 'structured_confirmed'
                     });
                     DebugState.captureChat({
                         player_message: playerMessage,
@@ -10932,7 +11255,39 @@ Respond ONLY with this JSON:
                 }
             }
 
-            const prompt = this._buildChatPrompt(playerMessage, context, intent);
+            // Hybrid RAG — vector retrieval for semantic questions
+            let ragResults = null;
+            if (HybridRAG.shouldRetrieve(context, playerMessage, intent)) {
+                const ragStartTime = performance.now();
+                try {
+                    ragResults = await HybridRAG.retrieve(playerMessage);
+                    const ragLatency = Math.round(performance.now() - ragStartTime);
+                    if (Config.debugMode) {
+                        Debug.log('[RAG] Retrieved:', ragResults.length, 'chunks in', ragLatency, 'ms');
+                    }
+                    ThesisLogger.log('rag_retrieval', {
+                        query: playerMessage,
+                        intent: intent.primary,
+                        latency_ms: ragLatency,
+                        embedding_model: Config.hybridRagModel,
+                        retrieved_count: ragResults.length,
+                        chunks: ragResults.map(r => ({
+                            id: r.id,
+                            type: r.type,
+                            title: r.title,
+                            score: r.score,
+                            source: r.source,
+                            spoiler_level: r.spoiler_level
+                        }))
+                    });
+                    this._lastRagChunkIds = ragResults.map(r => r.id);
+                } catch (e) {
+                    Debug.warn('[RAG] Retrieval failed:', e.message);
+                    ragResults = [];
+                }
+            }
+
+            const prompt = this._buildChatPrompt(playerMessage, context, intent, ragResults);
 
             if (Config.debugMode) {
                 Debug.log('[Chat] prompt length:', prompt.length, 'chars');
@@ -10959,7 +11314,9 @@ Respond ONLY with this JSON:
 	                        response_source: 'kb_fallback',
 	                        latency_ms: chatLatency,
 	                        model_used: null,
-	                        llm_failures: ModelRouter.getRecentFailures()
+	                        llm_failures: ModelRouter.getRecentFailures(),
+	                        rag_chunk_ids: this._lastRagChunkIds || null,
+	                        grounding_mode: 'uncertain'
 	                    });
                     DebugState.captureChat({
                         player_message: playerMessage,
@@ -11002,7 +11359,9 @@ Respond ONLY with this JSON:
                     latency_ms: chatLatency,
                     model_used: this._lastModelUsed || null,
                     llm_usage: this._lastUsage || null,
-                    tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null
+                    tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null,
+                    rag_chunk_ids: this._lastRagChunkIds || null,
+                    grounding_mode: HybridRAG.classifyGrounding(ragResults, context).mode
                 });
                 DebugState.captureChat({
                     player_message: playerMessage,
@@ -11020,7 +11379,9 @@ Respond ONLY with this JSON:
                     llm_usage: this._lastUsage || null,
                     tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null,
                     context_map: context.current_map,
-                    nearby_objects: context.nearby_objects
+                    nearby_objects: context.nearby_objects,
+                    rag_chunk_ids: this._lastRagChunkIds || null,
+                    grounding_mode: HybridRAG.classifyGrounding(ragResults, context).mode
                 });
                 return finalResponse;
             } catch (error) {
@@ -11042,7 +11403,9 @@ Respond ONLY with this JSON:
 	                    response_source: 'kb_fallback_error',
 	                    latency_ms: chatLatency,
 	                    error: error.message,
-	                    llm_failures: ModelRouter.getRecentFailures()
+	                    llm_failures: ModelRouter.getRecentFailures(),
+	                    rag_chunk_ids: this._lastRagChunkIds || null,
+	                    grounding_mode: 'unsupported'
 	                });
                 DebugState.captureChat({
                     player_message: playerMessage,
@@ -11061,7 +11424,7 @@ Respond ONLY with this JSON:
             }
         },
 
-        _buildChatPrompt(playerMessage, context, intent) {
+        _buildChatPrompt(playerMessage, context, intent, ragResults) {
             const sanityMod = context.sanity_modifier;
 
             // Base prompt: identity + relationship (always)
@@ -11084,7 +11447,7 @@ CRITICAL GAME RULES (NEVER violate these):
 - Never invent visual details such as age, scars, clothing, beard, gender, count, or exact position unless those details are explicitly present in the provided context.
 `;
 
-            const sections = this._buildPromptSections(playerMessage, context, intent);
+            const sections = this._buildPromptSections(playerMessage, context, intent, ragResults);
             this._lastPromptSections = sections.map(section => ({
                 title: section.title,
                 body: section.body

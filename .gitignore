@@ -56,6 +56,8 @@ ai_companion_logs/
 buglogs/
 logs/
 *.jsonl
+# Exception: curated RAG chunks and index
+!data/rag/*.jsonl
 *.log
 
 # Private references and local experiments
