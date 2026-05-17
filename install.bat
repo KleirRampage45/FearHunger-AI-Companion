@@ -107,6 +107,7 @@ echo [OK] Copied FearHungerKB.js
 if exist "%SCRIPT_DIR%data\rag" (
     if not exist "%GAME_PATH%\data\rag" mkdir "%GAME_PATH%\data\rag"
     copy /y "%SCRIPT_DIR%data\rag\*.jsonl" "%GAME_PATH%\data\rag\" >nul 2>nul
+    if exist "%SCRIPT_DIR%data\rag\index.json" copy /y "%SCRIPT_DIR%data\rag\index.json" "%GAME_PATH%\data\rag\" >nul 2>nul
     echo [OK] Copied RAG chunk data
 )
 

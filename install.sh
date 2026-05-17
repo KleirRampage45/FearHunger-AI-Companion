@@ -163,6 +163,7 @@ install_mod() {
     if [ -d "$SCRIPT_DIR/data/rag" ]; then
         mkdir -p "$dest/data/rag"
         cp "$SCRIPT_DIR/data/rag/"*.jsonl "$dest/data/rag/" 2>/dev/null || true
+        [ -f "$SCRIPT_DIR/data/rag/index.json" ] && cp "$SCRIPT_DIR/data/rag/index.json" "$dest/data/rag/"
         echo -e "${GREEN}  ✓ Copied RAG chunk data${NC}"
     fi
 

@@ -936,6 +936,10 @@
         runOptional(label, fn) {
             if (Config.apiProvider !== 'local') return fn();
             return this.run(label, fn, { skipIfBusy: true, drainMs: 1500 });
+        },
+
+        runLocalOptional(label, fn, options) {
+            return this.run(label, fn, Object.assign({ skipIfBusy: true, drainMs: 1500 }, options || {}));
         }
     };
 
@@ -2581,7 +2585,7 @@ Reply with ONLY the category name, nothing else.`;
             const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
             try {
-                return await LocalRequestQueue.runOptional('rag_embed', async () => {
+                return await LocalRequestQueue.runLocalOptional('rag_embed', async () => {
                     const url = opts.endpoint.replace(/\/+$/, '');
                     const resp = await fetch(url, {
                         method: 'POST',
