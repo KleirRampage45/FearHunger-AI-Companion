@@ -2461,24 +2461,32 @@ Reply with ONLY the category name, nothing else.`;
                 return [];
             }
 
-            const queryVector = await this._embedQuery(query, opts);
+            const expandedQuery = this._expandQuery(query);
+            const queryVector = await this._embedQuery(expandedQuery, opts);
             if (!queryVector) return [];
 
-            const scored = this._scoreChunks(queryVector, this._index.chunks, opts);
+            const scored = this._scoreChunks(queryVector, this._index.chunks, opts, expandedQuery);
 
             // Language fallback: if filtering by a non-en language gave no results
             // above threshold, retry with English chunks (all current chunks are en)
             if (scored.length === 0 && opts.language !== 'auto' && opts.language !== 'en') {
                 const enOpts = Object.assign({}, opts, { language: 'en' });
-                const enScored = this._scoreChunks(queryVector, this._index.chunks, enOpts);
+                const enScored = this._scoreChunks(queryVector, this._index.chunks, enOpts, expandedQuery);
                 scored.push(...enScored);
+                scored.sort((a, b) => b.score - a.score);
+            }
+
+            if (scored.length === 0 && opts.threshold > 0.52) {
+                const relaxedOpts = Object.assign({}, opts, { threshold: 0.52, language: opts.language === 'es' ? 'en' : opts.language });
+                const relaxed = this._scoreChunks(queryVector, this._index.chunks, relaxedOpts, expandedQuery);
+                scored.push(...relaxed);
                 scored.sort((a, b) => b.score - a.score);
             }
 
             return scored.slice(0, opts.maxChunks);
         },
 
-        _scoreChunks(queryVector, chunks, opts) {
+        _scoreChunks(queryVector, chunks, opts, queryText) {
             const scored = [];
             for (const chunk of chunks) {
                 if (!chunk.vector || !chunk.metadata) continue;
@@ -2496,7 +2504,8 @@ Reply with ONLY the category name, nothing else.`;
                 if (chunk.metadata.type === 'save_memory' && opts.saveId &&
                     chunk.metadata.save_id && chunk.metadata.save_id !== opts.saveId) continue;
 
-                const score = this._cosineSimilarity(queryVector, chunk.vector);
+                const score = this._cosineSimilarity(queryVector, chunk.vector) +
+                    this._lexicalBoost(queryText, chunk.metadata);
                 if (score >= opts.threshold) {
                     scored.push({
                         id: chunk.id,
@@ -2507,6 +2516,45 @@ Reply with ONLY the category name, nothing else.`;
             }
             scored.sort((a, b) => b.score - a.score);
             return scored;
+        },
+
+        _expandQuery(query) {
+            const raw = String(query || '').trim();
+            const lower = raw.toLowerCase();
+            const additions = [];
+
+            if (/(buckman|ludwig)/i.test(lower)) additions.push('Buckman crown prince prisoner Trortur Rondon');
+            if (/(mujer|niñ[ao]s?|chica|girl).{0,40}(reclut|party|compañer|companer)|reclut.{0,40}(mujer|niñ[ao]s?|chica|girl)/i.test(lower)) {
+                additions.push('the girl recruit cage prisons party member');
+            }
+            if (/(prisi[oó]n|prisiones|prison|prisons)/i.test(lower)) additions.push('prisons level 3 cells Buckman Trortur the Girl');
+            if (/(sangr|bleed)/i.test(lower)) additions.push('bleeding status cloth fragment');
+            if (/(hambre|hunger)/i.test(lower)) additions.push('hunger survival food starvation');
+            if (/(moneda|coin flip|cara|cruz)/i.test(lower)) additions.push('coin flip guard defend attack pattern');
+            if (/(maneba)/i.test(lower)) additions.push('Maneba enemy parasite injection');
+
+            return additions.length > 0 ? raw + '\n' + additions.join('\n') : raw;
+        },
+
+        _lexicalBoost(queryText, metadata) {
+            const haystack = [
+                metadata && metadata.title,
+                metadata && Array.isArray(metadata.tags) ? metadata.tags.join(' ') : '',
+                metadata && metadata.id
+            ].join(' ').toLowerCase();
+            const query = String(queryText || '').toLowerCase();
+            const tokens = query
+                .replace(/[^a-z0-9áéíóúñ' -]+/gi, ' ')
+                .split(/\s+/)
+                .filter(t => t.length >= 4);
+            let matches = 0;
+            const seen = {};
+            for (const token of tokens) {
+                if (seen[token]) continue;
+                seen[token] = true;
+                if (haystack.indexOf(token) >= 0) matches++;
+            }
+            return Math.min(0.18, matches * 0.045);
         },
 
         /**
@@ -10616,6 +10664,22 @@ Respond ONLY with this JSON:
             return intent;
         },
 
+        _normalizeIntentForRecruitmentQuery(playerMessage, intent) {
+            if (!intent) return intent;
+            const msg = String(playerMessage || '').toLowerCase();
+            const asksRecruitment = /(reclut|recruit|join|unirse|compañer|companer|party member)/i.test(msg);
+            const asksNpc = /(mujer|niñ[ao]s?|chica|girl|hombre|man|npc|personaje|buckman|darce|d'arce|cahara|enki|ragnvaldr|moonless)/i.test(msg);
+            const asksLocation = /(donde|dónde|where|prisi[oó]n|prisiones|prison|celda|cage|jaula)/i.test(msg);
+            if (!asksRecruitment || !asksNpc) return intent;
+
+            const target = asksLocation ? 'location' : 'lore';
+            const filtered = (intent.types || []).filter(type => type !== target && type !== 'status_help');
+            intent.types = [target].concat(filtered);
+            intent.primary = target;
+            intent.confidence = Math.max(intent.confidence || 0, 0.9);
+            return intent;
+        },
+
         _renderPromptSection(title, body) {
             const text = Array.isArray(body) ? body.join('\n') : String(body || '');
             const trimmed = text.trim();
@@ -11284,6 +11348,7 @@ Respond ONLY with this JSON:
 
             const context = this.getContext();
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
+            this._normalizeIntentForRecruitmentQuery(playerMessage, intent);
             this._normalizeIntentForContainerQuery(playerMessage, context, intent);
 
             if (Config.debugMode) {
