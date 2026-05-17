@@ -2447,6 +2447,12 @@ Reply with ONLY the category name, nothing else.`;
             // Short messages (under 10 chars) are probably not semantic queries
             if (playerMessage && playerMessage.trim().length < 10) return false;
 
+            // Live navigation should use current map/perception/story goals, not broad lore vectors.
+            // RAG is still useful when the question names a specific person/place/event.
+            if (this._isLiveNavigationQuery(playerMessage) && !this._hasNamedAnchor(playerMessage)) {
+                return false;
+            }
+
             // Structurally handled intents — KB covers these precisely
             const structuralIntents = new Set([
                 'tactical', 'recent_battle', 'item_info'
@@ -2470,6 +2476,25 @@ Reply with ONLY the category name, nothing else.`;
             }
 
             return false;
+        },
+
+        _isLiveNavigationQuery(message) {
+            const msg = String(message || '').toLowerCase();
+            return /(?:a\s*d[oó]nde|d[oó]nde|where)\s+(?:deber[ií]amos|debo|vamos|ir|go|next|ahora)|(?:qu[eé]\s+hacemos|what\s+should\s+we\s+do|where\s+should\s+we\s+go)|(?:salida|exit|camino|path)\b/i.test(msg);
+        },
+
+        _hasNamedAnchor(message) {
+            const msg = String(message || '').toLowerCase();
+            const stop = new Set([
+                'donde', 'dónde', 'deberiamos', 'deberíamos', 'debo', 'vamos', 'ahora',
+                'where', 'should', 'next', 'salida', 'camino', 'exit', 'path',
+                'que', 'qué', 'hacemos', 'what', 'go', 'ir'
+            ]);
+            const tokens = msg
+                .replace(/[^a-z0-9áéíóúñ' -]+/gi, ' ')
+                .split(/\s+/)
+                .filter(t => t.length >= 5 && !stop.has(t));
+            return tokens.length > 0;
         },
 
         /**
@@ -8152,6 +8177,10 @@ Respond ONLY with this JSON:
             const now = Date.now();
             const tickMs = Math.max(2000, Config.autonomyTickSeconds * 1000);
             if (this._state.pending || now - this._state.lastTickAt < tickMs) return;
+            if (LocalRequestQueue.isBusy()) {
+                this._state.lastTickAt = now;
+                return;
+            }
 
             this._state.lastTickAt = now;
             this._heartbeat();
