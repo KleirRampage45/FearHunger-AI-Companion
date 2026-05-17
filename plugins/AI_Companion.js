@@ -222,6 +222,51 @@
             return provider.defaultModels[0] || 'openrouter/free';
         },
 
+        looksLikeLocalOnlyModel(model) {
+            const value = String(model || '').trim().toLowerCase();
+            if (!value) return false;
+            if (/lmstudio|ollama|hauhaucs|uncensored|gguf|qwen|gemma/.test(value)) return true;
+            return false;
+        },
+
+        getCloudModelsForContext(context, providerKey) {
+            providerKey = providerKey || (this.apiProvider === 'local' ? 'groq' : this.apiProvider);
+            const provider = PROVIDERS[providerKey] || PROVIDERS.groq;
+            const defaults = (provider.defaultModels || []).slice();
+            const models = [];
+            const pushUnique = model => {
+                if (!model || models.indexOf(model) >= 0) return;
+                models.push(model);
+            };
+
+            if (providerKey === 'groq') {
+                if (context === 'ambient') {
+                    pushUnique('llama-3.1-8b-instant');
+                    pushUnique('llama-3.3-70b-versatile');
+                } else {
+                    pushUnique('llama-3.3-70b-versatile');
+                    pushUnique('llama-3.1-8b-instant');
+                }
+                // Only trust a custom chat model for Groq if it is not a local-only name.
+                if (context === 'chat' && this.chatModel && !this.looksLikeLocalOnlyModel(this.chatModel)) {
+                    models.unshift(this.chatModel);
+                }
+                return models;
+            }
+
+            if (providerKey === 'openrouter') {
+                if (this.chatModel && !this.looksLikeLocalOnlyModel(this.chatModel)) pushUnique(this.chatModel);
+                if (this._cachedFreeModels && this._cachedFreeModels.length > 0) {
+                    this._cachedFreeModels.slice(0, 3).forEach(m => pushUnique(m.id));
+                }
+                defaults.forEach(pushUnique);
+                return models.length > 0 ? models : ['openrouter/free'];
+            }
+
+            defaults.forEach(pushUnique);
+            return models.length > 0 ? models : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+        },
+
         setProvider(provider) {
             this.apiProvider = provider;
             localStorage.setItem('AI_Companion_Provider', provider);
@@ -816,17 +861,7 @@
             } else if (Config.apiProvider === 'local') {
                 models = [Config.localModel];
             } else {
-                // Groq: context-aware lists
-                if (context === 'combat') {
-                    models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
-                } else if (context === 'ambient') {
-                    models = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'];
-                } else {
-                    // chat — prefer user selection
-                    models = Config.chatModel
-                        ? [Config.chatModel, 'llama-3.3-70b-versatile']
-                        : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
-                }
+                models = Config.getCloudModelsForContext(context, Config.apiProvider);
             }
 
             return models.filter(m => !this._failedModels.has(m));
@@ -2572,6 +2607,8 @@ Reply with ONLY the category name, nothing else.`;
 
             block += '\nGROUNDING RULES:\n';
             block += '- Live game state and structured memory override retrieved knowledge.\n';
+            block += '- If the player asks about a named entity shown above, answer from the matching retrieved chunk. Do not claim ignorance about retrieved entities.\n';
+            block += '- Treat retrieved knowledge as background knowledge, not proof that something is currently visible.\n';
             block += '- Do not invent NPCs, enemies, recruitable characters, item locations, or story events.\n';
             block += '- If retrieved knowledge does not support an answer, say you are not sure.\n';
             block += '- If a fact may be a spoiler above the configured level, do not reveal it.\n';
@@ -5114,7 +5151,7 @@ Respond ONLY with this JSON:
                         'HTTP-Referer': 'https://fear-and-hunger-mod.local',
                         'X-Title': 'Fear & Hunger AI Companion'
                     };
-                    const models = ModelRouter.getModelsForContext(context);
+                    const models = Config.getCloudModelsForContext(context, 'groq');
                     for (const model of models) {
                         try {
                             const data = await _tryFetch(Config.apiEndpoint, groqHeaders, model, 300, false);
@@ -5349,7 +5386,7 @@ Respond ONLY with this JSON:
                         'HTTP-Referer': 'https://fear-and-hunger-mod.local',
                         'X-Title': 'Fear & Hunger AI Companion'
                     };
-                    const models = ModelRouter.getModelsForContext('combat');
+                    const models = Config.getCloudModelsForContext('combat', 'groq');
                     for (const model of models) {
                         const groqResult = _trySyncRequest(
                             Config.apiEndpoint, groqHeaders, model, 300, false
@@ -10994,6 +11031,12 @@ Respond ONLY with this JSON:
             if (context.recently_mentioned_facts && context.recently_mentioned_facts.length > 0) {
                 pushSection('RECENTLY MENTIONED FACTS', context.recently_mentioned_facts.map(f => `- ${f}`));
             }
+
+            const hasRetrievedKnowledge = ragResults && ragResults.length > 0;
+            if (hasRetrievedKnowledge) {
+                pushSection('RETRIEVED KNOWLEDGE', HybridRAG.formatForPrompt(ragResults));
+            }
+
             pushSection('MODE INSTRUCTIONS', this._buildInstructions(intent));
 
             if (context.party_members && context.party_members.length > 0) {
@@ -11042,6 +11085,9 @@ Respond ONLY with this JSON:
             if (this._isNpcRecallQuery(playerMessage)) {
                 playerSection += `NPC RECALL RULE: Use RECENT NPC DIALOGUE and RECENT NPC CONTACT to name who just spoke to us. Mention the speaker explicitly by name.\n`;
             }
+            if (hasRetrievedKnowledge) {
+                playerSection += `RETRIEVED KNOWLEDGE RULE: The retrieved knowledge section above contains relevant background facts. If it names the person, place, item, enemy, or event the player asked about, answer from it directly. Do NOT say you do not know that retrieved entity. Do NOT present it as currently visible unless LIVE NEARBY DETECTION or RECENT NPC DIALOGUE says it is here.\n`;
+            }
             const recentCompanionMsgs = context.recent_exchanges
                 .filter(e => e.role === 'companion')
                 .slice(-2)
@@ -11052,13 +11098,8 @@ Respond ONLY with this JSON:
 	            const uncertaintyRule = Config.language === 'es'
 	                ? 'Do NOT say "no sé" or "no estoy seguro" unless the information is truly not available in the context above.'
 	                : 'Do NOT say "I do not know" or "I am not sure" unless the information is truly not available in the context above.';
-	            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. ${uncertaintyRule}\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
+            playerSection += `RESPOND ONLY IN ${Config.language === 'es' ? 'SPANISH (Español)' : 'ENGLISH'}. Be brief (1-2 sentences). Stay in character.\nIMPORTANT: You have access to game knowledge. If the player asks about items, enemies, or status effects, answer with CONFIDENCE using the data provided. ${uncertaintyRule}\nUse RISK ASSESSMENT only for urgency and prioritization. Do NOT treat estimated survival as exact prophecy.\nDo NOT mention phobias or status effects unless they are DIRECTLY relevant to the current situation or enemy. If fighting a non-ghost enemy, do NOT mention phasmophobia.\nDo NOT repeatedly warn about the same nearby threat. Mention it ONCE, then move on.\nAvoid reusing the same fact from RECENTLY MENTIONED FACTS unless the player explicitly follows up on it or the situation has changed.\nWhen answering, distinguish static area knowledge from live perception. Do NOT say you currently see or count enemies/NPCs unless they appear in LIVE NEARBY DETECTION or RECENT NPC DIALOGUE.\nYour tone and urgency should match the SITUATION level — if critical, be tense and urgent; if stable, be calm.`;
             pushSection('RESPONSE CONTRACT', playerSection);
-
-            // Hybrid RAG: inject retrieved knowledge after all structured sections
-            if (ragResults && ragResults.length > 0) {
-                pushSection('RETRIEVED KNOWLEDGE', HybridRAG.formatForPrompt(ragResults));
-            }
 
             return sections;
         },
@@ -11977,7 +12018,7 @@ CRITICAL GAME RULES (NEVER violate these):
                 : Config.getHeaders();
             const groqEndpoint = Config.apiProvider === 'local' ? Config.apiEndpoint : Config.getEndpoint();
             const models = Config.apiProvider === 'local'
-                ? (Config.chatModel ? [Config.chatModel, 'llama-3.3-70b-versatile'] : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'])
+                ? Config.getCloudModelsForContext('chat', 'groq')
                 : ModelRouter.getModelsForContext('chat');
             for (const model of models) {
                 const text = await _tryRequest(
@@ -15505,7 +15546,9 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
                 ? Config.apiEndpoint
                 : Config.getEndpoint();
 
-            const models = ModelRouter.getModelsForContext('chat');
+            const models = (Config.apiProvider === 'local' && Config.apiKey)
+                ? Config.getCloudModelsForContext('chat', 'groq')
+                : ModelRouter.getModelsForContext('chat');
             for (const model of models) {
                 try {
                     const xhr = new XMLHttpRequest();
