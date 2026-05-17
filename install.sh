@@ -159,6 +159,13 @@ install_mod() {
         echo -e "${GREEN}  ✓ Copied face assets${NC}"
     fi
 
+    # Copy RAG data directory (vector index is built separately with tools/build-rag-index.js)
+    if [ -d "$SCRIPT_DIR/data/rag" ]; then
+        mkdir -p "$dest/data/rag"
+        cp "$SCRIPT_DIR/data/rag/"*.jsonl "$dest/data/rag/" 2>/dev/null || true
+        echo -e "${GREEN}  ✓ Copied RAG chunk data${NC}"
+    fi
+
     # Patch plugins.js to register our plugins (if not already registered)
     if ! grep -q "FearHungerKB" "$plugins_js"; then
         # Insert before the closing bracket of the plugin array

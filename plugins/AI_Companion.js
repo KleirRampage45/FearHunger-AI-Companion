@@ -2331,10 +2331,13 @@ Reply with ONLY the category name, nothing else.`;
         _index: null,
         _loaded: false,
         _loadAttempted: false,
+        _warnedMissing: false,
 
         /**
          * Load the vector index from data/rag/index.json.
          * Uses NW.js fs module; degrades gracefully in environments without fs.
+         * Logs a clear warning ONCE if index.json is missing (user must run
+         * tools/build-rag-index.js first).
          */
         loadIndex() {
             if (this._loadAttempted) return this._loaded;
@@ -2347,7 +2350,11 @@ Reply with ONLY the category name, nothing else.`;
                 const indexPath = path.join(gameDir, 'data', 'rag', 'index.json');
 
                 if (!fs.existsSync(indexPath)) {
-                    Debug.log('[HybridRAG] No index.json found at', indexPath);
+                    if (!this._warnedMissing) {
+                        this._warnedMissing = true;
+                        Debug.warn('[HybridRAG] index.json not found at', indexPath,
+                            '— run tools/build-rag-index.js to build it. RAG disabled until index exists.');
+                    }
                     return false;
                 }
 
@@ -2364,7 +2371,11 @@ Reply with ONLY the category name, nothing else.`;
                 Debug.log('[HybridRAG] Index loaded:', this._index.chunks.length, 'chunks, model:', this._index.embedding_model);
                 return true;
             } catch (e) {
-                Debug.warn('[HybridRAG] Failed to load index:', e.message);
+                if (!this._warnedMissing) {
+                    this._warnedMissing = true;
+                    Debug.warn('[HybridRAG] Failed to load index:', e.message,
+                        '— RAG disabled.');
+                }
                 this._index = null;
                 return false;
             }
@@ -2379,11 +2390,11 @@ Reply with ONLY the category name, nothing else.`;
 
         /**
          * Decide whether to retrieve for this query.
-         * Rules:
-         * - Do NOT retrieve for: combat, per-heartbeat autonomy, loot/door/NPC interactions,
-         *   status healing prompts, short ambient comments.
-         * - DO retrieve for: lore, NPC, endings, locations, mechanics, story-goal,
-         *   broad "where next", long-term memory recall.
+         *
+         * DO retrieve for: lore, location, status_help, memory_recall,
+         *   npc_recall, trade_recall, generic_query, social, emotional.
+         * Do NOT retrieve for: tactical, recent_battle, item_info
+         *   (those are handled by structured KB), or when in combat.
          */
         shouldRetrieve(context, playerMessage, intent) {
             if (!this.isAvailable()) return false;
@@ -2392,28 +2403,26 @@ Reply with ONLY the category name, nothing else.`;
             // Never use vectors in active combat
             if (context.in_battle) return false;
 
-            const blockedIntents = new Set([
-                'combat_decision', 'autonomy_tick', 'ambient_comment',
-                'item_consent', 'status_heal', 'loot_interaction',
-                'door_interaction', 'npc_interaction'
-            ]);
-
             if (!intent || !intent.primary) return false;
-            if (blockedIntents.has(intent.primary)) return false;
 
             // Short messages (under 10 chars) are probably not semantic queries
             if (playerMessage && playerMessage.trim().length < 10) return false;
 
-            const allowedIntents = new Set([
-                'lore_question', 'npc_question', 'location_question',
-                'ending_question', 'mechanic_question', 'story_goal',
-                'generic_query', 'social', 'emotional',
-                'character_question', 'backstory', 'memory_recall',
-                'quest_hint'
+            // Structurally handled intents — KB covers these precisely
+            const structuralIntents = new Set([
+                'tactical', 'recent_battle', 'item_info'
+            ]);
+            if (structuralIntents.has(intent.primary)) return false;
+
+            // Semantic intents where vector RAG adds value
+            const semanticIntents = new Set([
+                'lore', 'location', 'status_help', 'memory_recall',
+                'npc_recall', 'trade_recall', 'generic_query',
+                'social', 'emotional'
             ]);
 
-            if (allowedIntents.has(intent.primary)) return true;
-            if (intent.types && intent.types.some(t => allowedIntents.has(t))) return true;
+            if (semanticIntents.has(intent.primary)) return true;
+            if (intent.types && intent.types.some(t => semanticIntents.has(t))) return true;
 
             // Heuristic: if the message looks like a broad question
             const msg = (playerMessage || '').toLowerCase();
@@ -2426,6 +2435,8 @@ Reply with ONLY the category name, nothing else.`;
 
         /**
          * Embed a query through the configured endpoint and retrieve top chunks.
+         * Language fallback: first tries the requested language; if no chunks match
+         * above threshold, falls back to English chunks (all current chunks are en).
          * Returns an array of {id, type, title, text, tags, source, source_url,
          *   spoiler_level, save_id, score}
          */
@@ -2449,11 +2460,26 @@ Reply with ONLY the category name, nothing else.`;
             const queryVector = await this._embedQuery(query, opts);
             if (!queryVector) return [];
 
+            const scored = this._scoreChunks(queryVector, this._index.chunks, opts);
+
+            // Language fallback: if filtering by a non-en language gave no results
+            // above threshold, retry with English chunks (all current chunks are en)
+            if (scored.length === 0 && opts.language !== 'auto' && opts.language !== 'en') {
+                const enOpts = Object.assign({}, opts, { language: 'en' });
+                const enScored = this._scoreChunks(queryVector, this._index.chunks, enOpts);
+                scored.push(...enScored);
+                scored.sort((a, b) => b.score - a.score);
+            }
+
+            return scored.slice(0, opts.maxChunks);
+        },
+
+        _scoreChunks(queryVector, chunks, opts) {
             const scored = [];
-            for (const chunk of this._index.chunks) {
+            for (const chunk of chunks) {
                 if (!chunk.vector || !chunk.metadata) continue;
 
-                // Language filter
+                // Language filter (skip when auto)
                 if (opts.language !== 'auto') {
                     if (chunk.metadata.language !== opts.language) continue;
                 }
@@ -2466,9 +2492,7 @@ Reply with ONLY the category name, nothing else.`;
                 if (chunk.metadata.type === 'save_memory' && opts.saveId &&
                     chunk.metadata.save_id && chunk.metadata.save_id !== opts.saveId) continue;
 
-                // Map filter (optional, boost chunks for current map)
                 const score = this._cosineSimilarity(queryVector, chunk.vector);
-
                 if (score >= opts.threshold) {
                     scored.push({
                         id: chunk.id,
@@ -2477,20 +2501,18 @@ Reply with ONLY the category name, nothing else.`;
                     });
                 }
             }
-
-            // Sort by score descending, take top N
             scored.sort((a, b) => b.score - a.score);
-            return scored.slice(0, opts.maxChunks);
+            return scored;
         },
 
         /**
          * Format retrieved chunks for prompt injection.
-         * Returns a string ready for insertion into the assembled prompt.
+         * Returns body text (no leading heading — caller adds the section title).
          */
         formatForPrompt(results) {
             if (!results || results.length === 0) return '';
 
-            let block = 'RETRIEVED KNOWLEDGE:\n';
+            let block = '';
             for (const r of results) {
                 const label = `[${r.type || 'knowledge'} | ${r.title || r.id} | source: ${r.source || 'unknown'} | confidence: ${r.score.toFixed(2)}]`;
                 block += `- ${label}\n  ${r.text}\n`;
@@ -2507,16 +2529,27 @@ Reply with ONLY the category name, nothing else.`;
 
         /**
          * Classify the grounding level of an answer.
-         * Returns { mode: 'structured_confirmed'|'rag_supported'|'uncertain'|'unsupported' }
+         *
+         * - structured_confirmed: structured KB sections provided relevant data
+         *   matching the intent (e.g., enemy KB for combat, item KB for item_info).
+         * - rag_supported: RAG chunks were injected and support the answer.
+         * - uncertain: neither structured nor RAG data backs the answer.
          */
-        classifyGrounding(ragResults, structuredContext) {
-            if (structuredContext && (
-                structuredContext.in_battle ||
-                (structuredContext.battle_state && structuredContext.battle_state.enemies && structuredContext.battle_state.enemies.length > 0) ||
-                (structuredContext.nearby_objects && structuredContext.nearby_objects.length > 0)
-            )) {
+        classifyGrounding(ragResults, structuredContext, intent) {
+            // Structured sources that reliably provide intent-relevant data
+            if (structuredContext && intent && intent.primary) {
+                const structuredIntents = new Set([
+                    'tactical', 'recent_battle', 'item_info'
+                ]);
+                if (structuredIntents.has(intent.primary)) {
+                    return { mode: 'structured_confirmed' };
+                }
+            }
+            // Battle state or combat context = structured
+            if (structuredContext && structuredContext.in_battle) {
                 return { mode: 'structured_confirmed' };
             }
+            // RAG chunks injected
             if (ragResults && ragResults.length > 0) {
                 return { mode: 'rag_supported' };
             }
@@ -2528,8 +2561,6 @@ Reply with ONLY the category name, nothing else.`;
          */
         getSaveMemorySummary(saveId) {
             if (!this._index || !this._index.chunks) return [];
-            const threshold = Config.hybridRagSimilarityThreshold;
-            // Return all save_memory chunks for this save, sorted by recency
             return this._index.chunks
                 .filter(c => c.metadata && c.metadata.type === 'save_memory' &&
                     c.metadata.save_id === saveId)
@@ -2545,35 +2576,48 @@ Reply with ONLY the category name, nothing else.`;
 
         // ── Internal helpers ────────────────────────────────────────────
         async _embedQuery(query, opts) {
+            const controller = new AbortController();
+            const timeoutMs = 2500;
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
             try {
-                const url = opts.endpoint.replace(/\/+$/, '');
-                const resp = await fetch(url, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Bearer lm-studio'
-                    },
-                    body: JSON.stringify({
-                        model: opts.model,
-                        input: query.trim()
-                    })
+                return await LocalRequestQueue.runOptional('rag_embed', async () => {
+                    const url = opts.endpoint.replace(/\/+$/, '');
+                    const resp = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer lm-studio'
+                        },
+                        body: JSON.stringify({
+                            model: opts.model,
+                            input: query.trim()
+                        }),
+                        signal: controller.signal
+                    });
+
+                    if (!resp.ok) {
+                        Debug.warn('[HybridRAG] Embedding API error:', resp.status);
+                        return null;
+                    }
+
+                    const data = await resp.json();
+                    if (!data.data || !data.data[0] || !data.data[0].embedding) {
+                        Debug.warn('[HybridRAG] Unexpected embedding response format');
+                        return null;
+                    }
+
+                    return data.data[0].embedding;
                 });
-
-                if (!resp.ok) {
-                    Debug.warn('[HybridRAG] Embedding API error:', resp.status);
-                    return null;
-                }
-
-                const data = await resp.json();
-                if (!data.data || !data.data[0] || !data.data[0].embedding) {
-                    Debug.warn('[HybridRAG] Unexpected embedding response format');
-                    return null;
-                }
-
-                return data.data[0].embedding;
             } catch (e) {
-                Debug.warn('[HybridRAG] Embedding request failed:', e.message);
+                if (e.name === 'AbortError' || controller.signal.aborted) {
+                    Debug.warn('[HybridRAG] Embedding request timed out after', timeoutMs, 'ms');
+                } else {
+                    Debug.warn('[HybridRAG] Embedding request failed:', e.message);
+                }
                 return null;
+            } finally {
+                clearTimeout(timeoutId);
             }
         },
 
@@ -10182,6 +10226,7 @@ Respond ONLY with this JSON:
     window.AI_Companion = {
         Config,
         Debug,
+        HybridRAG,
         ThesisLogger,
         AIState,
         BattleStateExtractor,
@@ -11193,6 +11238,9 @@ Respond ONLY with this JSON:
         },
 
         async sendMessage(playerMessage) {
+            // Clear stale RAG state from previous message
+            this._lastRagChunkIds = null;
+
             const exchangeContext = this._ensureContextSeparator();
             const dialogueMeta = { mapId: $gameMap ? $gameMap.mapId() : null };
             this.addToHistory('player', playerMessage, exchangeContext);
@@ -11361,7 +11409,7 @@ Respond ONLY with this JSON:
                     llm_usage: this._lastUsage || null,
                     tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null,
                     rag_chunk_ids: this._lastRagChunkIds || null,
-                    grounding_mode: HybridRAG.classifyGrounding(ragResults, context).mode
+                    grounding_mode: HybridRAG.classifyGrounding(ragResults, context, intent).mode
                 });
                 DebugState.captureChat({
                     player_message: playerMessage,
@@ -11381,7 +11429,7 @@ Respond ONLY with this JSON:
                     context_map: context.current_map,
                     nearby_objects: context.nearby_objects,
                     rag_chunk_ids: this._lastRagChunkIds || null,
-                    grounding_mode: HybridRAG.classifyGrounding(ragResults, context).mode
+                    grounding_mode: HybridRAG.classifyGrounding(ragResults, context, intent).mode
                 });
                 return finalResponse;
             } catch (error) {
@@ -15334,6 +15382,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     window.AI_Companion.StoryGoalMemory = StoryGoalMemory;
     window.AI_Companion.AutonomySystem = AutonomySystem;
     window.AI_Companion.DebugState = DebugState;
+    window.AI_Companion.Config = Config;
+    window.AI_Companion.HybridRAG = HybridRAG;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)

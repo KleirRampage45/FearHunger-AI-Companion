@@ -103,6 +103,13 @@ echo [OK] Copied AI_Companion.js
 copy /y "%SCRIPT_DIR%plugins\FearHungerKB.js" "%GAME_PATH%\www\js\plugins\" >nul
 echo [OK] Copied FearHungerKB.js
 
+:: Copy RAG data directory (vector index is built separately with tools/build-rag-index.js)
+if exist "%SCRIPT_DIR%data\rag" (
+    if not exist "%GAME_PATH%\data\rag" mkdir "%GAME_PATH%\data\rag"
+    copy /y "%SCRIPT_DIR%data\rag\*.jsonl" "%GAME_PATH%\data\rag\" >nul 2>nul
+    echo [OK] Copied RAG chunk data
+)
+
 :: Copy face assets
 if exist "%SCRIPT_DIR%assets\faces" (
     copy /y "%SCRIPT_DIR%assets\faces\*.png" "%GAME_PATH%\www\img\faces\" >nul 2>nul
