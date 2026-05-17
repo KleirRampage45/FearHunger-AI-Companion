@@ -9251,29 +9251,32 @@ Respond ONLY with this JSON:
                 JSON.stringify(this._promptSnapshot(snapshot))
             ].join('\n');
 
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 6000);
             let response;
-            const requestStart = Date.now();
+            let requestStart = Date.now();
             try {
-                response = await LocalRequestQueue.run('autonomy', () => fetch(Config.getLocalEndpoint(), {
-                    method: 'POST',
-                    headers: Config.getLocalHeaders(),
-                    signal: controller.signal,
-                    body: JSON.stringify({
-                        model: Config.getAutonomyModel(),
-                        messages: [
-                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
-                            { role: 'user', content: prompt }
-                        ],
-                        temperature: 1.0,
-                        top_p: 0.95,
-                        top_k: 64,
-                        max_tokens: 80,
-                        enable_thinking: false,
-                        stop: ['<turn|>']
-                    })
-                }), { skipIfBusy: true, drainMs: 7000 });
+                response = await LocalRequestQueue.run('autonomy', () => {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 9000);
+                    requestStart = Date.now();
+                    return fetch(Config.getLocalEndpoint(), {
+                        method: 'POST',
+                        headers: Config.getLocalHeaders(),
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model: Config.getAutonomyModel(),
+                            messages: [
+                                { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+                                { role: 'user', content: prompt }
+                            ],
+                            temperature: 1.0,
+                            top_p: 0.95,
+                            top_k: 64,
+                            max_tokens: 80,
+                            enable_thinking: false,
+                            stop: ['<turn|>']
+                        })
+                    }).finally(() => clearTimeout(timer));
+                }, { skipIfBusy: true, drainMs: 2000 });
             } catch (error) {
                 if (error && /local busy/i.test(String(error.message || ''))) {
                     return withSource('local_busy', 'local model busy');
@@ -9282,8 +9285,6 @@ Respond ONLY with this JSON:
                     return withSource('llm_timeout', 'local model timed out');
                 }
                 throw error;
-            } finally {
-                clearTimeout(timer);
             }
             if (!response.ok) {
                 Debug.warn('[Autonomy] Local HTTP error:', response.status);
