@@ -67,3 +67,9 @@ private/
 notes/
 scratch/
 tmp/
+
+# Test automation runtime output
+test-automation/__pycache__/
+test-automation/.pytest_cache/
+test-automation/.venv/
+test-automation/reports/

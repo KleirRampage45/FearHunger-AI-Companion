@@ -1078,7 +1078,7 @@
 
                 // Game context
                 map_id: typeof $gameMap !== 'undefined' && $gameMap ? $gameMap.mapId() : null,
-	                map_name: typeof $gameMap !== 'undefined' && $gameMap && $gameMap.displayName ? Locale.text($gameMap.displayName()) : null,
+	                map_name: typeof $gameMap !== 'undefined' && $gameMap && $dataMap && $gameMap.displayName ? Locale.text($gameMap.displayName()) || ('Map ' + $gameMap.mapId()) : null,
                 in_battle: typeof $gameParty !== 'undefined' && $gameParty ? $gameParty.inBattle() : false,
 
                 // Companion state
@@ -3976,7 +3976,7 @@ Reply with ONLY the category name, nothing else.`;
         getMapContext() {
             if (!$gameMap) return { displayName: 'Unknown', tips: [] };
             const mapId = String($gameMap.mapId());
-	            const displayName = $gameMap.displayName() || ('Map ' + mapId);
+            const displayName = ($dataMap && $gameMap.displayName()) || ('Map ' + mapId);
 
             // Try KB matching first (dynamic)
             const kbMatch = this._matchKB(displayName);
