@@ -106,7 +106,7 @@ Important settings:
 
 ## Testing
 
-Branch-specific tests are in [docs/BRANCH_TEST_PLANS.md](docs/BRANCH_TEST_PLANS.md).
+Current manual and automated tests are in [docs/TESTING.md](docs/TESTING.md).
 
 General smoke test:
 

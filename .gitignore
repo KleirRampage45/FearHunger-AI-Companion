@@ -67,6 +67,7 @@ private/
 notes/
 scratch/
 tmp/
+.commandcode/
 
 # Test automation runtime output
 test-automation/__pycache__/
