@@ -949,6 +949,9 @@
                 this._pending = Math.max(0, this._pending - 1);
                 this._active = true;
                 this._activeLabel = label || 'local';
+                if (window._AICompanionPerformanceMonitor) {
+                    window._AICompanionPerformanceMonitor.markLocalBusy(this._activeLabel);
+                }
                 const start = Date.now();
                 try {
                     Debug.log('[Local LLM] start:', this._activeLabel);
@@ -972,6 +975,9 @@
             if (this.isBusy()) return false;
             this._active = true;
             this._activeLabel = label || 'local_sync';
+            if (window._AICompanionPerformanceMonitor) {
+                window._AICompanionPerformanceMonitor.markLocalBusy(this._activeLabel);
+            }
             return true;
         },
 
@@ -1238,6 +1244,16 @@
         _long33: 0,
         _long50: 0,
         _long100: 0,
+        _llmBusySeen: false,
+        _llmLabels: {},
+        _autonomyPendingSeen: false,
+        _cpuLastUsage: null,
+        _cpuLastTime: 0,
+
+        markLocalBusy(label) {
+            this._llmBusySeen = true;
+            if (label) this._llmLabels[label] = true;
+        },
 
         tick(sceneName) {
             if (!Config.performanceLogging) return;
@@ -1245,6 +1261,7 @@
             if (!this._lastTime) {
                 this._lastTime = now;
                 this._lastLogTime = now;
+                this._primeCpu(now);
                 return;
             }
 
@@ -1257,18 +1274,24 @@
             if (delta >= 50) this._long50++;
             if (delta >= 100) this._long100++;
 
+            const busy = (typeof LocalRequestQueue !== 'undefined' && LocalRequestQueue.isBusy)
+                ? LocalRequestQueue.isBusy()
+                : false;
+            if (busy) this.markLocalBusy((typeof LocalRequestQueue !== 'undefined' && LocalRequestQueue._activeLabel) || 'local');
+            const autonomyPending = (typeof AutonomySystem !== 'undefined' && AutonomySystem._state)
+                ? !!AutonomySystem._state.pending
+                : false;
+            if (autonomyPending) this._autonomyPendingSeen = true;
+
             const interval = Math.max(1000, Number(Config.performanceLogIntervalMs) || 5000);
             if ((now - this._lastLogTime) < interval || this._frames <= 0) return;
 
             const elapsed = Math.max(1, now - this._lastLogTime);
             const avgFrame = this._sumMs / this._frames;
             const avgFps = this._frames * 1000 / elapsed;
-            const busy = (typeof LocalRequestQueue !== 'undefined' && LocalRequestQueue.isBusy)
-                ? LocalRequestQueue.isBusy()
-                : false;
-            const autonomyPending = (typeof AutonomySystem !== 'undefined' && AutonomySystem._state)
-                ? !!AutonomySystem._state.pending
-                : false;
+            const memory = this._readMemory();
+            const cpu = this._readCpu(now);
+            const labels = Object.keys(this._llmLabels);
 
             ThesisLogger.log('performance', {
                 scene: sceneName || 'unknown',
@@ -1281,10 +1304,69 @@
                 long_frames_100ms: this._long100,
                 local_llm_busy: busy,
                 local_llm_label: (typeof LocalRequestQueue !== 'undefined' && LocalRequestQueue._activeLabel) || null,
+                local_llm_busy_seen: this._llmBusySeen,
+                local_llm_labels_seen: labels,
                 autonomy_pending: autonomyPending,
+                autonomy_pending_seen: this._autonomyPendingSeen,
+                memory_rss_mb: memory.rss_mb,
+                memory_heap_used_mb: memory.heap_used_mb,
+                memory_heap_total_mb: memory.heap_total_mb,
+                memory_external_mb: memory.external_mb,
+                cpu_percent_process: cpu.cpu_percent_process,
+                cpu_user_ms: cpu.cpu_user_ms,
+                cpu_system_ms: cpu.cpu_system_ms,
                 reason: this._maxMs >= 100 ? 'major frame stall detected' : (this._long50 > 0 ? 'long frames detected' : 'normal frame timing')
             });
             this._reset(now);
+        },
+
+        _primeCpu(now) {
+            if (typeof process === 'undefined' || !process.cpuUsage) return;
+            try {
+                this._cpuLastUsage = process.cpuUsage();
+                this._cpuLastTime = now;
+            } catch (e) {
+                this._cpuLastUsage = null;
+                this._cpuLastTime = 0;
+            }
+        },
+
+        _readMemory() {
+            if (typeof process === 'undefined' || !process.memoryUsage) return {};
+            try {
+                const mem = process.memoryUsage();
+                const mb = value => Math.round((Number(value || 0) / 1048576) * 10) / 10;
+                return {
+                    rss_mb: mb(mem.rss),
+                    heap_used_mb: mb(mem.heapUsed),
+                    heap_total_mb: mb(mem.heapTotal),
+                    external_mb: mb(mem.external)
+                };
+            } catch (e) {
+                return {};
+            }
+        },
+
+        _readCpu(now) {
+            if (typeof process === 'undefined' || !process.cpuUsage) return {};
+            try {
+                if (!this._cpuLastUsage || !this._cpuLastTime) {
+                    this._primeCpu(now);
+                    return {};
+                }
+                const delta = process.cpuUsage(this._cpuLastUsage);
+                const elapsedUs = Math.max(1, (now - this._cpuLastTime) * 1000);
+                this._cpuLastUsage = process.cpuUsage();
+                this._cpuLastTime = now;
+                const totalUs = Number(delta.user || 0) + Number(delta.system || 0);
+                return {
+                    cpu_percent_process: Math.round((totalUs / elapsedUs) * 1000) / 10,
+                    cpu_user_ms: Math.round((Number(delta.user || 0) / 1000) * 10) / 10,
+                    cpu_system_ms: Math.round((Number(delta.system || 0) / 1000) * 10) / 10
+                };
+            } catch (e) {
+                return {};
+            }
         },
 
         _reset(now) {
@@ -1295,8 +1377,12 @@
             this._long33 = 0;
             this._long50 = 0;
             this._long100 = 0;
+            this._llmBusySeen = false;
+            this._llmLabels = {};
+            this._autonomyPendingSeen = false;
         }
     };
+    window._AICompanionPerformanceMonitor = PerformanceMonitor;
 
     //=========================================================================
     // Character Presets & Configuration
