@@ -12365,6 +12365,7 @@ CRITICAL GAME RULES (NEVER violate these):
         STARTUP_DELAY: 8000,  // 8 seconds — stay silent after game starts
 
         canSpeak() {
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             // Don't speak during startup (save loading, title, initialization)
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             // Don't speak outside of actual map gameplay
@@ -12384,6 +12385,7 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakSupport() {
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) return false;
             const scene = SceneManager._scene;
@@ -12397,6 +12399,7 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakReactive() {
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             const scene = SceneManager._scene;
             if (!scene) return false;
@@ -12408,6 +12411,7 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakProactive() {
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             const scene = SceneManager._scene;
             if (!scene) return false;
@@ -15275,7 +15279,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         AmbientDialogue.checkProactiveChat();
 
         // Optional local-only companion autonomy heartbeat
-        AutonomySystem.update();
+        if (!PlayerAutopilot.isEnabled()) {
+            AutonomySystem.update();
+        }
         PlayerAutopilot.update();
 
         // C key to chat (key code 67) - T is reserved for torch
@@ -15832,6 +15838,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             lastAction: '',
             repeatedTargetCount: 0,
             visitedPoints: {},
+            attemptedFrontiers: {},
+            lastPositionKey: '',
+            lastPositionAt: 0,
+            noProgressCount: 0,
             stopReason: ''
         },
 
@@ -15850,6 +15860,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastAction = '';
             this._state.repeatedTargetCount = 0;
             this._state.visitedPoints = {};
+            this._state.attemptedFrontiers = {};
+            this._state.lastPositionKey = '';
+            this._state.lastPositionAt = 0;
+            this._state.noProgressCount = 0;
             this._state.stopReason = reason || '';
         },
 
@@ -15879,6 +15893,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 return;
             }
             if (!this.canRunMap()) return;
+            if (this._advanceOwnedMessage()) return;
             if (this._maintainMovement()) return;
 
             const now = Date.now();
@@ -15942,9 +15957,18 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 };
             }
 
-            const frontier = (snap.frontiers || []).find(point => point && point.distance > 1);
-            if (frontier) return { action: 'MOVE', point: { x: frontier.x, y: frontier.y }, reason: 'explore nearest frontier' };
+            const frontier = this._bestFrontier(snap);
+            if (frontier) return { action: 'MOVE', point: { x: frontier.x, y: frontier.y }, frontierKey: frontier.key, reason: 'explore nearest frontier' };
             return { action: 'HOLD', reason: 'no target or frontier found' };
+        },
+
+        _bestFrontier(snap) {
+            const now = Date.now();
+            const attempted = this._state.attemptedFrontiers || {};
+            return (snap.frontiers || [])
+                .map(point => Object.assign({}, point, { key: snap.mapId + ':' + point.x + ':' + point.y }))
+                .filter(point => point && point.distance > 1 && (!attempted[point.key] || attempted[point.key] <= now))
+                .sort((a, b) => a.distance - b.distance)[0] || null;
         },
 
         _nearestThreat(snap, maxDistance) {
@@ -16031,6 +16055,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 this._state.mode = 'move';
                 this._state.targetEventId = decision.eventId != null ? decision.eventId : null;
                 this._state.targetPoint = decision.point || null;
+                if (decision.frontierKey) this._state.targetPoint.frontierKey = decision.frontierKey;
                 this._state.targetLabel = decision.reason || '';
                 this._maintainMovement();
                 return;
@@ -16046,6 +16071,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if ($gamePlayer.x === point.x && $gamePlayer.y === point.y) {
                 if (point.faceDirection && $gamePlayer.setDirection) $gamePlayer.setDirection(point.faceDirection);
                 if (this._state.targetEventId != null) this._interact(this._state.targetEventId);
+                if (point.frontierKey) this._markFrontierAttempted(point.frontierKey, 90000);
                 this._state.targetPoint = null;
                 this._state.mode = 'idle';
                 return true;
@@ -16054,13 +16080,53 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastMoveAt = Date.now();
             const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(point.x, point.y) : 0;
             if (dir > 0 && (!$gamePlayer.canPass || $gamePlayer.canPass($gamePlayer.x, $gamePlayer.y, dir))) {
+                const before = this._positionKey();
                 $gamePlayer.moveStraight(dir);
                 this._rememberPoint($gamePlayer.x, $gamePlayer.y);
+                if (before === this._positionKey()) {
+                    this._state.noProgressCount++;
+                    if (this._state.noProgressCount > 8) {
+                        if (point.frontierKey) this._markFrontierAttempted(point.frontierKey, 120000);
+                        this._state.mode = 'idle';
+                        this._state.targetPoint = null;
+                    }
+                } else {
+                    this._state.noProgressCount = 0;
+                }
                 return true;
             }
+            if (point.frontierKey) this._markFrontierAttempted(point.frontierKey, 120000);
             this._state.mode = 'idle';
             this._state.targetPoint = null;
             return false;
+        },
+
+        _advanceOwnedMessage() {
+            if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
+            const scene = SceneManager._scene;
+            const messageWindow = scene && scene._messageWindow;
+            const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : (scene && scene._choiceWindow);
+            if (choiceWindow && choiceWindow.active) {
+                const choices = $gameMessage.choices ? $gameMessage.choices() : [];
+                const joined = (choices || []).join(' | ').toLowerCase();
+                const index = /(cara|cruz|heads|tails|coin|moneda)/i.test(joined) ? (Math.random() < 0.5 ? 0 : 1) : 0;
+                if (choiceWindow.select) choiceWindow.select(index);
+                if (choiceWindow.processOk) choiceWindow.processOk();
+                this._log('ui_advance', { action: 'CHOICE', eventId: null }, 'autopilot selected choice ' + index);
+                return true;
+            }
+            if (messageWindow && messageWindow.visible && !(messageWindow.isClosed && messageWindow.isClosed())) {
+                const now = Date.now();
+                if (now - (this._state.lastUiAdvanceAt || 0) < 900) return true;
+                this._state.lastUiAdvanceAt = now;
+                if (messageWindow.pause) {
+                    messageWindow.pause = false;
+                    if (!messageWindow._textState && messageWindow.terminateMessage) messageWindow.terminateMessage();
+                    this._log('ui_advance', { action: 'MESSAGE', eventId: null }, 'autopilot advanced message');
+                }
+                return true;
+            }
+            return true;
         },
 
         _interact(eventId) {
@@ -16084,6 +16150,16 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const key = ($gameMap ? $gameMap.mapId() : 0) + ':' + x + ':' + y;
             this._state.visitedPoints[key] = (this._state.visitedPoints[key] || 0) + 1;
             if (this._state.visitedPoints[key] > 20) this.stop('movement loop detected at ' + key);
+        },
+
+        _positionKey() {
+            return ($gameMap ? $gameMap.mapId() : 0) + ':' + ($gamePlayer ? $gamePlayer.x : 0) + ':' + ($gamePlayer ? $gamePlayer.y : 0);
+        },
+
+        _markFrontierAttempted(key, durationMs) {
+            if (!key) return;
+            if (!this._state.attemptedFrontiers) this._state.attemptedFrontiers = {};
+            this._state.attemptedFrontiers[key] = Date.now() + Math.max(10000, durationMs || 60000);
         },
 
         battleDecision(actor, battleState) {
