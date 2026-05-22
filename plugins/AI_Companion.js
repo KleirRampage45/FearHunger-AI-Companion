@@ -159,6 +159,8 @@
         autonomyAllowSoloEngagement: localStorage.getItem('AI_Companion_AutonomySoloEngagement') === 'true',
         autonomyAutoReturnOnDanger: localStorage.getItem('AI_Companion_AutonomyAutoReturn') !== 'false',
         debugOverlay: localStorage.getItem('AI_Companion_DebugOverlay') === 'true',
+        performanceLogging: localStorage.getItem('AI_Companion_PerformanceLogging') !== 'false',
+        performanceLogIntervalMs: Number(localStorage.getItem('AI_Companion_PerformanceLogIntervalMs') || '5000'),
 
         // Local AI config
         localEndpoint: localStorage.getItem('AI_Companion_LocalEndpoint') || 'http://192.168.100.3:1234/v1/chat/completions',
@@ -661,6 +663,16 @@
         setHybridRagLanguage(lang) {
             this.hybridRagLanguage = lang;
             localStorage.setItem('AI_Companion_HybridRagLanguage', lang);
+        },
+
+        setPerformanceLogging(on) {
+            this.performanceLogging = on !== false;
+            localStorage.setItem('AI_Companion_PerformanceLogging', this.performanceLogging ? 'true' : 'false');
+        },
+
+        setPerformanceLogIntervalMs(ms) {
+            this.performanceLogIntervalMs = Math.max(1000, Math.min(30000, Number(ms) || 5000));
+            localStorage.setItem('AI_Companion_PerformanceLogIntervalMs', String(this.performanceLogIntervalMs));
         }
 	    };
 
@@ -1130,7 +1142,8 @@
                 ambient_thought: true,
                 fear_state: true,
                 fear_recovery: true,
-                game_event: true
+                game_event: true,
+                performance: true
             };
             if (!keepTypes[entry._type]) return;
             this._recent.push(entry);
@@ -1169,6 +1182,9 @@
             }
             if (entry._type === 'game_event') {
                 return `[${t}s] EVENT ${entry.event || ''}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'performance') {
+                return `[${t}s] PERF ${entry.avg_fps || '?'}fps worst ${entry.max_frame_ms || '?'}ms: ${this._shortReason(entry)}`;
             }
             return `[${t}s] ${entry._type}: ${this._shortReason(entry)}`;
         },
@@ -1212,6 +1228,75 @@
 
     // Track session start time for relative timestamps
     window._aiCompanionStartTime = Date.now();
+
+    const PerformanceMonitor = {
+        _lastTime: 0,
+        _lastLogTime: 0,
+        _frames: 0,
+        _sumMs: 0,
+        _maxMs: 0,
+        _long33: 0,
+        _long50: 0,
+        _long100: 0,
+
+        tick(sceneName) {
+            if (!Config.performanceLogging) return;
+            const now = (window.performance && performance.now) ? performance.now() : Date.now();
+            if (!this._lastTime) {
+                this._lastTime = now;
+                this._lastLogTime = now;
+                return;
+            }
+
+            const delta = Math.max(0, now - this._lastTime);
+            this._lastTime = now;
+            this._frames++;
+            this._sumMs += delta;
+            this._maxMs = Math.max(this._maxMs, delta);
+            if (delta >= 33.34) this._long33++;
+            if (delta >= 50) this._long50++;
+            if (delta >= 100) this._long100++;
+
+            const interval = Math.max(1000, Number(Config.performanceLogIntervalMs) || 5000);
+            if ((now - this._lastLogTime) < interval || this._frames <= 0) return;
+
+            const elapsed = Math.max(1, now - this._lastLogTime);
+            const avgFrame = this._sumMs / this._frames;
+            const avgFps = this._frames * 1000 / elapsed;
+            const busy = (typeof LocalRequestQueue !== 'undefined' && LocalRequestQueue.isBusy)
+                ? LocalRequestQueue.isBusy()
+                : false;
+            const autonomyPending = (typeof AutonomySystem !== 'undefined' && AutonomySystem._state)
+                ? !!AutonomySystem._state.pending
+                : false;
+
+            ThesisLogger.log('performance', {
+                scene: sceneName || 'unknown',
+                avg_fps: Math.round(avgFps * 10) / 10,
+                avg_frame_ms: Math.round(avgFrame * 10) / 10,
+                max_frame_ms: Math.round(this._maxMs * 10) / 10,
+                frames: this._frames,
+                long_frames_33ms: this._long33,
+                long_frames_50ms: this._long50,
+                long_frames_100ms: this._long100,
+                local_llm_busy: busy,
+                local_llm_label: (typeof LocalRequestQueue !== 'undefined' && LocalRequestQueue._activeLabel) || null,
+                autonomy_pending: autonomyPending,
+                reason: this._maxMs >= 100 ? 'major frame stall detected' : (this._long50 > 0 ? 'long frames detected' : 'normal frame timing')
+            });
+            this._reset(now);
+        },
+
+        _reset(now) {
+            this._lastLogTime = now;
+            this._frames = 0;
+            this._sumMs = 0;
+            this._maxMs = 0;
+            this._long33 = 0;
+            this._long50 = 0;
+            this._long100 = 0;
+        }
+    };
 
     //=========================================================================
     // Character Presets & Configuration
@@ -2447,6 +2532,10 @@ Reply with ONLY the category name, nothing else.`;
             // Short messages (under 10 chars) are probably not semantic queries
             if (playerMessage && playerMessage.trim().length < 10) return false;
 
+            // Recent loot/inventory recall is handled by structured memory; vectors
+            // can otherwise pull unrelated lore chunks with weak semantic overlap.
+            if (this._isRecentInventoryRecallQuery(playerMessage)) return false;
+
             // Live navigation should use current map/perception/story goals, not broad lore vectors.
             // RAG is still useful when the question names a specific person/place/event.
             if (this._isLiveNavigationQuery(playerMessage) && !this._hasNamedAnchor(playerMessage)) {
@@ -2476,6 +2565,12 @@ Reply with ONLY the category name, nothing else.`;
             }
 
             return false;
+        },
+
+        _isRecentInventoryRecallQuery(message) {
+            const msg = String(message || '').toLowerCase();
+            return /(?:que|qué|what).*(?:encontraste|found|grabbed|picked|recogiste|agarraste|conseguiste)/i.test(msg)
+                || /(?:que|qué|what).*(?:tenemos|llevamos|inventory|inventario)/i.test(msg);
         },
 
         _isLiveNavigationQuery(message) {
@@ -14958,6 +15053,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     const _Scene_Map_update = Scene_Map.prototype.update;
     Scene_Map.prototype.update = function () {
         _Scene_Map_update.call(this);
+        PerformanceMonitor.tick('Scene_Map');
 
         // Periodic hunger awareness check
         AmbientDialogue.checkHunger();
@@ -14982,6 +15078,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     const _Scene_Battle_update = Scene_Battle.prototype.update;
     Scene_Battle.prototype.update = function () {
         _Scene_Battle_update.call(this);
+        PerformanceMonitor.tick('Scene_Battle');
 
         // C key to chat in battle
         if (Input.isTriggered('c')) {
@@ -15524,6 +15621,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     window.AI_Companion.DebugState = DebugState;
     window.AI_Companion.Config = Config;
     window.AI_Companion.HybridRAG = HybridRAG;
+    window.AI_Companion.PerformanceMonitor = PerformanceMonitor;
 
     //=========================================================================
     // Inspect: Ask companion about item/skill (uses lorebook + game data)
