@@ -13978,6 +13978,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     // Equipment Approval — ask before equipping clearly useful gear
     //=========================================================================
     const EquipmentApproval = {
+        _pending: [],
+        _pendingKeys: {},
+
         _score(item) {
             if (!item || !item.params) return 0;
             if (DataManager.isWeapon(item)) return Number(item.params[2] || 0);
@@ -14006,6 +14009,53 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const currentScore = current ? this._score(current) : 0;
             if (current && newScore <= currentScore) return null;
             return { actor, item, slotIndex, current, newScore, currentScore };
+        },
+
+        _key(candidate) {
+            const actorId = candidate && candidate.actor && candidate.actor.actorId ? candidate.actor.actorId() : 0;
+            const itemId = candidate && candidate.item ? candidate.item.id : 0;
+            const kind = candidate && candidate.item && DataManager.isWeapon(candidate.item) ? 'w' : 'a';
+            return actorId + ':' + kind + ':' + itemId;
+        },
+
+        _queue(candidate, source) {
+            if (!candidate) return false;
+            const key = this._key(candidate);
+            if (this._pendingKeys[key]) return true;
+            this._pendingKeys[key] = true;
+            this._pending.push({
+                key,
+                actorId: candidate.actor && candidate.actor.actorId ? candidate.actor.actorId() : Config.companionActorId,
+                itemId: candidate.item.id,
+                kind: DataManager.isWeapon(candidate.item) ? 'weapon' : 'armor',
+                source: source || Config.companionName || 'Companion',
+                createdAt: Date.now()
+            });
+            this._pending = this._pending.slice(-8);
+            ThesisLogger.log('game_event', {
+                event: 'equipment_candidate_queued',
+                actor_name: candidate.actor && candidate.actor.name ? candidate.actor.name() : null,
+                item_name: candidate.item.name,
+                source: source || null,
+                new_score: candidate.newScore,
+                current_score: candidate.currentScore
+            });
+            return true;
+        },
+
+        update() {
+            if (!this._pending || this._pending.length === 0) return;
+            if (!AmbientDialogue.canSpeakSupport || !AmbientDialogue.canSpeakSupport()) return;
+            const next = this._pending.shift();
+            if (next && next.key) delete this._pendingKeys[next.key];
+            if (!next || Date.now() - (next.createdAt || 0) > 300000) return;
+            const actor = $gameActors && $gameActors.actor ? $gameActors.actor(next.actorId || Config.companionActorId) : null;
+            const item = next.kind === 'weapon'
+                ? ($dataWeapons && $dataWeapons[next.itemId])
+                : ($dataArmors && $dataArmors[next.itemId]);
+            const candidate = this._candidate(actor, item);
+            if (!candidate) return;
+            this._requestPrompt(candidate, next.source || 'queued_loot');
         },
 
         _lineWrap(text, maxLineLen, maxLines) {
@@ -14176,10 +14226,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         consider(item, source) {
             if (!source || source === 'Player') return false;
             if (!item || (!DataManager.isWeapon(item) && !DataManager.isArmor(item))) return false;
-            if (!AmbientDialogue.canSpeakSupport || !AmbientDialogue.canSpeakSupport()) return false;
             const companion = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
             const candidate = this._candidate(companion, item);
             if (!candidate) return false;
+            if (!AmbientDialogue.canSpeakSupport || !AmbientDialogue.canSpeakSupport()) {
+                return this._queue(candidate, source);
+            }
             this._requestPrompt(candidate, source);
             return true;
         }
@@ -15283,6 +15335,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         // Proactive trap/threat warning from EnvironmentScanner
         AmbientDialogue.checkNearbyThreats();
         AmbientDialogue.checkProactiveChat();
+        EquipmentApproval.update();
 
         // Optional local-only companion autonomy heartbeat.
         // In autopilot test mode, the player and companion may act independently.
