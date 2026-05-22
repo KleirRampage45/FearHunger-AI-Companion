@@ -4513,7 +4513,9 @@ Reply with ONLY the category name, nothing else.`;
             }
 
             // Set target
-            const targetIndex = this._resolveTarget(decision);
+            const targetIndex = action.isForFriend && action.isForFriend()
+                ? this._resolveFriendlyTarget(decision)
+                : this._resolveTarget(decision);
             if (targetIndex !== null) {
                 action.setTarget(targetIndex);
             }
@@ -4573,9 +4575,65 @@ Reply with ONLY the category name, nothing else.`;
         }
 
         static _findItemByName(name) {
+            if (!$gameParty || !$gameParty.items || !name) return null;
             return $gameParty.items().find(i =>
                 i.name.toLowerCase() === name.toLowerCase()
             );
+        }
+
+        static _combatSupportDecision(actor, battleState) {
+            if (!actor || !battleState || !$gameParty || !$gameParty.items) return null;
+            const states = actor.states ? actor.states() : [];
+            const stateText = states.map(s => String(s && s.name || '')).join(' ');
+            const hpPct = actor.mhp > 0 ? (actor.hp / actor.mhp) * 100 : 100;
+            const items = $gameParty.items().filter(item => item && $gameParty.numItems(item) > 0 && actor.canUse && actor.canUse(item));
+            const findItem = regex => items.find(item => regex.test(String(item.name || '')));
+            let item = null;
+            let reason = '';
+            if (/sangr|bleed/i.test(stateText)) {
+                item = findItem(/cloth fragment|fragmento de tela|tela|trapo|vendaje|bandage|gasas|gauze/i);
+                reason = 'Stopping bleeding before it snowballs after limb-severing attacks.';
+            }
+            if (!item && /infecc|infect/i.test(stateText)) {
+                item = findItem(/hierba verde|green herb|mezcla roja y verde|mix of red and green/i);
+                reason = 'Treating infection before continuing the fight.';
+            }
+            if (!item && hpPct <= 30) {
+                item = findItem(/hierba|herb|cura|heal|pocion|poción|vial verde|green vial|vial rojo|red vial|medicine|medicina/i);
+                reason = 'Critical HP; using a recovery item before attacking.';
+            }
+            if (!item) return null;
+            return {
+                action: item.name,
+                target: actor.name ? actor.name() : null,
+                limb: null,
+                reasoning: reason,
+                dialog: Config.language === 'es' ? 'Primero tengo que aguantar.' : 'Need to hold together first.',
+                strategy: 'combat support item'
+            };
+        }
+
+        static _isPartyTargetDecision(decision) {
+            if (!decision || !decision.action) return false;
+            const item = this._findItemByName(decision.action);
+            if (!item) return false;
+            const scope = Number(item.scope || 0);
+            return scope >= 7 && scope <= 11;
+        }
+
+        static _resolveFriendlyTarget(decision) {
+            if (!$gameParty || !$gameParty.battleMembers) return 0;
+            const members = $gameParty.battleMembers();
+            if (!members || members.length === 0) return 0;
+            const targetName = String(decision && decision.target || '').toLowerCase().trim();
+            if (targetName) {
+                const index = members.findIndex(actor => actor && actor.name && String(actor.name()).toLowerCase() === targetName);
+                if (index >= 0) return index;
+                const fuzzy = members.findIndex(actor => actor && actor.name && (String(actor.name()).toLowerCase().includes(targetName) || targetName.includes(String(actor.name()).toLowerCase())));
+                if (fuzzy >= 0) return fuzzy;
+            }
+            const companionIndex = members.findIndex(actor => actor && actor.actorId && actor.actorId() === Config.companionActorId);
+            return companionIndex >= 0 ? companionIndex : 0;
         }
 
         // Bilingual limb name map for English↔Spanish matching
@@ -4770,18 +4828,21 @@ Reply with ONLY the category name, nothing else.`;
         static normalizeDecisionForBattle(decision, battleState) {
             if (!decision || !battleState) return decision;
             const normalized = Object.assign({}, decision);
+            const normalizedAction = this._normalizeActionName(normalized.action);
             if (normalized.dialog) {
                 normalized.dialog = Config.cleanGeneratedText(normalized.dialog);
                 if (/\([^)]{2,120}\)/.test(normalized.dialog) || normalized.dialog.length > 50 || /^(m-?m+|mm+|espero|por favor|a ver si)/i.test(normalized.dialog)) {
                     normalized.dialog = '';
                 }
             }
+            if (this._isPartyTargetDecision(normalized)) {
+                return normalized;
+            }
             const enemy = this._findBattleEnemyByName(battleState, normalized.target);
             if (!enemy) return normalized;
 
             normalized.target = enemy.name;
 
-	            const normalizedAction = this._normalizeActionName(normalized.action);
 	            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? KBLookupCache.enemy(enemy.name) : null;
             if (kbEnemy && this._isCoinFlipThreatActive(enemy, kbEnemy, battleState.turn_number)) {
                 normalized.action = 'Defenderse';
@@ -5051,6 +5112,13 @@ Reply with ONLY the category name, nothing else.`;
             let prompt = '';
             try {
                 prompt = this._buildPrompt(battleState, retryContext);
+                const combatActor = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
+                const supportDecision = ActionExecutor._combatSupportDecision(combatActor, battleState);
+                if (supportDecision) {
+                    supportDecision._llmUsage = null;
+                    this._logCombatDecision(battleState, prompt, supportDecision, null, 'combat_support', startTime, failureChain);
+                    return supportDecision;
+                }
                 const response = await this._sendRequest(prompt, 'combat');
                 let decision = this._parseResponse(response);
                 if (decision) {
@@ -5601,6 +5669,13 @@ Respond ONLY with this JSON:
                 ThesisLogger.log('combat_decision', snapshot);
                 DebugState.captureCombat(snapshot);
             };
+
+            const combatActor = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
+            const supportDecision = ActionExecutor._combatSupportDecision(combatActor, battleState);
+            if (supportDecision) {
+                _logCombatDecision(supportDecision, null, 'combat_support');
+                return supportDecision;
+            }
 
             // Helper: try a single sync request
             const _trySyncRequest = (endpoint, headers, model, maxTokens, isLocal) => {
@@ -9634,6 +9709,8 @@ Respond ONLY with this JSON:
                     model_used: source === 'local' ? Config.getAutonomyModel() : null,
                     reason: decision ? decision.reason : null,
                     action: decision ? decision.action : null,
+                    target: decision ? decision.target : null,
+                    limb: decision ? decision.limb : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
                     frontier_index: decision && decision.frontierIndex != null ? decision.frontierIndex : null,
                     raw_response_content: source === 'local' ? (this._state.lastRawLocalContent || null) : null,
@@ -16848,6 +16925,11 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         battleDecision(actor, battleState) {
             if (!this.isEnabled() || !actor || !battleState) return null;
+            const supportDecision = ActionExecutor._combatSupportDecision(actor, battleState);
+            if (supportDecision) {
+                this._log('battle_decision', supportDecision, actor.name ? actor.name() : 'actor');
+                return supportDecision;
+            }
             const enemy = (battleState.enemies || []).find(e => e && e.alive);
             if (!enemy) return { action: 'Defenderse', target: null, limb: null, reasoning: 'no live enemy', dialog: '', strategy: 'hold' };
             const decision = {
@@ -16885,8 +16967,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     state: Object.assign({}, this._state, { visitedPoints: undefined })
                 });
                 Debug.log('[Autopilot]', kind, {
-                    action: decision ? decision.action : null,
-                    eventId: decision && decision.eventId != null ? decision.eventId : null,
+	                    action: decision ? decision.action : null,
+	                    target: decision ? decision.target : null,
+	                    limb: decision ? decision.limb : null,
+	                    eventId: decision && decision.eventId != null ? decision.eventId : null,
                     point: decision && decision.point ? decision.point : null,
                     reason: reason || (decision && decision.reason) || ''
                 });
