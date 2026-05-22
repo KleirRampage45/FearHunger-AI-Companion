@@ -8341,6 +8341,7 @@ Respond ONLY with this JSON:
             merchantSessionUntil: 0,
             lastThreatCheckAt: 0,
             lastThreatEvasionAt: 0,
+            interactionUiOwned: false,
             eventCooldowns: {},
             searchedEvents: {}
         },
@@ -8434,6 +8435,7 @@ Respond ONLY with this JSON:
             this._state.consentApprovedEventId = null;
             this._state.consentApprovedUntil = 0;
             this._state.consentPromptPending = false;
+            this._state.interactionUiOwned = false;
             if (follower && follower.setMoveSpeed) follower.setMoveSpeed(4);
             if (follower && follower.setThrough) follower.setThrough(true);
         },
@@ -8463,6 +8465,7 @@ Respond ONLY with this JSON:
             this._state.merchantSessionUntil = 0;
             this._state.lastThreatCheckAt = 0;
             this._state.lastThreatEvasionAt = 0;
+            this._state.interactionUiOwned = false;
         },
 
         _distance(a, b) {
@@ -8582,9 +8585,21 @@ Respond ONLY with this JSON:
             return nearby
                 .filter(item => item &&
                     item.type === 'enemy' &&
+                    !this._isFalseThreat(item) &&
                     (item.danger === 'high' || item.danger === 'medium') &&
                     item.distance <= limit)
                 .sort((a, b) => a.distance - b.distance)[0] || null;
+        },
+
+        _isFalseThreat(item) {
+            const text = [
+                item && item.label,
+                item && item.npcName,
+                item && item.speakerName,
+                item && item.subtype,
+                item && item.textHints
+            ].filter(Boolean).join(' ').toLowerCase();
+            return /\b(barras?\s+de\s+hierro|iron\s+bars?|bars?)\b/i.test(text);
         },
 
         _isTileOccupiedByBlockingEvent(x, y) {
@@ -9810,6 +9825,17 @@ Respond ONLY with this JSON:
             if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) {
                 this._state.manualUiHold = false;
                 this._state.allowPlayerMoveWhileUi = false;
+                this._state.interactionUiOwned = false;
+                this._state.lastInteractionEventId = null;
+                this._state.lastInteractionType = '';
+                this._state.lastInteractionLabel = '';
+                this._state.lastInteractionNeedsConsent = false;
+                return false;
+            }
+            if (!this._state.interactionUiOwned &&
+                !this._state.manualUiHold &&
+                !this._state.consentPromptPending &&
+                !this._state.allowPlayerMoveWhileUi) {
                 return false;
             }
             const now = Date.now();
@@ -9920,6 +9946,7 @@ Respond ONLY with this JSON:
             const eventId = event && (event.eventId ? event.eventId() : event._eventId);
             const interactionSnap = snap || this._rememberInteractionTarget(event, follower);
             const interactionType = interactionSnap && interactionSnap.type ? interactionSnap.type : this._state.lastInteractionType;
+            this._state.interactionUiOwned = true;
             this._setEventCooldown(eventId, interactionType === 'door' ? 90000 : 15000);
             if (interactionSnap && (interactionType === 'container' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
                 this._markEventSearched(interactionSnap.id || eventId, interactionType, 'interaction_started');
