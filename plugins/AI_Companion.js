@@ -454,12 +454,26 @@
 
         cleanGeneratedText(text) {
             let out = String(text || '');
+            const es = this.language === 'es';
             out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
             out = out.replace(/\((?:I|I'm|I am|We|We're|We are|He|She|They|Mark)\s+[^)]{2,120}\)/g, '');
             out = out.replace(/\((?:Al|Al\s+encontrar|Abre|Abrir|Usando|Uso|Revisa|Revisando|Busca|Buscando|Mira|Mirando|Toma|Tomando|Enciende|Encendiendo)\s+[^)]{2,120}\)/gi, '');
             out = out.replace(/\((?:opens?|using|checking|searching|looking|taking|lighting|finds?|upon finding)\s+[^)]{2,120}\)/gi, '');
             out = out.replace(/\bI\s+(?:peer|look|open|grab|take|search|walk|move|stand|feel|think|notice)\b[^.?!]*(?:[.?!]|$)/gi, '');
             out = out.replace(/\b(?:Lo miro bien|I look carefully|What is inside\?|Qué hay dentro\?)\b\.?/gi, '');
+            if (es) {
+                out = out
+                    .replace(/\bI will check the door\b/gi, 'Reviso la puerta')
+                    .replace(/\bI\s+examino\b/gi, 'Examino')
+                    .replace(/\bI\s+reviso\b/gi, 'Reviso')
+                    .replace(/\bI\s+abro\b/gi, 'Abro')
+                    .replace(/\bI\s+busco\b/gi, 'Busco')
+                    .replace(/\bal\s+aqu[ií]\b/gi, 'aquí')
+                    .replace(/\bnorteeste\b/gi, 'noreste')
+                    .replace(/\bnorteoeste\b/gi, 'noroeste')
+                    .replace(/\bsureste\b/gi, 'sureste')
+                    .replace(/\bsuroeste\b/gi, 'suroeste');
+            }
             out = out.replace(/\*\*/g, '').replace(/\*/g, '');
             return out.replace(/\s+/g, ' ').trim();
         },
@@ -683,12 +697,28 @@
 
 	        direction(value) {
 	            const raw = String(value || '').toLowerCase();
-	            if (!this.isEnglish()) return raw;
+	            const esMap = {
+	                aqui: 'aquí',
+	                aquí: 'aquí',
+	                norte: 'norte',
+	                sur: 'sur',
+	                este: 'este',
+	                oeste: 'oeste',
+	                noreste: 'noreste',
+	                noroeste: 'noroeste',
+	                sureste: 'sureste',
+	                suroeste: 'suroeste',
+	                norteeste: 'noreste',
+	                norteoeste: 'noroeste'
+	            };
+	            if (!this.isEnglish()) return esMap[raw] || raw;
 	            const map = {
 	                norte: 'north',
 	                sur: 'south',
 	                este: 'east',
 	                oeste: 'west',
+	                aqui: 'here',
+	                aquí: 'here',
 	                noreste: 'northeast',
 	                noroeste: 'northwest',
 	                sureste: 'southeast',
@@ -988,11 +1018,23 @@
 
         runOptional(label, fn) {
             if (Config.apiProvider !== 'local') return fn();
+            if (this._shouldSkipOptional(label)) {
+                return Promise.reject(new Error('optional local request skipped during battle'));
+            }
             return this.run(label, fn, { skipIfBusy: true, drainMs: 1500 });
         },
 
         runLocalOptional(label, fn, options) {
+            if (this._shouldSkipOptional(label)) {
+                return Promise.reject(new Error('optional local request skipped during battle'));
+            }
             return this.run(label, fn, Object.assign({ skipIfBusy: true, drainMs: 1500 }, options || {}));
+        },
+
+        _shouldSkipOptional(label) {
+            const inBattle = !!($gameParty && $gameParty.inBattle && $gameParty.inBattle());
+            if (!inBattle) return false;
+            return /comment|ambient|gate|summary|consent_text|equipment_prompt|support_prompt|hunger|party|room|item/i.test(String(label || ''));
         }
     };
 
@@ -5340,7 +5382,7 @@ Respond ONLY with this JSON:
                 try {
                     Debug.log('[Combat Async] Trying local AI...');
                     return await LocalRequestQueue.run('combat_async', () =>
-                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 180, true).then(data => {
+                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 120, true).then(data => {
                             data._source = 'local_async';
                             return data;
                         })
@@ -5360,7 +5402,7 @@ Respond ONLY with this JSON:
                     const models = Config.getCloudModelsForContext(context, 'groq');
                     for (const model of models) {
                         try {
-                            const data = await _tryFetch(Config.apiEndpoint, groqHeaders, model, 300, false);
+                            const data = await _tryFetch(Config.apiEndpoint, groqHeaders, model, 220, false);
                             data._source = 'groq_fallback_async';
                             Debug.log('[Combat Async] Groq succeeded:', model);
                             return data;
@@ -5378,7 +5420,7 @@ Respond ONLY with this JSON:
             for (const model of models) {
                 try {
                     Debug.log(`Trying model: ${model}`);
-                    const data = await _tryFetch(Config.getEndpoint(), Config.getHeaders(), model, 300, false);
+                    const data = await _tryFetch(Config.getEndpoint(), Config.getHeaders(), model, 220, false);
                     data._source = 'groq_async';
                     Debug.log(`Model ${model} succeeded`);
                     return data;
@@ -5568,7 +5610,7 @@ Respond ONLY with this JSON:
                     try {
                         Debug.log('[Combat] Trying local AI...');
                         localResult = _trySyncRequest(
-                            Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 180, true
+                            Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 120, true
                         );
                     } finally {
                         LocalRequestQueue.leaveSync();
@@ -5595,7 +5637,7 @@ Respond ONLY with this JSON:
                     const models = Config.getCloudModelsForContext('combat', 'groq');
                     for (const model of models) {
                         const groqResult = _trySyncRequest(
-                            Config.apiEndpoint, groqHeaders, model, 300, false
+                            Config.apiEndpoint, groqHeaders, model, 220, false
                         );
                         if (groqResult && groqResult._failure) failureChain.push(groqResult._failure);
                         if (groqResult && !groqResult._validationFailed && !groqResult._parseFailed && !groqResult._requestFailed) {
@@ -5610,7 +5652,7 @@ Respond ONLY with this JSON:
                 const models = ModelRouter.getModelsForContext('combat');
                 for (const model of models) {
                     const result = _trySyncRequest(
-                        Config.getEndpoint(), Config.getHeaders(), model, 300, false
+                        Config.getEndpoint(), Config.getHeaders(), model, 220, false
                     );
                     if (result && result._failure) failureChain.push(result._failure);
                     if (result && !result._validationFailed && !result._parseFailed && !result._requestFailed) { _logCombatDecision(result, model, 'groq'); return result; }
@@ -12764,6 +12806,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             const lower = raw.toLowerCase();
             if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) return fallback;
             if (Config.isSelfIntroFiller(raw)) return fallback;
+            if (!this._passesLanguageQuality(raw, es)) return fallback;
             if (raw.length < 6) return fallback;
             const type = String(target && target.type || '').toLowerCase();
             const subtype = String(target && target.subtype || '').toLowerCase();
@@ -12793,6 +12836,9 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 subtype === 'light_source';
             const mentionsLighting = /(oscur|encend|luz|dark|light|torch|lantern|candle|vela|farol|yesquero|antorcha)/i.test(lower);
             if (Config.isSelfIntroFiller(raw)) {
+                return fallback;
+            }
+            if (!this._passesLanguageQuality(raw, es)) {
                 return fallback;
             }
             if (/^(estoy aqu[ií]|aqu[ií]\b|here\b|i am here\b|we are here\b|still here\b)/i.test(lower)) {
@@ -12832,6 +12878,20 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 return fallback;
             }
             return raw;
+        },
+
+        _passesLanguageQuality(text, es) {
+            const raw = String(text || '').trim();
+            const lower = raw.toLowerCase();
+            if (es) {
+                if (/\b(i|i'm|i am|i will|i'll|we will|let's|check|open|grab|search|door|barrel|chest|crate|container)\b/i.test(raw)) return false;
+                if (/\bal\s+aqu[ií]\b/i.test(lower)) return false;
+                if (/\bnorteeste\b|\bnorteoeste\b/i.test(lower)) return false;
+                if (/\b(mark|marcoh|cahara|d'arce)\s+(abre|revisa|busca|toma|agarra)\b/i.test(lower)) return false;
+            } else {
+                if (/\b(cofre|barril|caja|puerta|aquí|noreste|suroeste|sureste|noroeste)\b/i.test(raw)) return false;
+            }
+            return true;
         },
 
         async _generateAutonomyComment(action, target, factKey) {
@@ -13055,7 +13115,11 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
 	                const localizedDir = Locale.direction(threat.direction);
 	                const pick = warning[Math.floor(Math.random() * warning.length)]
-	                    .replace('${DIR}', localizedDir);
+	                    .replace('${DIR}', localizedDir)
+	                    .replace(/\bal\s+aqu[ií]\b/gi, 'aquí')
+	                    .replace(/\bto the here\b/gi, 'here')
+	                    .replace(/\bnorteeste\b/gi, 'noreste')
+	                    .replace(/\bnorteoeste\b/gi, 'noroeste');
 	                DialogueMemory.rememberFact(factKey, Locale.nearbyLine(threat.label || 'Peligro', threat.distance || '?', threat.direction, false), 'ambient_warning', { mapId: $gameMap.mapId() });
                 this._speak(pick, 'threat_warning');
                 return; // One warning at a time
@@ -13353,6 +13417,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
         _heuristicShouldSpeak(text, topic) {
             const raw = Config.cleanGeneratedText(text);
             if (!raw || raw.length < 4) return { speak: false, thought: 'empty or too short', source: 'heuristic' };
+            if (!this._passesLanguageQuality(raw, Config.language === 'es')) return { speak: false, thought: 'language or object mismatch', source: 'heuristic' };
             if (this._shouldAlwaysSpeak(topic)) return { speak: true, thought: 'mandatory prompt', source: 'heuristic' };
             const lower = raw.toLowerCase();
             if (raw.length > 64 && /^autonomy_/.test(String(topic || ''))) {
@@ -13532,6 +13597,11 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _speak(text, topic) {
             if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) {
                 Debug.log('[Ambient] Suppressed message while chat/message scene unavailable:', topic);
+                return;
+            }
+            text = Config.cleanGeneratedText(text);
+            if (!text || !this._passesLanguageQuality(text, Config.language === 'es')) {
+                Debug.log('[Ambient] Suppressed low-quality line:', topic, text);
                 return;
             }
             const meta = { mapId: $gameMap ? $gameMap.mapId() : null };
