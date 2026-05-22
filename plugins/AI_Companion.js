@@ -8401,7 +8401,6 @@ Respond ONLY with this JSON:
 
         shouldSuppressDefaultChase(follower) {
             if (!this.isControlledFollower(follower)) return false;
-            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (!Config.autonomyEnabled) return false;
             return true;
         },
@@ -15285,10 +15284,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         AmbientDialogue.checkNearbyThreats();
         AmbientDialogue.checkProactiveChat();
 
-        // Optional local-only companion autonomy heartbeat
-        if (!PlayerAutopilot.isEnabled()) {
-            AutonomySystem.update();
-        }
+        // Optional local-only companion autonomy heartbeat.
+        // In autopilot test mode, the player and companion may act independently.
+        AutonomySystem.update();
         PlayerAutopilot.update();
 
         // C key to chat (key code 67) - T is reserved for torch
@@ -15847,6 +15845,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             repeatedTargetCount: 0,
             visitedPoints: {},
             attemptedFrontiers: {},
+            blockedPoints: {},
+            blockedEvents: {},
             lastPositionKey: '',
             lastPositionAt: 0,
             noProgressCount: 0,
@@ -15874,6 +15874,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.repeatedTargetCount = 0;
             this._state.visitedPoints = {};
             this._state.attemptedFrontiers = {};
+            this._state.blockedPoints = {};
+            this._state.blockedEvents = {};
             this._state.lastPositionKey = '';
             this._state.lastPositionAt = 0;
             this._state.noProgressCount = 0;
@@ -16004,9 +16006,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _bestFrontier(snap) {
             const now = Date.now();
             const attempted = this._state.attemptedFrontiers || {};
+            const blocked = this._state.blockedPoints || {};
             return (snap.frontiers || [])
                 .map(point => Object.assign({}, point, { key: snap.mapId + ':' + point.x + ':' + point.y }))
-                .filter(point => point && point.distance > 1 && (!attempted[point.key] || attempted[point.key] <= now))
+                .filter(point => point &&
+                    point.distance > 1 &&
+                    (!attempted[point.key] || attempted[point.key] <= now) &&
+                    (!blocked[point.key] || blocked[point.key] <= now) &&
+                    this._canReachPoint(point.x, point.y, 96))
                 .sort((a, b) => a.distance - b.distance)[0] || null;
         },
 
@@ -16023,6 +16030,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _bestTarget(snap) {
             const cooldown = AutonomySystem && AutonomySystem._isEventOnCooldown ? AutonomySystem._isEventOnCooldown.bind(AutonomySystem) : () => false;
             const searched = AutonomySystem && AutonomySystem._isEventSearched ? AutonomySystem._isEventSearched.bind(AutonomySystem) : () => false;
+            const blocked = this._state.blockedEvents || {};
+            const now = Date.now();
             const score = item => {
                 if (item.type === 'loot') return 5 + item.distance;
                 if (item.type === 'container') return 10 + item.distance;
@@ -16036,7 +16045,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     item.distance <= 6 &&
                     !cooldown(item.eventId) &&
                     !searched(item.eventId) &&
-                    (item.type === 'loot' || item.type === 'container' || item.type === 'door' || item.type === 'npc'))
+                    (!blocked[item.eventId] || blocked[item.eventId] <= now) &&
+                    (item.type === 'loot' || item.type === 'container' || item.type === 'door' || item.type === 'npc') &&
+                    this._canReachApproach(item))
                 .sort((a, b) => score(a) - score(b))[0] || null;
         },
 
@@ -16049,6 +16060,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _atApproach(target) {
             const point = this._approachPoint(target);
             return !!point && $gamePlayer.x === point.x && $gamePlayer.y === point.y;
+        },
+
+        _canReachApproach(target) {
+            const point = this._approachPoint(target);
+            if (!point) return false;
+            return this._canReachPoint(point.x, point.y, 96);
         },
 
         _findSafePoint(snap, threat) {
@@ -16065,6 +16082,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         if ($gameMap.eventsXyNt && $gameMap.eventsXyNt(x, y).some(e => e && e.isNormalPriority && e.isNormalPriority())) continue;
                         const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(x, y) : 0;
                         if (dir <= 0) continue;
+                        if (!this._canReachPoint(x, y, 64)) continue;
                         const threatDist = Math.abs(x - threat.x) + Math.abs(y - threat.y);
                         const travel = Math.abs(x - origin.x) + Math.abs(y - origin.y);
                         const score = threatDist * 10 - travel;
@@ -16140,6 +16158,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 return true;
             }
             if (point.frontierKey) this._markFrontierAttempted(point.frontierKey, 120000);
+            this._markBlockedTarget(point, this._state.targetEventId, blockedByEvent ? 'event' : 'wall');
             this._state.mode = 'idle';
             this._state.targetPoint = null;
             this._log('move_blocked', { action: 'MOVE', point }, blockedByEvent ? 'blocked by event or threat on next tile' : 'no passable route to target');
@@ -16254,6 +16273,52 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 if (event.isNormalPriority && event.isNormalPriority()) return true;
             }
             return false;
+        },
+
+        _canReachPoint(goalX, goalY, maxNodes) {
+            if (!$gameMap || !$gamePlayer) return false;
+            if ($gamePlayer.x === goalX && $gamePlayer.y === goalY) return true;
+            if (!$gameMap.isValid(goalX, goalY)) return false;
+            if (!EnvironmentScanner._tileStandable(goalX, goalY)) return false;
+
+            const limit = Math.max(16, Number(maxNodes) || 96);
+            const start = { x: $gamePlayer.x, y: $gamePlayer.y };
+            const queue = [start];
+            const seen = {};
+            seen[start.x + ',' + start.y] = true;
+            const dirs = [2, 4, 6, 8];
+            let read = 0;
+            while (read < queue.length && read < limit) {
+                const cur = queue[read++];
+                for (let i = 0; i < dirs.length; i++) {
+                    const dir = dirs[i];
+                    if ($gamePlayer.canPass && !$gamePlayer.canPass(cur.x, cur.y, dir)) continue;
+                    const next = this._nextPosition(cur.x, cur.y, dir);
+                    if (!next || !$gameMap.isValid(next.x, next.y)) continue;
+                    const key = next.x + ',' + next.y;
+                    if (seen[key]) continue;
+                    if (this._isStepBlockedByEvent(next.x, next.y, null) && !(next.x === goalX && next.y === goalY)) continue;
+                    if (next.x === goalX && next.y === goalY) return true;
+                    seen[key] = true;
+                    queue.push(next);
+                }
+            }
+            return false;
+        },
+
+        _markBlockedTarget(point, eventId, reason) {
+            const until = Date.now() + 120000;
+            if (point && point.x != null && point.y != null) {
+                if (!this._state.blockedPoints) this._state.blockedPoints = {};
+                const key = ($gameMap ? $gameMap.mapId() : 0) + ':' + point.x + ':' + point.y;
+                this._state.blockedPoints[key] = until;
+            }
+            if (eventId != null) {
+                if (!this._state.blockedEvents) this._state.blockedEvents = {};
+                this._state.blockedEvents[eventId] = until;
+                if (AutonomySystem && AutonomySystem._setEventCooldown) AutonomySystem._setEventCooldown(eventId, 120000);
+            }
+            this._log('blocked_target', { action: 'BLOCK_TARGET', eventId: eventId != null ? eventId : null, point }, reason || 'unreachable target');
         },
 
         _markFrontierAttempted(key, durationMs) {
