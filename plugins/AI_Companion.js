@@ -1204,6 +1204,7 @@
             if (!entry || !entry._type) return;
             const keepTypes = {
                 autonomy_tick: true,
+                autopilot_tick: true,
                 combat_decision: true,
                 chat: true,
                 ambient_thought: true,
@@ -1234,6 +1235,11 @@
                 const id = entry.event_id != null ? ` #${entry.event_id}` : '';
                 const source = entry.source ? ` ${entry.source}` : '';
                 return `[${t}s] AUTO ${action}${id}${source}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'autopilot_tick') {
+                const action = entry.action || entry.kind || 'NONE';
+                const id = entry.event_id != null ? ` #${entry.event_id}` : '';
+                return `[${t}s] PILOT ${action}${id}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'combat_decision') {
                 return `[${t}s] COMBAT ${entry.action || '?'} ${entry.target || ''} ${entry.limb || ''}: ${this._shortReason(entry)}`;
@@ -8395,6 +8401,7 @@ Respond ONLY with this JSON:
 
         shouldSuppressDefaultChase(follower) {
             if (!this.isControlledFollower(follower)) return false;
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (!Config.autonomyEnabled) return false;
             return true;
         },
@@ -15846,6 +15853,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             lastUiAdvanceAt: 0,
             lastMoveLogAt: 0,
             lastBlockedLogAt: 0,
+            lastScanLogAt: 0,
+            previousMoveSpeed: null,
             stopReason: ''
         },
 
@@ -15871,10 +15880,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastUiAdvanceAt = 0;
             this._state.lastMoveLogAt = 0;
             this._state.lastBlockedLogAt = 0;
+            this._state.lastScanLogAt = 0;
             this._state.stopReason = reason || '';
         },
 
         stop(reason) {
+            this._restorePlayerPace();
             Config.autopilotEnabled = false;
             localStorage.setItem('AI_Companion_AutopilotEnabled', 'false');
             this._state.stopReason = reason || 'stopped';
@@ -15894,6 +15905,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         update() {
             if (!this.isEnabled()) return;
             if (!this._state.startedAt) this.reset('start');
+            this._applyPlayerPace();
             const maxMs = Math.max(1, Number(Config.autopilotMaxRuntimeMinutes) || 20) * 60000;
             if (Date.now() - this._state.startedAt > maxMs) {
                 this.stop('max runtime reached');
@@ -15919,9 +15931,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const actor = $gamePlayer;
             const world = WorldStateEngine.getSnapshot();
             const nearby = EnvironmentScanner.scanAround(actor, 7)
-                .filter(item => item && item.eventId != null)
+                .filter(item => item && (item.eventId != null || item.id != null))
                 .map(item => ({
-                    eventId: item.eventId,
+                    eventId: item.eventId != null ? item.eventId : item.id,
                     label: item.label,
                     type: item.type,
                     subtype: item.subtype,
@@ -15935,7 +15947,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     faceDirection: item.faceDirection,
                     textHints: item.textHints || ''
                 }));
-            return {
+            const snapshot = {
                 mapId: $gameMap.mapId(),
                 mapName: $gameMap.displayName() || ('Map ' + $gameMap.mapId()),
                 player: { x: actor.x, y: actor.y, direction: actor.direction ? actor.direction() : 2 },
@@ -15943,6 +15955,23 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 frontiers: EnvironmentScanner.getFrontierTargets(actor, 7).slice(0, 4),
                 hpPct: world.party.avg_hp_pct
             };
+            this._logScan(snapshot);
+            return snapshot;
+        },
+
+        _applyPlayerPace() {
+            if (!$gamePlayer || !$gamePlayer.setMoveSpeed) return;
+            if (this._state.previousMoveSpeed == null) this._state.previousMoveSpeed = $gamePlayer._moveSpeed || 4;
+            if ($gamePlayer.setThrough) $gamePlayer.setThrough(false);
+            if ($gamePlayer._moveSpeed !== 3) $gamePlayer.setMoveSpeed(3);
+            $gamePlayer._dashing = false;
+        },
+
+        _restorePlayerPace() {
+            if (!$gamePlayer || !$gamePlayer.setMoveSpeed) return;
+            const speed = this._state.previousMoveSpeed;
+            if (speed != null) $gamePlayer.setMoveSpeed(speed);
+            this._state.previousMoveSpeed = null;
         },
 
         _decide() {
@@ -15995,6 +16024,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const cooldown = AutonomySystem && AutonomySystem._isEventOnCooldown ? AutonomySystem._isEventOnCooldown.bind(AutonomySystem) : () => false;
             const searched = AutonomySystem && AutonomySystem._isEventSearched ? AutonomySystem._isEventSearched.bind(AutonomySystem) : () => false;
             const score = item => {
+                if (item.type === 'loot') return 5 + item.distance;
                 if (item.type === 'container') return 10 + item.distance;
                 if (item.type === 'door') return 20 + item.distance;
                 if (item.type === 'npc') return 35 + item.distance;
@@ -16006,7 +16036,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     item.distance <= 6 &&
                     !cooldown(item.eventId) &&
                     !searched(item.eventId) &&
-                    (item.type === 'container' || item.type === 'door' || item.type === 'npc'))
+                    (item.type === 'loot' || item.type === 'container' || item.type === 'door' || item.type === 'npc'))
                 .sort((a, b) => score(a) - score(b))[0] || null;
         },
 
@@ -16090,7 +16120,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (Date.now() - this._state.lastMoveAt < 260) return true;
             this._state.lastMoveAt = Date.now();
             const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(point.x, point.y) : 0;
-            if (dir > 0 && (!$gamePlayer.canPass || $gamePlayer.canPass($gamePlayer.x, $gamePlayer.y, dir))) {
+            const next = this._nextPosition($gamePlayer.x, $gamePlayer.y, dir);
+            const blockedByEvent = next && this._isStepBlockedByEvent(next.x, next.y, this._state.targetEventId);
+            if (dir > 0 && !blockedByEvent && (!$gamePlayer.canPass || $gamePlayer.canPass($gamePlayer.x, $gamePlayer.y, dir))) {
                 const before = this._positionKey();
                 $gamePlayer.moveStraight(dir);
                 this._logMoveStep(dir, point, before);
@@ -16110,7 +16142,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (point.frontierKey) this._markFrontierAttempted(point.frontierKey, 120000);
             this._state.mode = 'idle';
             this._state.targetPoint = null;
-            this._log('move_blocked', { action: 'MOVE', point }, 'no passable route to target');
+            this._log('move_blocked', { action: 'MOVE', point }, blockedByEvent ? 'blocked by event or threat on next tile' : 'no passable route to target');
             return false;
         },
 
@@ -16162,6 +16194,15 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (event) {
                 snap = EnvironmentScanner._eventSnapshot(event, $gamePlayer);
                 if (snap && snap.faceDirection && $gamePlayer.setDirection) $gamePlayer.setDirection(snap.faceDirection);
+                if (AutonomySystem && AutonomySystem._interactWithEvent) {
+                    const autonomyStarted = AutonomySystem._interactWithEvent($gamePlayer, event);
+                    if (autonomyStarted) {
+                        this._state.mode = 'idle';
+                        this._state.targetPoint = null;
+                        this._log('interact', { action: 'INTERACT', eventId }, 'autonomy interaction started: ' + ((snap && snap.label) || event.event().name || eventId));
+                        return;
+                    }
+                }
             }
             const wasBusy = !!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy());
             $gamePlayer._okIsPressed = true;
@@ -16192,6 +16233,29 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return ($gameMap ? $gameMap.mapId() : 0) + ':' + ($gamePlayer ? $gamePlayer.x : 0) + ':' + ($gamePlayer ? $gamePlayer.y : 0);
         },
 
+        _nextPosition(x, y, dir) {
+            if (dir === 2) return { x, y: y + 1 };
+            if (dir === 4) return { x: x - 1, y };
+            if (dir === 6) return { x: x + 1, y };
+            if (dir === 8) return { x, y: y - 1 };
+            return null;
+        },
+
+        _isStepBlockedByEvent(x, y, targetEventId) {
+            if (!$gameMap || !$gameMap.eventsXy) return false;
+            const events = $gameMap.eventsXy(x, y) || [];
+            for (let i = 0; i < events.length; i++) {
+                const event = events[i];
+                if (!event) continue;
+                const id = event.eventId ? event.eventId() : event._eventId;
+                if (targetEventId != null && Number(id) === Number(targetEventId)) continue;
+                const snap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, $gamePlayer) : null;
+                if (snap && (snap.type === 'enemy' || snap.type === 'trap' || snap.type === 'hazard')) return true;
+                if (event.isNormalPriority && event.isNormalPriority()) return true;
+            }
+            return false;
+        },
+
         _markFrontierAttempted(key, durationMs) {
             if (!key) return;
             if (!this._state.attemptedFrontiers) this._state.attemptedFrontiers = {};
@@ -16203,6 +16267,22 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (now - (this._state.lastMoveLogAt || 0) < 1000) return;
             this._state.lastMoveLogAt = now;
             this._log('move_step', { action: 'MOVE_STEP', point }, 'dir=' + dir + ' from ' + before + ' toward ' + point.x + ':' + point.y);
+        },
+
+        _logScan(snapshot) {
+            const now = Date.now();
+            if (now - (this._state.lastScanLogAt || 0) < 3000) return;
+            this._state.lastScanLogAt = now;
+            const nearby = (snapshot.nearby || []).slice(0, 8).map(item => ({
+                eventId: item.eventId,
+                label: item.label,
+                type: item.type,
+                subtype: item.subtype,
+                distance: item.distance,
+                x: item.x,
+                y: item.y
+            }));
+            this._log('scan', { action: 'SCAN', point: snapshot.player }, 'nearby=' + JSON.stringify(nearby));
         },
 
         _logBlocked(reason) {
@@ -16250,6 +16330,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     message_busy: !!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()),
                     reason: reason || (decision && decision.reason) || '',
                     state: Object.assign({}, this._state, { visitedPoints: undefined })
+                });
+                Debug.log('[Autopilot]', kind, {
+                    action: decision ? decision.action : null,
+                    eventId: decision && decision.eventId != null ? decision.eventId : null,
+                    point: decision && decision.point ? decision.point : null,
+                    reason: reason || (decision && decision.reason) || ''
                 });
             } catch (e) {
                 Debug.warn('[Autopilot] log failed:', e.message);
