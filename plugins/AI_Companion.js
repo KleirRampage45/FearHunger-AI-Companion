@@ -15843,6 +15843,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             lastPositionKey: '',
             lastPositionAt: 0,
             noProgressCount: 0,
+            lastUiAdvanceAt: 0,
+            lastMoveLogAt: 0,
+            lastBlockedLogAt: 0,
             stopReason: ''
         },
 
@@ -15865,6 +15868,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastPositionKey = '';
             this._state.lastPositionAt = 0;
             this._state.noProgressCount = 0;
+            this._state.lastUiAdvanceAt = 0;
+            this._state.lastMoveLogAt = 0;
+            this._state.lastBlockedLogAt = 0;
             this._state.stopReason = reason || '';
         },
 
@@ -15894,7 +15900,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 return;
             }
             if (this._advanceOwnedMessage()) return;
-            if (!this.canRunMap()) return;
+            if (!this.canRunMap()) {
+                this._logBlocked();
+                return;
+            }
             if (this._maintainMovement()) return;
 
             const now = Date.now();
@@ -16069,6 +16078,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _maintainMovement() {
             const point = this._state.targetPoint;
             if (!point || this._state.mode !== 'move') return false;
+            if ($gamePlayer.isMoving && $gamePlayer.isMoving()) return true;
             if ($gamePlayer.x === point.x && $gamePlayer.y === point.y) {
                 if (point.faceDirection && $gamePlayer.setDirection) $gamePlayer.setDirection(point.faceDirection);
                 if (this._state.targetEventId != null) this._interact(this._state.targetEventId);
@@ -16077,12 +16087,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 this._state.mode = 'idle';
                 return true;
             }
-            if (Date.now() - this._state.lastMoveAt < 140) return true;
+            if (Date.now() - this._state.lastMoveAt < 260) return true;
             this._state.lastMoveAt = Date.now();
             const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(point.x, point.y) : 0;
             if (dir > 0 && (!$gamePlayer.canPass || $gamePlayer.canPass($gamePlayer.x, $gamePlayer.y, dir))) {
                 const before = this._positionKey();
                 $gamePlayer.moveStraight(dir);
+                this._logMoveStep(dir, point, before);
                 this._rememberPoint($gamePlayer.x, $gamePlayer.y);
                 if (before === this._positionKey()) {
                     this._state.noProgressCount++;
@@ -16099,6 +16110,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (point.frontierKey) this._markFrontierAttempted(point.frontierKey, 120000);
             this._state.mode = 'idle';
             this._state.targetPoint = null;
+            this._log('move_blocked', { action: 'MOVE', point }, 'no passable route to target');
             return false;
         },
 
@@ -16116,6 +16128,19 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 this._log('ui_advance', { action: 'CHOICE', eventId: null }, 'autopilot selected choice ' + index);
                 return true;
             }
+            const numberWindow = messageWindow && messageWindow._numberWindow ? messageWindow._numberWindow : (scene && scene._numberWindow);
+            if (numberWindow && numberWindow.active) {
+                if (numberWindow.processOk) numberWindow.processOk();
+                this._log('ui_advance', { action: 'NUMBER_INPUT', eventId: null }, 'autopilot confirmed number input');
+                return true;
+            }
+            const itemWindow = messageWindow && messageWindow._itemWindow ? messageWindow._itemWindow : (scene && scene._itemWindow);
+            if (itemWindow && itemWindow.active) {
+                if (itemWindow.select) itemWindow.select(0);
+                if (itemWindow.processOk) itemWindow.processOk();
+                this._log('ui_advance', { action: 'ITEM_CHOICE', eventId: null }, 'autopilot confirmed item choice');
+                return true;
+            }
             if (messageWindow && messageWindow.visible && !(messageWindow.isClosed && messageWindow.isClosed())) {
                 const now = Date.now();
                 if (now - (this._state.lastUiAdvanceAt || 0) < 900) return true;
@@ -16127,24 +16152,34 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 }
                 return true;
             }
+            this._logBlocked('message busy but no active message/choice window found');
             return true;
         },
 
         _interact(eventId) {
             const event = eventId != null && $gameMap ? $gameMap.event(Number(eventId)) : null;
+            let snap = null;
             if (event) {
-                const snap = EnvironmentScanner._eventSnapshot(event, $gamePlayer);
+                snap = EnvironmentScanner._eventSnapshot(event, $gamePlayer);
                 if (snap && snap.faceDirection && $gamePlayer.setDirection) $gamePlayer.setDirection(snap.faceDirection);
-                if (AutonomySystem && AutonomySystem._markEventSearched) AutonomySystem._markEventSearched(eventId, snap && snap.type, 'autopilot_interact');
-                if (AutonomySystem && AutonomySystem._setEventCooldown) AutonomySystem._setEventCooldown(eventId, snap && snap.type === 'door' ? 120000 : 30000);
             }
+            const wasBusy = !!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy());
             $gamePlayer._okIsPressed = true;
             if ($gamePlayer.checkEventTriggerHere) $gamePlayer.checkEventTriggerHere([0]);
+            let started = !!($gameMap.setupStartingEvent && $gameMap.setupStartingEvent());
             if ($gamePlayer.checkEventTriggerThere) $gamePlayer.checkEventTriggerThere([0, 1, 2]);
-            if ($gameMap.setupStartingEvent) $gameMap.setupStartingEvent();
+            started = !!($gameMap.setupStartingEvent && $gameMap.setupStartingEvent()) || started;
+            started = started || (!!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) && !wasBusy);
             this._state.mode = 'idle';
             this._state.targetPoint = null;
-            this._log('interact', { action: 'INTERACT', eventId }, event ? 'player autopilot interacted' : 'player autopilot confirm');
+            if (started) {
+                if (event && AutonomySystem && AutonomySystem._markEventSearched) AutonomySystem._markEventSearched(eventId, snap && snap.type, 'autopilot_interact');
+                if (event && AutonomySystem && AutonomySystem._setEventCooldown) AutonomySystem._setEventCooldown(eventId, snap && snap.type === 'door' ? 120000 : 30000);
+                this._log('interact', { action: 'INTERACT', eventId }, event ? 'event started: ' + ((snap && snap.label) || event.event().name || eventId) : 'confirm started event');
+            } else {
+                if (event && AutonomySystem && AutonomySystem._setEventCooldown) AutonomySystem._setEventCooldown(eventId, 3000);
+                this._log('interact_failed', { action: 'INTERACT', eventId }, event ? 'no event started: ' + ((snap && snap.label) || event.event().name || eventId) : 'no event under confirm');
+            }
         },
 
         _rememberPoint(x, y) {
@@ -16161,6 +16196,22 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (!key) return;
             if (!this._state.attemptedFrontiers) this._state.attemptedFrontiers = {};
             this._state.attemptedFrontiers[key] = Date.now() + Math.max(10000, durationMs || 60000);
+        },
+
+        _logMoveStep(dir, point, before) {
+            const now = Date.now();
+            if (now - (this._state.lastMoveLogAt || 0) < 1000) return;
+            this._state.lastMoveLogAt = now;
+            this._log('move_step', { action: 'MOVE_STEP', point }, 'dir=' + dir + ' from ' + before + ' toward ' + point.x + ':' + point.y);
+        },
+
+        _logBlocked(reason) {
+            const now = Date.now();
+            if (now - (this._state.lastBlockedLogAt || 0) < 2500) return;
+            this._state.lastBlockedLogAt = now;
+            const scene = SceneManager._scene && SceneManager._scene.constructor ? SceneManager._scene.constructor.name : '';
+            const busy = !!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy());
+            this._log('blocked', null, reason || ('scene=' + scene + ' battle=' + (!!($gameParty && $gameParty.inBattle && $gameParty.inBattle())) + ' message_busy=' + busy));
         },
 
         battleDecision(actor, battleState) {
@@ -16189,6 +16240,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     action: decision ? decision.action : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
                     target_point: decision && decision.point ? decision.point : null,
+                    scene: SceneManager._scene && SceneManager._scene.constructor ? SceneManager._scene.constructor.name : null,
+                    player: $gamePlayer ? {
+                        x: $gamePlayer.x,
+                        y: $gamePlayer.y,
+                        direction: $gamePlayer.direction ? $gamePlayer.direction() : null,
+                        moving: !!($gamePlayer.isMoving && $gamePlayer.isMoving())
+                    } : null,
+                    message_busy: !!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()),
                     reason: reason || (decision && decision.reason) || '',
                     state: Object.assign({}, this._state, { visitedPoints: undefined })
                 });
