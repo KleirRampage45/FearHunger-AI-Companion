@@ -15297,6 +15297,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     Scene_Battle.prototype.update = function () {
         _Scene_Battle_update.call(this);
         PerformanceMonitor.tick('Scene_Battle');
+        PlayerAutopilot.update();
 
         // C key to chat in battle
         if (Input.isTriggered('c')) {
@@ -15892,8 +15893,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 this.stop('max runtime reached');
                 return;
             }
-            if (!this.canRunMap()) return;
             if (this._advanceOwnedMessage()) return;
+            if (!this.canRunMap()) return;
             if (this._maintainMovement()) return;
 
             const now = Date.now();
