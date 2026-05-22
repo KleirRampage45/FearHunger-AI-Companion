@@ -57,6 +57,8 @@ AI_Companion.Config.setAutopilotEnabled(false)
 - It does not press through player-owned dialogs.
 - It does not loop on the same tile/event indefinitely.
 - It should avoid immediately reversing through the door it just used after a map transfer.
+- In autopilot mode, companion autonomy is suspended so the player autopilot is the single owner of map progression.
+- If it lands in a dead-end entrance with no reachable targets, it may deliberately backtrack after several HOLD decisions instead of freezing forever.
 - It should not repeatedly re-read or re-search the same loot/book event in the same run.
 - It can survive simple fights without waiting for user input.
 - Logs are detailed enough to explain why it failed.

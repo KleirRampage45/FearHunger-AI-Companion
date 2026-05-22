@@ -8588,11 +8588,13 @@ Respond ONLY with this JSON:
         shouldSuppressDefaultChase(follower) {
             if (!this.isControlledFollower(follower)) return false;
             if (!Config.autonomyEnabled) return false;
+            if (Config.autopilotEnabled) return false;
             return true;
         },
 
         canRun() {
             if (!Config.autonomyEnabled) return false;
+            if (Config.autopilotEnabled) return false;
             if (!$gameParty || !$gameParty.members || !$gameParty.members().some(m => m && m.actorId && m.actorId() === Config.companionActorId)) return false;
             if (!$gameMap || !$gamePlayer || $gameParty.inBattle()) return false;
             if (!SceneManager._scene || SceneManager._scene.constructor.name !== 'Scene_Map') return false;
@@ -15565,8 +15567,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         EquipmentApproval.update();
 
         // Optional local-only companion autonomy heartbeat.
-        // In autopilot test mode, the player and companion may act independently.
-        AutonomySystem.update();
+        // Autopilot test mode owns whole-party map progression to avoid two agents fighting over doors/transfers.
+        if (!Config.autopilotEnabled) AutonomySystem.update();
         PlayerAutopilot.update();
 
         // C key to chat (key code 67) - T is reserved for torch
@@ -16052,6 +16054,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     const _Game_Player_performTransfer = Game_Player.prototype.performTransfer;
     Game_Player.prototype.performTransfer = function () {
         const previousMapId = $gameMap ? $gameMap.mapId() : null;
+        const previousX = this.x;
+        const previousY = this.y;
         const wasTransferring = this._newMapId !== previousMapId;
         _Game_Player_performTransfer.call(this);
 
@@ -16068,7 +16072,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 AutonomySystem.onMapTransfer();
             }
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.onMapTransfer && Config.autopilotEnabled) {
-                PlayerAutopilot.onMapTransfer(previousMapId, $gameMap.mapId());
+                PlayerAutopilot.onMapTransfer(previousMapId, $gameMap.mapId(), previousX, previousY);
             }
             NPCIntelligence.clearRecentDialogue(); // Clear on new map
         }
@@ -16132,6 +16136,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             visitedMaps: {},
             lastMapTransferAt: 0,
             previousMapId: null,
+            lastTransferExitPoint: null,
+            holdCount: 0,
             lastPositionKey: '',
             lastPositionAt: 0,
             noProgressCount: 0,
@@ -16165,6 +16171,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.visitedMaps = {};
             this._state.lastMapTransferAt = 0;
             this._state.previousMapId = null;
+            this._state.lastTransferExitPoint = null;
+            this._state.holdCount = 0;
             this._state.lastPositionKey = '';
             this._state.lastPositionAt = 0;
             this._state.noProgressCount = 0;
@@ -16175,7 +16183,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.stopReason = reason || '';
         },
 
-        onMapTransfer(previousMapId, newMapId) {
+        onMapTransfer(previousMapId, newMapId, previousX, previousY) {
             const now = Date.now();
             const oldId = previousMapId != null ? Number(previousMapId) : null;
             const currentId = newMapId != null ? Number(newMapId) : ($gameMap ? $gameMap.mapId() : null);
@@ -16186,6 +16194,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (oldId != null && currentId != null && oldId !== currentId) {
                 if (!this._state.reverseTransferCooldowns) this._state.reverseTransferCooldowns = {};
                 this._state.reverseTransferCooldowns[this._transferKey(currentId, oldId)] = now + 90000;
+                if (previousX != null && previousY != null) {
+                    this._markFrontierAttempted(String(oldId) + ':' + previousX + ':' + previousY, 180000);
+                    this._state.lastTransferExitPoint = { mapId: oldId, x: previousX, y: previousY };
+                }
             }
             this._state.lastDecisionAt = 0;
             this._state.lastMoveAt = 0;
@@ -16194,6 +16206,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.targetEventId = null;
             this._state.targetLabel = '';
             this._state.repeatedTargetCount = 0;
+            this._state.holdCount = 0;
             this._state.lastPositionKey = '';
             this._state.lastPositionAt = 0;
             this._state.noProgressCount = 0;
@@ -16334,6 +16347,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
             const frontier = this._bestFrontier(snap);
             if (frontier) return { action: 'MOVE', point: { x: frontier.x, y: frontier.y }, frontierKey: frontier.key, reason: 'explore nearest frontier' };
+            const backtrack = this._deadEndBacktrackTarget(snap);
+            if (backtrack) return backtrack;
             return { action: 'HOLD', reason: 'no target or frontier found' };
         },
 
@@ -16349,6 +16364,32 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     (!blocked[point.key] || blocked[point.key] <= now) &&
                     this._canReachPoint(point.x, point.y, 96))
                 .sort((a, b) => a.distance - b.distance)[0] || null;
+        },
+
+        _deadEndBacktrackTarget(snap) {
+            if (!snap || !snap.player) return null;
+            const key = String(snap.mapId) + ':' + snap.player.x + ':' + snap.player.y;
+            if (this._state.lastHoldKey === key) this._state.holdCount = (this._state.holdCount || 0) + 1;
+            else {
+                this._state.lastHoldKey = key;
+                this._state.holdCount = 1;
+            }
+            if (this._state.holdCount < 4) return null;
+            this._state.reverseTransferCooldowns = {};
+            const exits = (snap.nearby || [])
+                .filter(item => item && item.type === 'door' && item.transferMapId != null && item.eventId != null && this._canReachApproach(item))
+                .sort((a, b) => (a.distance || 999) - (b.distance || 999));
+            const exit = exits[0];
+            if (!exit) return null;
+            if (exit.distance <= 1 || this._atApproach(exit)) {
+                return { action: 'INTERACT', eventId: exit.eventId, reason: 'dead-end at entrance; backtracking through reachable exit' };
+            }
+            return {
+                action: 'MOVE_TO_EVENT',
+                eventId: exit.eventId,
+                point: this._approachPoint(exit),
+                reason: 'dead-end at entrance; move to backtrack exit'
+            };
         },
 
         _nearestThreat(snap, maxDistance) {
@@ -16499,10 +16540,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 return;
             }
             if (decision.action === 'INTERACT') {
+                this._state.holdCount = 0;
                 this._interact(decision.eventId);
                 return;
             }
             if (decision.action === 'MOVE_TO_EVENT' || decision.action === 'MOVE') {
+                this._state.holdCount = 0;
                 this._state.mode = 'move';
                 this._state.targetEventId = decision.eventId != null ? decision.eventId : null;
                 this._state.targetPoint = decision.point || null;
