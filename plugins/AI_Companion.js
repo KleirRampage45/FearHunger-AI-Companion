@@ -15998,6 +15998,19 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 };
             }
 
+            const progressTarget = this._bestProgressTarget(snap);
+            if (progressTarget) {
+                if (progressTarget.distance <= 1 || this._atApproach(progressTarget)) {
+                    return { action: 'INTERACT', eventId: progressTarget.eventId, reason: 'use progress exit to ' + (progressTarget.transferMapName || progressTarget.label || 'next area') };
+                }
+                return {
+                    action: 'MOVE_TO_EVENT',
+                    eventId: progressTarget.eventId,
+                    point: this._approachPoint(progressTarget),
+                    reason: 'move toward progress exit ' + (progressTarget.transferMapName || progressTarget.label || '')
+                };
+            }
+
             const frontier = this._bestFrontier(snap);
             if (frontier) return { action: 'MOVE', point: { x: frontier.x, y: frontier.y }, frontierKey: frontier.key, reason: 'explore nearest frontier' };
             return { action: 'HOLD', reason: 'no target or frontier found' };
@@ -16051,6 +16064,37 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 .sort((a, b) => score(a) - score(b))[0] || null;
         },
 
+        _bestProgressTarget(snap) {
+            if (!$gameMap || !EnvironmentScanner || !EnvironmentScanner._eventSnapshot) return null;
+            const cooldown = AutonomySystem && AutonomySystem._isEventOnCooldown ? AutonomySystem._isEventOnCooldown.bind(AutonomySystem) : () => false;
+            const searched = AutonomySystem && AutonomySystem._isEventSearched ? AutonomySystem._isEventSearched.bind(AutonomySystem) : () => false;
+            const blocked = this._state.blockedEvents || {};
+            const now = Date.now();
+            const currentMapId = $gameMap.mapId();
+            const origin = snap && snap.player ? snap.player : $gamePlayer;
+            return ($gameMap.events ? $gameMap.events() : [])
+                .map(event => {
+                    if (!event || (event.isErased && event.isErased())) return null;
+                    const item = EnvironmentScanner._eventSnapshot(event, $gamePlayer);
+                    if (!item || (item.eventId == null && item.id == null)) return null;
+                    if (item.transferMapId == null || Number(item.transferMapId) === Number(currentMapId)) return null;
+                    return Object.assign({}, item, {
+                        eventId: item.eventId != null ? item.eventId : item.id,
+                        distance: Math.abs(origin.x - item.x) + Math.abs(origin.y - item.y)
+                    });
+                })
+                .filter(item => item &&
+                    !cooldown(item.eventId) &&
+                    !searched(item.eventId) &&
+                    (!blocked[item.eventId] || blocked[item.eventId] <= now) &&
+                    this._canReachApproach(item))
+                .sort((a, b) => {
+                    const da = a.distance || 999;
+                    const db = b.distance || 999;
+                    return da - db;
+                })[0] || null;
+        },
+
         _approachPoint(target) {
             if (!target) return null;
             if (target.approachX != null && target.approachY != null) return { x: target.approachX, y: target.approachY, faceDirection: target.faceDirection || null };
@@ -16080,6 +16124,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         if (!$gameMap.isValid(x, y)) continue;
                         if (!EnvironmentScanner._tileStandable(x, y)) continue;
                         if ($gameMap.eventsXyNt && $gameMap.eventsXyNt(x, y).some(e => e && e.isNormalPriority && e.isNormalPriority())) continue;
+                        if (this._isStepBlockedByEvent(x, y, null)) continue;
+                        const blockedKey = ($gameMap ? $gameMap.mapId() : 0) + ':' + x + ':' + y;
+                        if (this._state.blockedPoints && this._state.blockedPoints[blockedKey] && this._state.blockedPoints[blockedKey] > Date.now()) continue;
                         const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(x, y) : 0;
                         if (dir <= 0) continue;
                         if (!this._canReachPoint(x, y, 64)) continue;
