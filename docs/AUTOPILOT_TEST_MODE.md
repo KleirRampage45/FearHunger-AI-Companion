@@ -25,6 +25,7 @@ AI_Companion.Config.setAutopilotEnabled(false)
 - Move the player toward nearby containers, doors, NPCs, and frontier tiles.
 - Interact using the real player event trigger path.
 - Avoid nearby enemies using safe-tile search.
+- Handle coin-flip UI prompts deliberately: pause movement, use Lucky Coin/Shift when available, then choose heads/tails or cara/cruz.
 - Auto-pick conservative battle actions for player-controlled actors.
 - Stop automatically if it detects a movement loop or exceeds the max runtime.
 - Log each goal/action as `_type: "autopilot_tick"` in `ai_companion_logs`.
@@ -47,6 +48,7 @@ AI_Companion.Config.setAutopilotEnabled(false)
    - Map transfers reached.
    - Repeated target loops.
    - Combat decisions and deaths.
+   - Coin-flip UI logs such as `COIN_FLIP_CHOICE`; movement should pause while the prompt is open.
    - FPS/performance stalls.
 
 ## Success Criteria For This Branch
@@ -56,4 +58,3 @@ AI_Companion.Config.setAutopilotEnabled(false)
 - It does not loop on the same tile/event indefinitely.
 - It can survive simple fights without waiting for user input.
 - Logs are detailed enough to explain why it failed.
-

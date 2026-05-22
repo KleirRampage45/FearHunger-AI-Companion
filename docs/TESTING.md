@@ -52,6 +52,7 @@ Expected:
 - No `TypeError` is thrown.
 - Groq fallback does not send local model names such as `gemma-...` to Groq.
 - Coin-flip defense only happens when a live coin-flip threat is actually present.
+- During map coin-flip prompts, autonomy/autopilot stops moving, logs `COIN_FLIP_CHOICE`, uses Lucky Coin/Shift when available, and chooses a face instead of blindly confirming the first option.
 
 ## Autonomy Regression
 

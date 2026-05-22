@@ -8333,6 +8333,118 @@ Respond ONLY with this JSON:
         }
     };
 
+    const CoinFlipUi = {
+        _lastFace: null,
+
+        messageText() {
+            if (!$gameMessage || !$gameMessage._texts) return '';
+            return ($gameMessage._texts || []).join(' | ');
+        },
+
+        choices() {
+            return ($gameMessage && $gameMessage.choices) ? ($gameMessage.choices() || []) : [];
+        },
+
+        _norm(value) {
+            return String(value || '').toLowerCase()
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .replace(/\\[a-z]+\[[^\]]*\]/gi, '')
+                .trim();
+        },
+
+        _choiceText(choices, index) {
+            return String((choices || [])[index] || '').trim();
+        },
+
+        coinCount() {
+            if (!$gameParty || !$dataItems || !$gameParty.numItems) return 0;
+            let total = 0;
+            for (let i = 1; i < $dataItems.length; i++) {
+                const item = $dataItems[i];
+                if (!item || !item.name) continue;
+                if (i === 201 || /(lucky coin|moneda de la suerte)/i.test(item.name)) {
+                    total += Number($gameParty.numItems(item) || 0);
+                }
+            }
+            return total;
+        },
+
+        hasCoinPrompt(choices, messageText) {
+            const joined = this._norm((choices || []).join(' | ') + ' | ' + (messageText || this.messageText()));
+            return /(coin flip|moneda de la suerte|cara o cruz|heads or tails|cara|cruz|heads|tails|lucky coin)/i.test(joined);
+        },
+
+        isFaceChoice(choices, messageText) {
+            const text = this._norm((choices || []).join(' | ') + ' | ' + (messageText || ''));
+            const hasHeads = /(cara|heads)/i.test(text);
+            const hasTails = /(cruz|tails)/i.test(text);
+            return hasHeads && hasTails;
+        },
+
+        isExtraCoinChoice(choices, messageText) {
+            if (!choices || choices.length < 2) return false;
+            if (this.isFaceChoice(choices, messageText)) return false;
+            const text = this._norm((choices || []).join(' | ') + ' | ' + (messageText || ''));
+            const mentionsCoin = /(moneda de la suerte|lucky coin|otra moneda|second coin|double coin|moneda extra|extra coin|mant[eé]n shift|shift)/i.test(text);
+            const hasPositive = choices.some(choice => /^(si|s[ií]|yes|usar|use|lanzar|tirar|throw|otra|double|doble)/i.test(this._norm(choice)));
+            const hasNegative = choices.some(choice => /^(no|cancel|cancelar|irse|leave|don't|dont|sin)/i.test(this._norm(choice)));
+            return mentionsCoin && (hasPositive || hasNegative);
+        },
+
+        isActive() {
+            if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
+            const choices = this.choices();
+            return this.hasCoinPrompt(choices, this.messageText());
+        },
+
+        decision(choices, messageText) {
+            choices = choices || [];
+            messageText = messageText || this.messageText();
+            if (this.isExtraCoinChoice(choices, messageText)) {
+                const coins = this.coinCount();
+                const positive = choices.findIndex(choice => /^(si|s[ií]|yes|usar|use|lanzar|tirar|throw|otra|double|doble)/i.test(this._norm(choice)));
+                const negative = choices.findIndex(choice => /^(no|cancel|cancelar|irse|leave|don't|dont|sin)/i.test(this._norm(choice)));
+                const index = coins > 0 && positive >= 0 ? positive : (negative >= 0 ? negative : 0);
+                return {
+                    index,
+                    kind: 'extra_coin',
+                    reason: coins > 0
+                        ? `use Lucky Coin before flip (${coins} available)`
+                        : 'skip Lucky Coin; none available',
+                    label: this._choiceText(choices, index)
+                };
+            }
+            if (this.isFaceChoice(choices, messageText)) {
+                const candidates = [];
+                choices.forEach((choice, index) => {
+                    if (/(cara|cruz|heads|tails)/i.test(this._norm(choice))) candidates.push(index);
+                });
+                const index = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : (Math.random() < 0.5 ? 0 : Math.min(1, choices.length - 1));
+                this._lastFace = this._choiceText(choices, index);
+                const coins = this.coinCount();
+                return {
+                    index,
+                    kind: 'coin_face',
+                    reason: coins > 0 ? `choose coin face with Lucky Coin held (${coins} available)` : 'choose coin face deliberately',
+                    label: this._choiceText(choices, index)
+                };
+            }
+            return { index: 0, kind: 'generic', reason: 'default choice', label: this._choiceText(choices, 0) };
+        },
+
+        applyBeforeOk(decision) {
+            if (!decision || decision.kind !== 'coin_face') return;
+            if (this.coinCount() <= 0) return;
+            if (typeof Input === 'undefined' || !Input._currentState) return;
+            Input._currentState.shift = true;
+            setTimeout(function() {
+                try {
+                    if (Input && Input._currentState) Input._currentState.shift = false;
+                } catch (e) {}
+            }, 250);
+        }
+    };
+
     //=========================================================================
     // Autonomy System — Local-only overworld heartbeat controller (Branch 9)
     // Conservative beta: follower detours, rejoin logic, nearby interaction
@@ -8426,6 +8538,9 @@ Respond ONLY with this JSON:
             if (follower && follower.setThrough) follower.setThrough(false);
 
             if (this._advanceInteractionUi(follower)) {
+                return;
+            }
+            if (CoinFlipUi.isActive()) {
                 return;
             }
 
@@ -9850,6 +9965,7 @@ Respond ONLY with this JSON:
 
         _tryMoveStraight(follower, direction) {
             if (!follower || !direction || direction <= 0) return false;
+            if (CoinFlipUi.isActive()) return false;
             if (follower.canPass && !follower.canPass(follower.x, follower.y, direction)) return false;
             follower.moveStraight(direction);
             return true;
@@ -9900,15 +10016,28 @@ Respond ONLY with this JSON:
                     this._requireConsent('high-risk choice prompt');
                     return true;
                 }
-                let index = 0;
-                if (Array.isArray(choices) && choices.length >= 2) {
-                    const joined = choices.join(' | ').toLowerCase();
-                    if (/(cara|cruz|heads|tails|coin|moneda)/i.test(joined)) {
-                        index = Math.random() < 0.5 ? 0 : 1;
-                    }
-                }
+                const coinDecision = CoinFlipUi.decision(choices, messageText);
+                const index = coinDecision.index || 0;
                 if (choiceWindow.select) choiceWindow.select(index);
+                CoinFlipUi.applyBeforeOk(coinDecision);
                 if (choiceWindow.processOk) choiceWindow.processOk();
+                if (coinDecision.kind !== 'generic') {
+                    try {
+                        ThesisLogger.log('autonomy_tick', {
+                            map_id: $gameMap ? $gameMap.mapId() : null,
+                            map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
+                            enabled: Config.autonomyEnabled,
+                            mode: this._state.mode,
+                            source: 'ui',
+                            action: 'COIN_FLIP_CHOICE',
+                            event_id: this._state.lastInteractionEventId,
+                            reason: coinDecision.reason,
+                            choice_index: index,
+                            choice_label: coinDecision.label
+                        });
+                    } catch (e) {}
+                    Debug.log('[Autonomy CoinFlip]', coinDecision.reason, 'choice=' + coinDecision.label, 'index=' + index);
+                }
                 return true;
             }
 
@@ -16226,6 +16355,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         _maintainMovement() {
             const point = this._state.targetPoint;
             if (!point || this._state.mode !== 'move') return false;
+            if (CoinFlipUi.isActive()) return true;
             if ($gamePlayer.isMoving && $gamePlayer.isMoving()) return true;
             if ($gamePlayer.x === point.x && $gamePlayer.y === point.y) {
                 if (point.faceDirection && $gamePlayer.setDirection) $gamePlayer.setDirection(point.faceDirection);
@@ -16272,11 +16402,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : (scene && scene._choiceWindow);
             if (choiceWindow && choiceWindow.active) {
                 const choices = $gameMessage.choices ? $gameMessage.choices() : [];
-                const joined = (choices || []).join(' | ').toLowerCase();
-                const index = /(cara|cruz|heads|tails|coin|moneda)/i.test(joined) ? (Math.random() < 0.5 ? 0 : 1) : 0;
+                const messageText = CoinFlipUi.messageText();
+                const coinDecision = CoinFlipUi.decision(choices, messageText);
+                const index = coinDecision.index || 0;
                 if (choiceWindow.select) choiceWindow.select(index);
+                CoinFlipUi.applyBeforeOk(coinDecision);
                 if (choiceWindow.processOk) choiceWindow.processOk();
-                this._log('ui_advance', { action: 'CHOICE', eventId: null }, 'autopilot selected choice ' + index);
+                this._log('ui_advance', { action: coinDecision.kind === 'generic' ? 'CHOICE' : 'COIN_FLIP_CHOICE', eventId: null }, (coinDecision.kind === 'generic' ? 'autopilot selected choice ' : 'autopilot coin flip choice ') + index + (coinDecision.label ? ' ' + coinDecision.label : '') + (coinDecision.reason ? ' — ' + coinDecision.reason : ''));
                 return true;
             }
             const numberWindow = messageWindow && messageWindow._numberWindow ? messageWindow._numberWindow : (scene && scene._numberWindow);
