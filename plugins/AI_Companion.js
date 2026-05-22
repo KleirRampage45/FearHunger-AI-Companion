@@ -8369,6 +8369,42 @@ Respond ONLY with this JSON:
             return total;
         },
 
+        _sceneName() {
+            const scene = SceneManager && SceneManager._scene;
+            return scene && scene.constructor ? scene.constructor.name : '';
+        },
+
+        _worldSnapshot() {
+            try {
+                return (typeof WorldStateEngine !== 'undefined' && WorldStateEngine.getSnapshot) ? WorldStateEngine.getSnapshot() : null;
+            } catch (e) {
+                return null;
+            }
+        },
+
+        _nearbyThreat() {
+            try {
+                const origin = $gamePlayer || (typeof AutonomySystem !== 'undefined' && AutonomySystem.getFollower ? AutonomySystem.getFollower() : null);
+                if (!origin || typeof EnvironmentScanner === 'undefined' || !EnvironmentScanner.scanAround) return null;
+                return EnvironmentScanner.scanAround(origin, 3).find(item => item && item.type === 'enemy' && item.danger === 'high' && item.distance <= 2) || null;
+            } catch (e) {
+                return null;
+            }
+        },
+
+        _currentInteractionMeta() {
+            try {
+                if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
+                    return {
+                        eventId: AutonomySystem._state.lastInteractionEventId,
+                        type: AutonomySystem._state.lastInteractionType || '',
+                        label: AutonomySystem._state.lastInteractionLabel || ''
+                    };
+                }
+            } catch (e) {}
+            return { eventId: null, type: '', label: '' };
+        },
+
         hasCoinPrompt(choices, messageText) {
             const joined = this._norm((choices || []).join(' | ') + ' | ' + (messageText || this.messageText()));
             return /(coin flip|moneda de la suerte|cara o cruz|heads or tails|cara|cruz|heads|tails|lucky coin)/i.test(joined);
@@ -8391,6 +8427,41 @@ Respond ONLY with this JSON:
             return mentionsCoin && (hasPositive || hasNegative);
         },
 
+        spendPolicy(messageText) {
+            const coins = this.coinCount();
+            if (coins <= 0) return { spend: false, reason: 'no Lucky Coin available', coins };
+
+            const text = this._norm(messageText || this.messageText());
+            const sceneName = this._sceneName();
+            const inBattle = !!(($gameParty && $gameParty.inBattle && $gameParty.inBattle()) || sceneName === 'Scene_Battle');
+            if (inBattle) return { spend: true, reason: 'combat coin flip can be lethal', coins };
+
+            if (/(death|muerte|morir|lethal|letal|instant|instante|boss|jefe|sacrific|sacrificio|ritual|save|guardar|cama|bed|necromancy|necromancia)/i.test(text)) {
+                return { spend: true, reason: 'high-risk coin prompt', coins };
+            }
+
+            const world = this._worldSnapshot();
+            const party = world && world.party ? world.party : null;
+            const resources = world && world.resources ? world.resources : null;
+            const threat = this._nearbyThreat();
+            if (threat && party && party.avg_hp_pct <= 70) {
+                return { spend: true, reason: 'enemy nearby and party is not healthy', coins };
+            }
+
+            const meta = this._currentInteractionMeta();
+            const labelText = this._norm([meta.type, meta.label, text].join(' | '));
+            const isLootPrompt = /(container|loot|cofre|chest|book|bookshelf|estanter|shelf|armario|crate|caja|barrel|barril|mesa|table)/i.test(labelText);
+            const resourcePressure = !!(resources && (resources.healing <= 0 || resources.food <= 0 || resources.total_items <= 6));
+            if (isLootPrompt && coins >= 2 && resourcePressure) {
+                return { spend: true, reason: 'loot may solve low supplies and more than one Lucky Coin remains', coins };
+            }
+            if (isLootPrompt && coins >= 3) {
+                return { spend: true, reason: 'safe to spend one on loot; reserve remains', coins };
+            }
+
+            return { spend: false, reason: 'conserve Lucky Coin for combat, bosses, saves, or urgent supplies', coins };
+        },
+
         isActive() {
             if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
             const choices = this.choices();
@@ -8402,16 +8473,17 @@ Respond ONLY with this JSON:
             messageText = messageText || this.messageText();
             if (this.isExtraCoinChoice(choices, messageText)) {
                 const coins = this.coinCount();
+                const policy = this.spendPolicy(messageText);
                 const positive = choices.findIndex(choice => /^(si|s[ií]|yes|usar|use|lanzar|tirar|throw|otra|double|doble)/i.test(this._norm(choice)));
                 const negative = choices.findIndex(choice => /^(no|cancel|cancelar|irse|leave|don't|dont|sin)/i.test(this._norm(choice)));
-                const index = coins > 0 && positive >= 0 ? positive : (negative >= 0 ? negative : 0);
+                const index = policy.spend && positive >= 0 ? positive : (negative >= 0 ? negative : 0);
                 return {
                     index,
                     kind: 'extra_coin',
-                    reason: coins > 0
-                        ? `use Lucky Coin before flip (${coins} available)`
-                        : 'skip Lucky Coin; none available',
-                    label: this._choiceText(choices, index)
+                    reason: policy.reason,
+                    label: this._choiceText(choices, index),
+                    spendLuckyCoin: policy.spend,
+                    coins
                 };
             }
             if (this.isFaceChoice(choices, messageText)) {
@@ -8421,12 +8493,14 @@ Respond ONLY with this JSON:
                 });
                 const index = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : (Math.random() < 0.5 ? 0 : Math.min(1, choices.length - 1));
                 this._lastFace = this._choiceText(choices, index);
-                const coins = this.coinCount();
+                const policy = this.spendPolicy(messageText);
                 return {
                     index,
                     kind: 'coin_face',
-                    reason: coins > 0 ? `choose coin face with Lucky Coin held (${coins} available)` : 'choose coin face deliberately',
-                    label: this._choiceText(choices, index)
+                    reason: policy.spend ? `use Lucky Coin: ${policy.reason}` : `no Lucky Coin: ${policy.reason}`,
+                    label: this._choiceText(choices, index),
+                    spendLuckyCoin: policy.spend,
+                    coins: policy.coins
                 };
             }
             return { index: 0, kind: 'generic', reason: 'default choice', label: this._choiceText(choices, 0) };
@@ -8434,7 +8508,7 @@ Respond ONLY with this JSON:
 
         applyBeforeOk(decision) {
             if (!decision || decision.kind !== 'coin_face') return;
-            if (this.coinCount() <= 0) return;
+            if (!decision.spendLuckyCoin || this.coinCount() <= 0) return;
             if (typeof Input === 'undefined' || !Input._currentState) return;
             Input._currentState.shift = true;
             setTimeout(function() {
@@ -10033,10 +10107,12 @@ Respond ONLY with this JSON:
                             event_id: this._state.lastInteractionEventId,
                             reason: coinDecision.reason,
                             choice_index: index,
-                            choice_label: coinDecision.label
+                            choice_label: coinDecision.label,
+                            spend_lucky_coin: !!coinDecision.spendLuckyCoin,
+                            lucky_coin_count: coinDecision.coins != null ? coinDecision.coins : CoinFlipUi.coinCount()
                         });
                     } catch (e) {}
-                    Debug.log('[Autonomy CoinFlip]', coinDecision.reason, 'choice=' + coinDecision.label, 'index=' + index);
+                    Debug.log('[Autonomy CoinFlip]', coinDecision.reason, 'choice=' + coinDecision.label, 'index=' + index, 'spendLuckyCoin=' + !!coinDecision.spendLuckyCoin);
                 }
                 return true;
             }
@@ -14514,6 +14590,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         this._separatorHeight = 26;
         this._pendingReply = null;
         this._pendingReplyTimestamp = null;
+        this._pendingReplyStartedAt = 0;
+        this._lastPendingAnimAt = 0;
+        this._pendingReplyFrame = 0;
         this._layoutBlocks = [];
         this._contentHeight = 0;
         this._filterMode = 'all';
@@ -14591,6 +14670,22 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._scrollY = Math.min(maxScroll, this._scrollY + scrollStep);
             this._refreshChat();
         }
+        this._updatePendingReplyAnimation();
+    };
+
+    Scene_AIChat.prototype._thinkingLabel = function () {
+        const dots = ['.', '..', '...'][this._pendingReplyFrame % 3];
+        return Config.language === 'es' ? `Pensando${dots}` : `Thinking${dots}`;
+    };
+
+    Scene_AIChat.prototype._updatePendingReplyAnimation = function () {
+        if (!this._pendingReply) return;
+        const now = Date.now();
+        if (now - (this._lastPendingAnimAt || 0) < 420) return;
+        this._lastPendingAnimAt = now;
+        this._pendingReplyFrame = (this._pendingReplyFrame || 0) + 1;
+        this._pendingReply = this._thinkingLabel();
+        this._rebuildTranscriptView(true);
     };
 
     Scene_AIChat.prototype._getFilterModes = function () {
@@ -14882,7 +14977,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         // Deactivate input during processing
         this._inputWindow.deactivate();
-        this._pendingReply = '...';
+        this._pendingReplyStartedAt = Date.now();
+        this._lastPendingAnimAt = 0;
+        this._pendingReplyFrame = 0;
+        this._pendingReply = this._thinkingLabel();
         this._pendingReplyTimestamp = ChatSystem.formatMessageTime();
 
         const responsePromise = ChatSystem.sendMessage(message);

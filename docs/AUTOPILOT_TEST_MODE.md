@@ -25,7 +25,7 @@ AI_Companion.Config.setAutopilotEnabled(false)
 - Move the player toward nearby containers, doors, NPCs, and frontier tiles.
 - Interact using the real player event trigger path.
 - Avoid nearby enemies using safe-tile search.
-- Handle coin-flip UI prompts deliberately: pause movement, use Lucky Coin/Shift when available, then choose heads/tails or cara/cruz.
+- Handle coin-flip UI prompts deliberately: pause movement, conserve Lucky Coin for high-risk prompts unless supplies are low or extra coins remain, then choose heads/tails or cara/cruz.
 - Auto-pick conservative battle actions for player-controlled actors.
 - Stop automatically if it detects a movement loop or exceeds the max runtime.
 - Log each goal/action as `_type: "autopilot_tick"` in `ai_companion_logs`.
