@@ -8720,9 +8720,9 @@ Respond ONLY with this JSON:
         },
 
         _eventMemoryCooldownMs(type) {
-            if (type === 'container' || type === 'loot') return 300000;
+            if (type === 'container' || type === 'loot') return 1800000;
             if (type === 'npc') return 120000;
-            if (type === 'door') return 30000;
+            if (type === 'door') return 90000;
             return 45000;
         },
 
@@ -10187,7 +10187,7 @@ Respond ONLY with this JSON:
             const interactionType = interactionSnap && interactionSnap.type ? interactionSnap.type : this._state.lastInteractionType;
             this._state.interactionUiOwned = true;
             this._setEventCooldown(eventId, interactionType === 'door' ? 90000 : 15000);
-            if (interactionSnap && (interactionType === 'container' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
+            if (interactionSnap && (interactionType === 'container' || interactionType === 'loot' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
                 this._markEventSearched(interactionSnap.id || eventId, interactionType, 'interaction_started');
             }
             this._state.allowPlayerMoveWhileUi = channel !== 'background-loot' &&
@@ -16051,7 +16051,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     // Room entry hook - fires when player transfers to new map
     const _Game_Player_performTransfer = Game_Player.prototype.performTransfer;
     Game_Player.prototype.performTransfer = function () {
-        const wasTransferring = this._newMapId !== $gameMap.mapId();
+        const previousMapId = $gameMap ? $gameMap.mapId() : null;
+        const wasTransferring = this._newMapId !== previousMapId;
         _Game_Player_performTransfer.call(this);
 
         if (wasTransferring) {
@@ -16066,8 +16067,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (typeof AutonomySystem !== 'undefined' && AutonomySystem.onMapTransfer) {
                 AutonomySystem.onMapTransfer();
             }
-            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.reset && Config.autopilotEnabled) {
-                PlayerAutopilot.reset('map transfer');
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.onMapTransfer && Config.autopilotEnabled) {
+                PlayerAutopilot.onMapTransfer(previousMapId, $gameMap.mapId());
             }
             NPCIntelligence.clearRecentDialogue(); // Clear on new map
         }
@@ -16127,6 +16128,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             attemptedFrontiers: {},
             blockedPoints: {},
             blockedEvents: {},
+            reverseTransferCooldowns: {},
+            visitedMaps: {},
+            lastMapTransferAt: 0,
+            previousMapId: null,
             lastPositionKey: '',
             lastPositionAt: 0,
             noProgressCount: 0,
@@ -16156,6 +16161,10 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.attemptedFrontiers = {};
             this._state.blockedPoints = {};
             this._state.blockedEvents = {};
+            this._state.reverseTransferCooldowns = {};
+            this._state.visitedMaps = {};
+            this._state.lastMapTransferAt = 0;
+            this._state.previousMapId = null;
             this._state.lastPositionKey = '';
             this._state.lastPositionAt = 0;
             this._state.noProgressCount = 0;
@@ -16164,6 +16173,36 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastBlockedLogAt = 0;
             this._state.lastScanLogAt = 0;
             this._state.stopReason = reason || '';
+        },
+
+        onMapTransfer(previousMapId, newMapId) {
+            const now = Date.now();
+            const oldId = previousMapId != null ? Number(previousMapId) : null;
+            const currentId = newMapId != null ? Number(newMapId) : ($gameMap ? $gameMap.mapId() : null);
+            this._state.lastMapTransferAt = now;
+            this._state.previousMapId = oldId;
+            if (!this._state.visitedMaps) this._state.visitedMaps = {};
+            if (currentId != null) this._state.visitedMaps[currentId] = (this._state.visitedMaps[currentId] || 0) + 1;
+            if (oldId != null && currentId != null && oldId !== currentId) {
+                if (!this._state.reverseTransferCooldowns) this._state.reverseTransferCooldowns = {};
+                this._state.reverseTransferCooldowns[this._transferKey(currentId, oldId)] = now + 90000;
+            }
+            this._state.lastDecisionAt = 0;
+            this._state.lastMoveAt = 0;
+            this._state.mode = 'idle';
+            this._state.targetPoint = null;
+            this._state.targetEventId = null;
+            this._state.targetLabel = '';
+            this._state.repeatedTargetCount = 0;
+            this._state.lastPositionKey = '';
+            this._state.lastPositionAt = 0;
+            this._state.noProgressCount = 0;
+            this._state.lastUiAdvanceAt = 0;
+            this._log('map_transfer', {
+                action: 'MAP_TRANSFER',
+                eventId: null,
+                point: $gamePlayer ? { x: $gamePlayer.x, y: $gamePlayer.y } : null
+            }, oldId != null ? `entered map ${currentId} from ${oldId}; reverse exit cooled down` : `entered map ${currentId}`);
         },
 
         stop(reason) {
@@ -16227,6 +16266,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     approachX: item.approachX,
                     approachY: item.approachY,
                     faceDirection: item.faceDirection,
+                    transferMapId: item.transferMapId,
+                    transferMapName: item.transferMapName,
                     textHints: item.textHints || ''
                 }));
             const snapshot = {
@@ -16328,7 +16369,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const score = item => {
                 if (item.type === 'loot') return 5 + item.distance;
                 if (item.type === 'container') return 10 + item.distance;
-                if (item.type === 'door') return 20 + item.distance;
+                if (item.type === 'door') return 20 + item.distance + this._transferVisitPenalty(item);
                 if (item.type === 'npc') return 35 + item.distance;
                 return 99 + item.distance;
             };
@@ -16340,6 +16381,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     !searched(item.eventId) &&
                     (!blocked[item.eventId] || blocked[item.eventId] <= now) &&
                     (item.type === 'loot' || item.type === 'container' || item.type === 'door' || item.type === 'npc') &&
+                    !(item.type === 'door' && this._isReverseTransferTarget(item)) &&
                     this._canReachApproach(item))
                 .sort((a, b) => score(a) - score(b))[0] || null;
         },
@@ -16367,12 +16409,36 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     !cooldown(item.eventId) &&
                     !searched(item.eventId) &&
                     (!blocked[item.eventId] || blocked[item.eventId] <= now) &&
+                    !this._isReverseTransferTarget(item) &&
                     this._canReachApproach(item))
                 .sort((a, b) => {
-                    const da = a.distance || 999;
-                    const db = b.distance || 999;
+                    const da = (a.distance || 999) + this._transferVisitPenalty(a);
+                    const db = (b.distance || 999) + this._transferVisitPenalty(b);
                     return da - db;
                 })[0] || null;
+        },
+
+        _transferKey(fromMapId, toMapId) {
+            return String(fromMapId == null ? '?' : fromMapId) + '->' + String(toMapId == null ? '?' : toMapId);
+        },
+
+        _isReverseTransferTarget(item) {
+            if (!item || item.transferMapId == null || !$gameMap) return false;
+            const key = this._transferKey($gameMap.mapId(), Number(item.transferMapId));
+            const until = this._state.reverseTransferCooldowns && this._state.reverseTransferCooldowns[key];
+            if (!until) return false;
+            if (until <= Date.now()) {
+                delete this._state.reverseTransferCooldowns[key];
+                return false;
+            }
+            return true;
+        },
+
+        _transferVisitPenalty(item) {
+            if (!item || item.transferMapId == null) return 0;
+            const visited = this._state.visitedMaps || {};
+            const count = Number(visited[Number(item.transferMapId)] || 0);
+            return count * 25;
         },
 
         _approachPoint(target) {
