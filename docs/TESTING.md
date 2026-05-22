@@ -107,3 +107,14 @@ cd test-automation
 ```
 
 Generated screenshots, reports, pycache, and virtualenvs are ignored by git.
+# Compact Log Summaries
+
+Use the local summarizer before opening raw `ai_companion_logs/*.jsonl` files. Raw logs can be huge because scan records include nearby event data.
+
+```bash
+node scripts/summarize_logs.js --last 25
+node scripts/summarize_logs.js --since 120 --last 15 --errors --combat --chat
+node scripts/summarize_logs.js --type autopilot_tick --last 40
+```
+
+Only inspect raw JSONL slices after the summary identifies a specific timestamp, event id, or repeated point.
