@@ -158,6 +158,9 @@
         autonomyAllowDoorTesting: localStorage.getItem('AI_Companion_AutonomyDoorTesting') !== 'false',
         autonomyAllowSoloEngagement: localStorage.getItem('AI_Companion_AutonomySoloEngagement') === 'true',
         autonomyAutoReturnOnDanger: localStorage.getItem('AI_Companion_AutonomyAutoReturn') !== 'false',
+        autopilotEnabled: localStorage.getItem('AI_Companion_AutopilotEnabled') === 'true',
+        autopilotTickSeconds: Number(localStorage.getItem('AI_Companion_AutopilotTickSeconds') || '3'),
+        autopilotMaxRuntimeMinutes: Number(localStorage.getItem('AI_Companion_AutopilotMaxRuntimeMinutes') || '20'),
         debugOverlay: localStorage.getItem('AI_Companion_DebugOverlay') === 'true',
         performanceLogging: localStorage.getItem('AI_Companion_PerformanceLogging') !== 'false',
         performanceLogIntervalMs: Number(localStorage.getItem('AI_Companion_PerformanceLogIntervalMs') || '5000'),
@@ -687,6 +690,22 @@
         setPerformanceLogIntervalMs(ms) {
             this.performanceLogIntervalMs = Math.max(1000, Math.min(30000, Number(ms) || 5000));
             localStorage.setItem('AI_Companion_PerformanceLogIntervalMs', String(this.performanceLogIntervalMs));
+        },
+
+        setAutopilotEnabled(on) {
+            this.autopilotEnabled = !!on;
+            localStorage.setItem('AI_Companion_AutopilotEnabled', this.autopilotEnabled ? 'true' : 'false');
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.reset) PlayerAutopilot.reset('config toggle');
+        },
+
+        setAutopilotTickSeconds(seconds) {
+            this.autopilotTickSeconds = Math.max(1, Math.min(15, Number(seconds) || 3));
+            localStorage.setItem('AI_Companion_AutopilotTickSeconds', String(this.autopilotTickSeconds));
+        },
+
+        setAutopilotMaxRuntimeMinutes(minutes) {
+            this.autopilotMaxRuntimeMinutes = Math.max(1, Math.min(180, Number(minutes) || 20));
+            localStorage.setItem('AI_Companion_AutopilotMaxRuntimeMinutes', String(this.autopilotMaxRuntimeMinutes));
         }
 	    };
 
@@ -6578,6 +6597,15 @@ Respond ONLY with this JSON:
 
         // Now check if the NEW current actor is the AI companion
         const actor = this.actor();
+        if (actor && Config.autopilotEnabled && actor.actorId && actor.actorId() !== Config.companionActorId) {
+            const battleState = BattleStateExtractor.extract();
+            const autoDecision = PlayerAutopilot.battleDecision(actor, battleState);
+            if (autoDecision) {
+                ActionExecutor.execute(actor, autoDecision);
+                this.selectNextCommand();
+                return;
+            }
+        }
         if (actor && actor.actorId() === Config.companionActorId) {
             // Process AI decision
             const battleState = BattleStateExtractor.extract();
@@ -15248,6 +15276,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         // Optional local-only companion autonomy heartbeat
         AutonomySystem.update();
+        PlayerAutopilot.update();
 
         // C key to chat (key code 67) - T is reserved for torch
         if (Input.isTriggered('c') || (TouchInput.isTriggered() && false)) {
@@ -15745,6 +15774,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (typeof AutonomySystem !== 'undefined' && AutonomySystem.onMapTransfer) {
                 AutonomySystem.onMapTransfer();
             }
+            if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.reset && Config.autopilotEnabled) {
+                PlayerAutopilot.reset('map transfer');
+            }
             NPCIntelligence.clearRecentDialogue(); // Clear on new map
         }
     };
@@ -15786,6 +15818,310 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     };
 
     //=========================================================================
+    // Player Autopilot — test-only whole-party control harness
+    //=========================================================================
+    const PlayerAutopilot = {
+        _state: {
+            startedAt: 0,
+            lastDecisionAt: 0,
+            lastMoveAt: 0,
+            mode: 'idle',
+            targetPoint: null,
+            targetEventId: null,
+            targetLabel: '',
+            lastAction: '',
+            repeatedTargetCount: 0,
+            visitedPoints: {},
+            stopReason: ''
+        },
+
+        isEnabled() {
+            return !!Config.autopilotEnabled;
+        },
+
+        reset(reason) {
+            this._state.startedAt = this.isEnabled() ? Date.now() : 0;
+            this._state.lastDecisionAt = 0;
+            this._state.lastMoveAt = 0;
+            this._state.mode = 'idle';
+            this._state.targetPoint = null;
+            this._state.targetEventId = null;
+            this._state.targetLabel = '';
+            this._state.lastAction = '';
+            this._state.repeatedTargetCount = 0;
+            this._state.visitedPoints = {};
+            this._state.stopReason = reason || '';
+        },
+
+        stop(reason) {
+            Config.autopilotEnabled = false;
+            localStorage.setItem('AI_Companion_AutopilotEnabled', 'false');
+            this._state.stopReason = reason || 'stopped';
+            this._log('stop', null, reason || 'stopped');
+        },
+
+        canRunMap() {
+            if (!this.isEnabled()) return false;
+            if (!$gameMap || !$gamePlayer || !$gameParty || $gameParty.inBattle()) return false;
+            if (!SceneManager._scene || SceneManager._scene.constructor.name !== 'Scene_Map') return false;
+            if (ChatSystem && ChatSystem.isActive && ChatSystem.isActive()) return false;
+            if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
+            if ($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
+            return true;
+        },
+
+        update() {
+            if (!this.isEnabled()) return;
+            if (!this._state.startedAt) this.reset('start');
+            const maxMs = Math.max(1, Number(Config.autopilotMaxRuntimeMinutes) || 20) * 60000;
+            if (Date.now() - this._state.startedAt > maxMs) {
+                this.stop('max runtime reached');
+                return;
+            }
+            if (!this.canRunMap()) return;
+            if (this._maintainMovement()) return;
+
+            const now = Date.now();
+            const tickMs = Math.max(1000, Number(Config.autopilotTickSeconds || 3) * 1000);
+            if (now - this._state.lastDecisionAt < tickMs) return;
+            this._state.lastDecisionAt = now;
+            const decision = this._decide();
+            this._applyDecision(decision);
+            this._log('decision', decision, decision && decision.reason);
+        },
+
+        _snapshot() {
+            const actor = $gamePlayer;
+            const world = WorldStateEngine.getSnapshot();
+            const nearby = EnvironmentScanner.scanAround(actor, 7)
+                .filter(item => item && item.eventId != null)
+                .map(item => ({
+                    eventId: item.eventId,
+                    label: item.label,
+                    type: item.type,
+                    subtype: item.subtype,
+                    danger: item.danger,
+                    distance: item.distance,
+                    direction: item.direction,
+                    x: item.x,
+                    y: item.y,
+                    approachX: item.approachX,
+                    approachY: item.approachY,
+                    faceDirection: item.faceDirection,
+                    textHints: item.textHints || ''
+                }));
+            return {
+                mapId: $gameMap.mapId(),
+                mapName: $gameMap.displayName() || ('Map ' + $gameMap.mapId()),
+                player: { x: actor.x, y: actor.y, direction: actor.direction ? actor.direction() : 2 },
+                nearby,
+                frontiers: EnvironmentScanner.getFrontierTargets(actor, 7).slice(0, 4),
+                hpPct: world.party.avg_hp_pct
+            };
+        },
+
+        _decide() {
+            const snap = this._snapshot();
+            const threat = this._nearestThreat(snap, 2);
+            if (threat) {
+                const point = this._findSafePoint(snap, threat);
+                if (point) return { action: 'MOVE', point, reason: 'evade nearby threat: ' + (threat.label || threat.type) };
+                return { action: 'HOLD', reason: 'threat nearby and no safe tile found' };
+            }
+
+            const target = this._bestTarget(snap);
+            if (target) {
+                if (target.distance <= 1 || this._atApproach(target)) {
+                    return { action: 'INTERACT', eventId: target.eventId, reason: 'test interaction with ' + (target.label || target.type) };
+                }
+                return {
+                    action: 'MOVE_TO_EVENT',
+                    eventId: target.eventId,
+                    point: this._approachPoint(target),
+                    reason: 'move toward ' + (target.label || target.type)
+                };
+            }
+
+            const frontier = (snap.frontiers || []).find(point => point && point.distance > 1);
+            if (frontier) return { action: 'MOVE', point: { x: frontier.x, y: frontier.y }, reason: 'explore nearest frontier' };
+            return { action: 'HOLD', reason: 'no target or frontier found' };
+        },
+
+        _nearestThreat(snap, maxDistance) {
+            const limit = maxDistance || 2;
+            return (snap.nearby || [])
+                .filter(item => item &&
+                    item.type === 'enemy' &&
+                    !(AutonomySystem && AutonomySystem._isFalseThreat && AutonomySystem._isFalseThreat(item)) &&
+                    item.distance <= limit)
+                .sort((a, b) => a.distance - b.distance)[0] || null;
+        },
+
+        _bestTarget(snap) {
+            const cooldown = AutonomySystem && AutonomySystem._isEventOnCooldown ? AutonomySystem._isEventOnCooldown.bind(AutonomySystem) : () => false;
+            const searched = AutonomySystem && AutonomySystem._isEventSearched ? AutonomySystem._isEventSearched.bind(AutonomySystem) : () => false;
+            const score = item => {
+                if (item.type === 'container') return 10 + item.distance;
+                if (item.type === 'door') return 20 + item.distance;
+                if (item.type === 'npc') return 35 + item.distance;
+                return 99 + item.distance;
+            };
+            return (snap.nearby || [])
+                .filter(item => item &&
+                    item.eventId != null &&
+                    item.distance <= 6 &&
+                    !cooldown(item.eventId) &&
+                    !searched(item.eventId) &&
+                    (item.type === 'container' || item.type === 'door' || item.type === 'npc'))
+                .sort((a, b) => score(a) - score(b))[0] || null;
+        },
+
+        _approachPoint(target) {
+            if (!target) return null;
+            if (target.approachX != null && target.approachY != null) return { x: target.approachX, y: target.approachY, faceDirection: target.faceDirection || null };
+            return { x: target.x, y: target.y, faceDirection: null };
+        },
+
+        _atApproach(target) {
+            const point = this._approachPoint(target);
+            return !!point && $gamePlayer.x === point.x && $gamePlayer.y === point.y;
+        },
+
+        _findSafePoint(snap, threat) {
+            const origin = snap.player;
+            let best = null;
+            for (let radius = 1; radius <= 4; radius++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    for (let dy = -radius; dy <= radius; dy++) {
+                        if (Math.abs(dx) + Math.abs(dy) !== radius) continue;
+                        const x = origin.x + dx;
+                        const y = origin.y + dy;
+                        if (!$gameMap.isValid(x, y)) continue;
+                        if (!EnvironmentScanner._tileStandable(x, y)) continue;
+                        if ($gameMap.eventsXyNt && $gameMap.eventsXyNt(x, y).some(e => e && e.isNormalPriority && e.isNormalPriority())) continue;
+                        const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(x, y) : 0;
+                        if (dir <= 0) continue;
+                        const threatDist = Math.abs(x - threat.x) + Math.abs(y - threat.y);
+                        const travel = Math.abs(x - origin.x) + Math.abs(y - origin.y);
+                        const score = threatDist * 10 - travel;
+                        if (!best || score > best.score) best = { x, y, score };
+                    }
+                }
+            }
+            return best ? { x: best.x, y: best.y } : null;
+        },
+
+        _applyDecision(decision) {
+            if (!decision) return;
+            this._state.lastAction = decision.action || '';
+            if (decision.eventId != null && this._state.targetEventId === decision.eventId) this._state.repeatedTargetCount++;
+            else this._state.repeatedTargetCount = 0;
+            if (this._state.repeatedTargetCount > 8) {
+                if (AutonomySystem && AutonomySystem._setEventCooldown) AutonomySystem._setEventCooldown(decision.eventId, 120000);
+                this._state.repeatedTargetCount = 0;
+                this._state.targetEventId = null;
+                this._state.targetPoint = null;
+                return;
+            }
+            if (decision.action === 'INTERACT') {
+                this._interact(decision.eventId);
+                return;
+            }
+            if (decision.action === 'MOVE_TO_EVENT' || decision.action === 'MOVE') {
+                this._state.mode = 'move';
+                this._state.targetEventId = decision.eventId != null ? decision.eventId : null;
+                this._state.targetPoint = decision.point || null;
+                this._state.targetLabel = decision.reason || '';
+                this._maintainMovement();
+                return;
+            }
+            this._state.mode = 'hold';
+            this._state.targetPoint = null;
+            this._state.targetEventId = null;
+        },
+
+        _maintainMovement() {
+            const point = this._state.targetPoint;
+            if (!point || this._state.mode !== 'move') return false;
+            if ($gamePlayer.x === point.x && $gamePlayer.y === point.y) {
+                if (point.faceDirection && $gamePlayer.setDirection) $gamePlayer.setDirection(point.faceDirection);
+                if (this._state.targetEventId != null) this._interact(this._state.targetEventId);
+                this._state.targetPoint = null;
+                this._state.mode = 'idle';
+                return true;
+            }
+            if (Date.now() - this._state.lastMoveAt < 140) return true;
+            this._state.lastMoveAt = Date.now();
+            const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(point.x, point.y) : 0;
+            if (dir > 0 && (!$gamePlayer.canPass || $gamePlayer.canPass($gamePlayer.x, $gamePlayer.y, dir))) {
+                $gamePlayer.moveStraight(dir);
+                this._rememberPoint($gamePlayer.x, $gamePlayer.y);
+                return true;
+            }
+            this._state.mode = 'idle';
+            this._state.targetPoint = null;
+            return false;
+        },
+
+        _interact(eventId) {
+            const event = eventId != null && $gameMap ? $gameMap.event(Number(eventId)) : null;
+            if (event) {
+                const snap = EnvironmentScanner._eventSnapshot(event, $gamePlayer);
+                if (snap && snap.faceDirection && $gamePlayer.setDirection) $gamePlayer.setDirection(snap.faceDirection);
+                if (AutonomySystem && AutonomySystem._markEventSearched) AutonomySystem._markEventSearched(eventId, snap && snap.type, 'autopilot_interact');
+                if (AutonomySystem && AutonomySystem._setEventCooldown) AutonomySystem._setEventCooldown(eventId, snap && snap.type === 'door' ? 120000 : 30000);
+            }
+            $gamePlayer._okIsPressed = true;
+            if ($gamePlayer.checkEventTriggerHere) $gamePlayer.checkEventTriggerHere([0]);
+            if ($gamePlayer.checkEventTriggerThere) $gamePlayer.checkEventTriggerThere([0, 1, 2]);
+            if ($gameMap.setupStartingEvent) $gameMap.setupStartingEvent();
+            this._state.mode = 'idle';
+            this._state.targetPoint = null;
+            this._log('interact', { action: 'INTERACT', eventId }, event ? 'player autopilot interacted' : 'player autopilot confirm');
+        },
+
+        _rememberPoint(x, y) {
+            const key = ($gameMap ? $gameMap.mapId() : 0) + ':' + x + ':' + y;
+            this._state.visitedPoints[key] = (this._state.visitedPoints[key] || 0) + 1;
+            if (this._state.visitedPoints[key] > 20) this.stop('movement loop detected at ' + key);
+        },
+
+        battleDecision(actor, battleState) {
+            if (!this.isEnabled() || !actor || !battleState) return null;
+            const enemy = (battleState.enemies || []).find(e => e && e.alive);
+            if (!enemy) return { action: 'Defenderse', target: null, limb: null, reasoning: 'no live enemy', dialog: '', strategy: 'hold' };
+            const decision = {
+                action: 'Atacar',
+                target: enemy.name,
+                limb: (enemy.limbs && enemy.limbs.head && enemy.limbs.head.alive) ? 'head' : 'torso',
+                reasoning: 'autopilot basic survival attack',
+                dialog: '',
+                strategy: 'attack live target'
+            };
+            this._log('battle_decision', decision, actor.name ? actor.name() : 'actor');
+            return ActionExecutor.normalizeDecisionForBattle(decision, battleState);
+        },
+
+        _log(kind, decision, reason) {
+            try {
+                ThesisLogger.log('autopilot_tick', {
+                    kind,
+                    enabled: Config.autopilotEnabled,
+                    map_id: $gameMap ? $gameMap.mapId() : null,
+                    map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
+                    action: decision ? decision.action : null,
+                    event_id: decision && decision.eventId != null ? decision.eventId : null,
+                    target_point: decision && decision.point ? decision.point : null,
+                    reason: reason || (decision && decision.reason) || '',
+                    state: Object.assign({}, this._state, { visitedPoints: undefined })
+                });
+            } catch (e) {
+                Debug.warn('[Autopilot] log failed:', e.message);
+            }
+        }
+    };
+
+    //=========================================================================
     // Expose new systems
     //=========================================================================
     window.AI_Companion.ChatSystem = ChatSystem;
@@ -15801,6 +16137,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     window.AI_Companion.NPCIntelligence = NPCIntelligence;
     window.AI_Companion.StoryGoalMemory = StoryGoalMemory;
     window.AI_Companion.AutonomySystem = AutonomySystem;
+    window.AI_Companion.PlayerAutopilot = PlayerAutopilot;
     window.AI_Companion.DebugState = DebugState;
     window.AI_Companion.Config = Config;
     window.AI_Companion.HybridRAG = HybridRAG;
