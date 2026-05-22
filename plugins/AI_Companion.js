@@ -4598,26 +4598,41 @@ Reply with ONLY the category name, nothing else.`;
             return key === 'piernas' ? 'legs' : key;
         }
 
+        static _limbComparableName(value) {
+            return String(value || '').toLowerCase().trim().replace(/_/g, ' ');
+        }
+
+        static _addLimbAlias(aliases, alias) {
+            if (!alias) return;
+            const normalized = String(alias).toLowerCase().trim();
+            if (normalized && aliases.indexOf(normalized) === -1) aliases.push(normalized);
+            const spaced = normalized.replace(/_/g, ' ');
+            if (spaced && aliases.indexOf(spaced) === -1) aliases.push(spaced);
+            const underscored = spaced.replace(/ /g, '_');
+            if (underscored && aliases.indexOf(underscored) === -1) aliases.push(underscored);
+        }
+
 	        static _getLimbAliases(token) {
 	            const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
-            const aliases = [normalized];
+            const aliases = [];
+            this._addLimbAlias(aliases, normalized);
             const translated = this.LIMB_TRANSLATIONS[normalized];
-            if (translated && aliases.indexOf(translated) === -1) aliases.push(translated);
+            this._addLimbAlias(aliases, translated);
             if (normalized === 'arms') {
                 ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].forEach(alias => {
-                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                    this._addLimbAlias(aliases, alias);
                 });
             } else if (normalized === 'legs') {
                 ['left leg', 'right leg', 'pierna izquierda', 'pierna derecha'].forEach(alias => {
-                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                    this._addLimbAlias(aliases, alias);
                 });
             } else if (normalized === 'weapon arm' || normalized === 'sword arm') {
                 ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].forEach(alias => {
-                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                    this._addLimbAlias(aliases, alias);
                 });
             } else if (normalized === 'body') {
                 ['torso'].forEach(alias => {
-                    if (aliases.indexOf(alias) === -1) aliases.push(alias);
+                    this._addLimbAlias(aliases, alias);
                 });
             }
 	            return aliases;
@@ -4667,8 +4682,22 @@ Reply with ONLY the category name, nothing else.`;
             for (const [key, limb] of Object.entries(enemy.limbs)) {
                 if (!limb || !limb.alive) continue;
                 const keyLower = String(key).toLowerCase();
+                const keyComparable = this._limbComparableName(key);
                 const translated = (this.LIMB_TRANSLATIONS[keyLower] || '').toLowerCase();
-                if (aliases.some(alias => keyLower === alias || translated === alias || keyLower.includes(alias) || alias.includes(keyLower) || (translated && (translated.includes(alias) || alias.includes(translated))))) {
+                const translatedComparable = this._limbComparableName(translated);
+                if (aliases.some(alias => {
+                    const aliasComparable = this._limbComparableName(alias);
+                    return keyLower === alias ||
+                        keyComparable === aliasComparable ||
+                        translated === alias ||
+                        translatedComparable === aliasComparable ||
+                        keyLower.includes(alias) ||
+                        alias.includes(keyLower) ||
+                        keyComparable.includes(aliasComparable) ||
+                        aliasComparable.includes(keyComparable) ||
+                        (translated && (translated.includes(alias) || alias.includes(translated))) ||
+                        (translatedComparable && (translatedComparable.includes(aliasComparable) || aliasComparable.includes(translatedComparable)));
+                })) {
                     return key;
                 }
             }
@@ -4690,12 +4719,23 @@ Reply with ONLY the category name, nothing else.`;
         static _expandPriorityToken(token, enemy) {
             const normalized = this._normalizeLimbName(token).replace(/_/g, ' ');
             const alive = enemy && enemy.limbs ? enemy.limbs : {};
-            if (normalized === 'arms') return ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].filter((key, idx, arr) => alive[key] && alive[key].alive && arr.indexOf(key) === idx);
-            if (normalized === 'legs') return ['left leg', 'right leg', 'pierna izquierda', 'pierna derecha'].filter((key, idx, arr) => alive[key] && alive[key].alive && arr.indexOf(key) === idx);
+            const resolveMany = keys => {
+                const resolved = [];
+                keys.forEach(key => {
+                    const limbKey = this._findAliveLimbKey(enemy, key);
+                    if (limbKey && resolved.indexOf(limbKey) === -1) resolved.push(limbKey);
+                });
+                return resolved;
+            };
+            if (normalized === 'arms') return resolveMany(['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho']);
+            if (normalized === 'legs') return resolveMany(['left leg', 'right leg', 'pierna izquierda', 'pierna derecha']);
             if (normalized === 'weapon arm' || normalized === 'sword arm') {
-                return ['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho'].filter((key, idx, arr) => alive[key] && alive[key].alive && arr.indexOf(key) === idx);
+                return resolveMany(['left arm', 'right arm', 'brazo izquierdo', 'brazo derecho']);
             }
-            if (normalized === 'body') return alive.torso && alive.torso.alive ? ['torso'] : [];
+            if (normalized === 'body') {
+                const torsoKey = this._findAliveLimbKey(enemy, 'torso');
+                return torsoKey ? [torsoKey] : [];
+            }
             const resolved = this._findAliveLimbKey(enemy, normalized);
             return resolved ? [resolved] : [normalized];
         }
@@ -4743,6 +4783,13 @@ Reply with ONLY the category name, nothing else.`;
 
 	            const normalizedAction = this._normalizeActionName(normalized.action);
 	            const kbEnemy = (typeof FearHungerKB !== 'undefined' && FearHungerKB.getEnemy) ? KBLookupCache.enemy(enemy.name) : null;
+            if (kbEnemy && this._isCoinFlipThreatActive(enemy, kbEnemy, battleState.turn_number)) {
+                normalized.action = 'Defenderse';
+                normalized.limb = null;
+                normalized.reasoning = 'Coin flip threat active this turn; defending instead of attacking.';
+                normalized.dialog = this._generateQuickDialog(normalized);
+                return normalized;
+            }
 	            if (normalizedAction === 'guard' && kbEnemy && kbEnemy.coinFlipTurn && !this._isCoinFlipThreatActive(enemy, kbEnemy, battleState.turn_number)) {
 	                normalized.action = 'Atacar';
 	                normalized.limb = this._pickBestAliveLimb(enemy);
@@ -4762,8 +4809,9 @@ Reply with ONLY the category name, nothing else.`;
                     const expanded = this._expandPriorityToken(kbEnemy.limbPriority[i], enemy);
                     for (let j = 0; j < expanded.length; j++) {
                         const limbKey = expanded[j];
-                        if (enemy.limbs[limbKey] && enemy.limbs[limbKey].alive && preferredAliveLimbs.indexOf(limbKey) === -1) {
-                            preferredAliveLimbs.push(limbKey);
+                        const resolvedKey = this._findAliveLimbKey(enemy, limbKey);
+                        if (resolvedKey && preferredAliveLimbs.indexOf(resolvedKey) === -1) {
+                            preferredAliveLimbs.push(resolvedKey);
                         }
                     }
                 }
@@ -16805,13 +16853,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const decision = {
                 action: 'Atacar',
                 target: enemy.name,
-                limb: (enemy.limbs && enemy.limbs.head && enemy.limbs.head.alive) ? 'head' : 'torso',
-                reasoning: 'autopilot basic survival attack',
+                limb: null,
+                reasoning: 'autopilot delegates target limb to known enemy policy',
                 dialog: '',
-                strategy: 'attack live target'
+                strategy: 'use known enemy limb priority'
             };
-            this._log('battle_decision', decision, actor.name ? actor.name() : 'actor');
-            return ActionExecutor.normalizeDecisionForBattle(decision, battleState);
+            const normalized = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
+            this._log('battle_decision', normalized, actor.name ? actor.name() : 'actor');
+            return normalized;
         },
 
         _log(kind, decision, reason) {
