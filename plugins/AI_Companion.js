@@ -4581,36 +4581,28 @@ Reply with ONLY the category name, nothing else.`;
             );
         }
 
-        static _combatSupportDecision(actor, battleState) {
-            if (!actor || !battleState || !$gameParty || !$gameParty.items) return null;
+        static _combatSupportAffordances(actor, battleState) {
+            if (!actor || !battleState || !$gameParty || !$gameParty.items) return [];
             const states = actor.states ? actor.states() : [];
             const stateText = states.map(s => String(s && s.name || '')).join(' ');
             const hpPct = actor.mhp > 0 ? (actor.hp / actor.mhp) * 100 : 100;
             const items = $gameParty.items().filter(item => item && $gameParty.numItems(item) > 0 && actor.canUse && actor.canUse(item));
             const findItem = regex => items.find(item => regex.test(String(item.name || '')));
-            let item = null;
-            let reason = '';
+            const actorName = actor.name ? actor.name() : Config.companionName;
+            const options = [];
             if (/sangr|bleed/i.test(stateText)) {
-                item = findItem(/cloth fragment|fragmento de tela|tela|trapo|vendaje|bandage|gasas|gauze/i);
-                reason = 'Stopping bleeding before it snowballs after limb-severing attacks.';
+                const item = findItem(/cloth fragment|fragmento de tela|tela|trapo|vendaje|bandage|gasas|gauze/i);
+                if (item) options.push({ itemName: item.name, target: actorName, reason: 'can stop bleeding' });
             }
-            if (!item && /infecc|infect/i.test(stateText)) {
-                item = findItem(/hierba verde|green herb|mezcla roja y verde|mix of red and green/i);
-                reason = 'Treating infection before continuing the fight.';
+            if (/infecc|infect/i.test(stateText)) {
+                const item = findItem(/hierba verde|green herb|mezcla roja y verde|mix of red and green/i);
+                if (item) options.push({ itemName: item.name, target: actorName, reason: 'can treat infection' });
             }
-            if (!item && hpPct <= 30) {
-                item = findItem(/hierba|herb|cura|heal|pocion|poción|vial verde|green vial|vial rojo|red vial|medicine|medicina/i);
-                reason = 'Critical HP; using a recovery item before attacking.';
+            if (hpPct <= 30) {
+                const item = findItem(/hierba|herb|cura|heal|pocion|poción|vial verde|green vial|vial rojo|red vial|medicine|medicina/i);
+                if (item) options.push({ itemName: item.name, target: actorName, reason: 'can restore critical HP' });
             }
-            if (!item) return null;
-            return {
-                action: item.name,
-                target: actor.name ? actor.name() : null,
-                limb: null,
-                reasoning: reason,
-                dialog: Config.language === 'es' ? 'Primero tengo que aguantar.' : 'Need to hold together first.',
-                strategy: 'combat support item'
-            };
+            return options;
         }
 
         static _isPartyTargetDecision(decision) {
@@ -5112,13 +5104,6 @@ Reply with ONLY the category name, nothing else.`;
             let prompt = '';
             try {
                 prompt = this._buildPrompt(battleState, retryContext);
-                const combatActor = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
-                const supportDecision = ActionExecutor._combatSupportDecision(combatActor, battleState);
-                if (supportDecision) {
-                    supportDecision._llmUsage = null;
-                    this._logCombatDecision(battleState, prompt, supportDecision, null, 'combat_support', startTime, failureChain);
-                    return supportDecision;
-                }
                 const response = await this._sendRequest(prompt, 'combat');
                 let decision = this._parseResponse(response);
                 if (decision) {
@@ -5309,6 +5294,14 @@ Reply with ONLY the category name, nothing else.`;
                 const critNames = criticalAllies.map(a => `${a.name} (${Math.round(a.hp/a.max_hp*100)}%)`).join(', ');
                 healingAlert = `\nCRITICAL HP: ${critNames} — Prioritize healing if you have healing skills or herbs. Mention urgency in dialog.`;
             }
+            const supportOptions = [];
+            const companionActor = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
+            if (companionActor && ActionExecutor._combatSupportAffordances) {
+                ActionExecutor._combatSupportAffordances(companionActor, battleState).forEach(option => supportOptions.push(option));
+            }
+            const supportAffordanceBlock = supportOptions.length > 0
+                ? '\nAVAILABLE SUPPORT ITEM OPTIONS (you may choose one if tactically worth the turn):\n' + supportOptions.map(option => `- ${option.itemName} -> ${option.target}: ${option.reason}`).join('\n')
+                : '';
 
             let prompt = compactLocal ? `COMBAT JSON. You are ${Config.companionName}, ally of ${playerName}. ${otherAllies ? 'Other allies: ' + otherAllies + '. ' : ''}Never break role.
 ${personaBlock}
@@ -5322,7 +5315,7 @@ Skills: ${skillsList}
 Items: ${itemList || 'none'}
 Knowledge:${knowledgeHints || '\n  No specific knowledge.'}
 Risk: ${riskSummary}
-${enemyTactics ? `Tactics:\n${enemyTactics}\n` : ''}${memoryBeliefs && !compactLocal ? `Memory:\n${memoryBeliefs}\n` : ''}${coinFlipWarning}${healingAlert}` : `You are ${Config.companionName}, a companion fighting alongside ${playerName} in the dungeons of Fear & Hunger.
+${enemyTactics ? `Tactics:\n${enemyTactics}\n` : ''}${memoryBeliefs && !compactLocal ? `Memory:\n${memoryBeliefs}\n` : ''}${coinFlipWarning}${healingAlert}${supportAffordanceBlock}` : `You are ${Config.companionName}, a companion fighting alongside ${playerName} in the dungeons of Fear & Hunger.
 You are one of the party's allies — do NOT address ${playerName} as if you are separate from the group.
 ${otherAllies ? 'Other allies in this fight: ' + otherAllies + '.' : ''}
 You speak from experience, cautiously and with weight. NEVER break immersion.
@@ -5351,7 +5344,7 @@ ${riskSummary}
 
 ${enemyTactics ? `LEARNED TACTICS:\n${enemyTactics}` : ''}
 
-${memoryBeliefs ? `MEMORY AND BELIEFS:\n${memoryBeliefs}\n` : (memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : '')}${coinFlipWarning}${healingAlert}`;
+${memoryBeliefs ? `MEMORY AND BELIEFS:\n${memoryBeliefs}\n` : (memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : '')}${coinFlipWarning}${healingAlert}${supportAffordanceBlock}`;
 
             if (retryContext) {
                 // Branch 3: Include explicit available actions for better retry
@@ -5374,12 +5367,14 @@ Targeting:
 - If head is destroyed, choose torso/arms/legs.
 - Prefer attacking; do not spam defend.
 - Choose Defenderse ONLY when the prompt says COIN FLIP THIS TURN or HP is critically low.
+- You may choose an item by exact item name if AVAILABLE SUPPORT ITEM OPTIONS makes it worth spending the turn.
+- For support items, set target to the party member name and limb to null.
 - Reply only in ${Config.language === 'es' ? 'Spanish' : 'English'}.
 - Dialog: one survivor line, max 50 chars, varied, or empty.
 ${recentDialogBlock}
 
 JSON only:
-{"action":"Atacar|Defenderse|skill|item","target":"enemy_name","limb":"head|right arm|left arm|torso|legs|null","reasoning":"max 18 words","dialog":"max 50 chars","strategy":"max 18 words"}` : `
+{"action":"Atacar|Defenderse|skill_name|item_name","target":"enemy_or_ally_name","limb":"head|right arm|left arm|torso|legs|null","reasoning":"max 18 words","dialog":"max 50 chars","strategy":"max 18 words"}` : `
 
 IMPORTANT TARGETING RULES:
 1. ONLY target limbs that are ALIVE (alive: true in the limbs data)
@@ -5409,7 +5404,7 @@ ${recentDialogBlock}
 Respond ONLY with this JSON:
 {
   "action": "Attack | Defend | [skill_name] | [item_name]",
-  "target": "[enemy_name]",
+  "target": "[enemy_name or ally_name for support items]",
   "limb": "head | right arm | left arm | torso | legs | null",
   "reasoning": "brief tactical reasoning, max 18 words",
   "dialog": "immersive survivor dialog (max 50 chars)",
@@ -5669,13 +5664,6 @@ Respond ONLY with this JSON:
                 ThesisLogger.log('combat_decision', snapshot);
                 DebugState.captureCombat(snapshot);
             };
-
-            const combatActor = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
-            const supportDecision = ActionExecutor._combatSupportDecision(combatActor, battleState);
-            if (supportDecision) {
-                _logCombatDecision(supportDecision, null, 'combat_support');
-                return supportDecision;
-            }
 
             // Helper: try a single sync request
             const _trySyncRequest = (endpoint, headers, model, maxTokens, isLocal) => {
@@ -16925,11 +16913,6 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         battleDecision(actor, battleState) {
             if (!this.isEnabled() || !actor || !battleState) return null;
-            const supportDecision = ActionExecutor._combatSupportDecision(actor, battleState);
-            if (supportDecision) {
-                this._log('battle_decision', supportDecision, actor.name ? actor.name() : 'actor');
-                return supportDecision;
-            }
             const enemy = (battleState.enemies || []).find(e => e && e.alive);
             if (!enemy) return { action: 'Defenderse', target: null, limb: null, reasoning: 'no live enemy', dialog: '', strategy: 'hold' };
             const decision = {
@@ -16953,6 +16936,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     map_id: $gameMap ? $gameMap.mapId() : null,
                     map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
                     action: decision ? decision.action : null,
+                    target: decision ? decision.target : null,
+                    limb: decision ? decision.limb : null,
                     event_id: decision && decision.eventId != null ? decision.eventId : null,
                     target_point: decision && decision.point ? decision.point : null,
                     scene: SceneManager._scene && SceneManager._scene.constructor ? SceneManager._scene.constructor.name : null,
