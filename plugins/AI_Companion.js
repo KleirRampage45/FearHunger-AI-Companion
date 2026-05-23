@@ -908,8 +908,8 @@
         defensor: {
             name: 'Defensor',
             nameEs: 'Defensor (D\'arce)',
-            desc: 'Espada larga + Armadura de placas + Escudo Águila + Protectores de piernas. Alta defensa.',
-            stats: { atk: 35, def: 40, matk: 16, mdef: 16, agi: 10, luk: 32 },
+            desc: 'Espada larga + armadura pesada. Resiste mejor, pero su equipo ya aporta la defensa principal.',
+            stats: { atk: 35, def: 18, matk: 16, mdef: 16, agi: 10, luk: 32 },
             weapons: [7],
             armors: [14, 18, 22],
             items: [[95, 2], [8, 2]],
@@ -928,22 +928,22 @@
         mago: {
             name: 'Mago',
             nameEs: 'Mago (Enki)',
-            desc: 'Espada corta + Túnica de sumo sacerdote. Piromancia + Magia negra + Curación.',
+            desc: 'Espada corta + Túnica de sumo sacerdote. Piromancia + curación, sin magia negra avanzada inicial.',
             stats: { atk: 30, def: 16, matk: 16, mdef: 16, agi: 10, luk: 32 },
             weapons: [1],
             armors: [13],
             items: [[28, 2], [5, 1], [30, 1]],
-            skills: [199, 150, 151]
+            skills: [199, 151]
         },
         callejero: {
             name: 'Callejero',
             nameEs: 'Callejero (Marcoh)',
-            desc: 'Cuchillo + Armadura ligera. Ataque rápido, robo, tácticas sucias. Alta suerte.',
+            desc: 'Cuchillo + armadura ligera. Ágil, afortunado y con pocos recursos arrojadizos.',
             stats: { atk: 35, def: 14, matk: 10, mdef: 10, agi: 15, luk: 40 },
             weapons: [2],
             armors: [12],
-            items: [[84, 5], [169, 3], [95, 2], [5, 1]],
-            skills: [66, 80]
+            items: [[84, 3], [169, 2], [95, 1], [5, 1]],
+            skills: [66]
         }
     };
 
@@ -4716,6 +4716,49 @@ Reply with ONLY the category name, nothing else.`;
             return options;
         }
 
+        static _combatOffenseAffordances(actor) {
+            if (!actor) return [];
+            const options = [];
+            const skills = actor.skills ? actor.skills() : [];
+            for (const skill of skills) {
+                if (!skill || !actor.canUse || !actor.canUse(skill)) continue;
+                const dmg = skill.damage || {};
+                const damageType = Number(dmg.type || 0);
+                const scope = Number(skill.scope || 0);
+                const isEnemyScope = scope >= 1 && scope <= 6;
+                if (isEnemyScope && (damageType === 1 || damageType === 2 || damageType === 5 || damageType === 6)) {
+                    options.push({
+                        actionName: skill.name,
+                        kind: 'skill',
+                        mpCost: Number(skill.mpCost || 0),
+                        hit: Number(skill.successRate || 100),
+                        formula: String(dmg.formula || ''),
+                        reason: 'offensive skill'
+                    });
+                }
+            }
+            if ($gameParty && $gameParty.items) {
+                const items = $gameParty.items().filter(item => item && $gameParty.numItems(item) > 0 && actor.canUse && actor.canUse(item));
+                for (const item of items) {
+                    const dmg = item.damage || {};
+                    const damageType = Number(dmg.type || 0);
+                    const scope = Number(item.scope || 0);
+                    const isEnemyScope = scope >= 1 && scope <= 6;
+                    if (isEnemyScope && (damageType === 1 || damageType === 2 || damageType === 5 || damageType === 6)) {
+                        options.push({
+                            actionName: item.name,
+                            kind: 'item',
+                            quantity: $gameParty.numItems(item),
+                            hit: Number(item.successRate || 100),
+                            formula: String(dmg.formula || ''),
+                            reason: 'combat item'
+                        });
+                    }
+                }
+            }
+            return options.slice(0, 8);
+        }
+
         static _isPartyTargetDecision(decision) {
             if (!decision || !decision.action) return false;
             const item = this._findItemByName(decision.action);
@@ -5404,13 +5447,22 @@ Reply with ONLY the category name, nothing else.`;
             if (companionActor && ActionExecutor._combatSupportAffordances) {
                 ActionExecutor._combatSupportAffordances(companionActor, battleState).forEach(option => supportOptions.push(option));
             }
+            const offenseOptions = companionActor && ActionExecutor._combatOffenseAffordances
+                ? ActionExecutor._combatOffenseAffordances(companionActor)
+                : [];
             const supportAffordanceBlock = supportOptions.length > 0
                 ? '\nAVAILABLE SUPPORT ITEM OPTIONS (you may choose one if tactically worth the turn):\n' + supportOptions.map(option => `- ${option.itemName} -> ${option.target}: ${option.reason}`).join('\n')
+                : '';
+            const offenseAffordanceBlock = offenseOptions.length > 0
+                ? '\nAVAILABLE OFFENSIVE SKILL/ITEM OPTIONS (choose exact action name when better than a limb attack):\n' + offenseOptions.map(option => {
+                    const cost = option.kind === 'skill' ? `MP ${option.mpCost}` : `qty ${option.quantity}`;
+                    return `- ${option.actionName} (${option.kind}, ${cost}, hit ${option.hit}, formula ${option.formula || 'n/a'}): ${option.reason}`;
+                }).join('\n')
                 : '';
 
             let prompt = compactLocal ? `COMBAT JSON. You are ${Config.companionName}, ally of ${playerName}. ${otherAllies ? 'Other allies: ' + otherAllies + '. ' : ''}Never break role.
 ${personaBlock}
-Rules: no XP/leveling. Basic attack action is "Atacar". Do not use self-buffs as attacks. Coin flips kill; defend ONLY if live coin-flip warning says so.
+Rules: no XP/leveling. Basic attack action is "Atacar". Use listed damage skills/items when tactically better. Do not use self-buffs as attacks. Coin flips kill; defend ONLY if live coin-flip warning says so.
 Turn ${battleState.turn_number}
 Enemies: ${compactEnemies}
 Allies: ${compactAllies}
@@ -5420,7 +5472,7 @@ Skills: ${skillsList}
 Items: ${itemList || 'none'}
 Knowledge:${knowledgeHints || '\n  No specific knowledge.'}
 Risk: ${riskSummary}
-${enemyTactics ? `Tactics:\n${enemyTactics}\n` : ''}${memoryBeliefs && !compactLocal ? `Memory:\n${memoryBeliefs}\n` : ''}${coinFlipWarning}${healingAlert}${supportAffordanceBlock}` : `You are ${Config.companionName}, a companion fighting alongside ${playerName} in the dungeons of Fear & Hunger.
+${enemyTactics ? `Tactics:\n${enemyTactics}\n` : ''}${memoryBeliefs && !compactLocal ? `Memory:\n${memoryBeliefs}\n` : ''}${coinFlipWarning}${healingAlert}${offenseAffordanceBlock}${supportAffordanceBlock}` : `You are ${Config.companionName}, a companion fighting alongside ${playerName} in the dungeons of Fear & Hunger.
 You are one of the party's allies — do NOT address ${playerName} as if you are separate from the group.
 ${otherAllies ? 'Other allies in this fight: ' + otherAllies + '.' : ''}
 You speak from experience, cautiously and with weight. NEVER break immersion.
@@ -5429,6 +5481,7 @@ SANITY: ${sanityMod}
 ${fearState.prompt}
 ${driftPrompt}
 GAME RULES: NO leveling/XP exists. COIN FLIP = instant death mechanic on specific turns. Kill enemies BEFORE their coin flip turn. Use "Atacar" to deal damage — NOT self-buff skills.
+You may use exact listed offensive skills/items when they are better than a basic limb attack.
 BATTLE STATE (Turn ${battleState.turn_number}):
 - Enemies: ${compactEnemies}
 - Allies: ${compactAllies}
@@ -5449,7 +5502,7 @@ ${riskSummary}
 
 ${enemyTactics ? `LEARNED TACTICS:\n${enemyTactics}` : ''}
 
-${memoryBeliefs ? `MEMORY AND BELIEFS:\n${memoryBeliefs}\n` : (memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : '')}${coinFlipWarning}${healingAlert}${supportAffordanceBlock}`;
+${memoryBeliefs ? `MEMORY AND BELIEFS:\n${memoryBeliefs}\n` : (memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : '')}${coinFlipWarning}${healingAlert}${offenseAffordanceBlock}${supportAffordanceBlock}`;
 
             if (retryContext) {
                 // Branch 3: Include explicit available actions for better retry
@@ -5471,6 +5524,7 @@ Targeting:
 - Use ONLY alive limbs from Enemies.
 - If head is destroyed, choose torso/arms/legs.
 - Prefer attacking; do not spam defend.
+- Damage skills/items can be valid attacks; use exact action name from AVAILABLE OFFENSIVE SKILL/ITEM OPTIONS.
 - Choose Defenderse ONLY when the prompt says COIN FLIP THIS TURN or HP is critically low.
 - You may choose an item by exact item name if AVAILABLE SUPPORT ITEM OPTIONS makes it worth spending the turn.
 - For support items, set target to the party member name and limb to null.
