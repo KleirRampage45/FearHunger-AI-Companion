@@ -7352,16 +7352,10 @@ Respond ONLY with this JSON:
             es ? 'Pega reglas de conducta del personaje.' : 'Paste behavior rules for the character.');
     };
 
-    // Class cycling handler
     Scene_AIConfig.prototype.commandSetClass = function () {
-        const classes = Object.keys(STARTING_LOADOUTS);
-        const currentIndex = classes.indexOf(Config.companionClass);
-        const nextIndex = (currentIndex + 1) % classes.length;
-        const nextClass = classes[nextIndex];
-        Config.setCompanionClass(nextClass);
-        const loadout = STARTING_LOADOUTS[nextClass];
+        this._rememberSectionCursor();
         SoundManager.playOk();
-        this._refreshConfigScene(`${loadout.nameEs}\n${loadout.desc}`);
+        SceneManager.push(Scene_AIClassSelect);
     };
 
     // Language toggle handler
@@ -8085,6 +8079,207 @@ Respond ONLY with this JSON:
         this.contents.blt(bitmap, 0, 0, sw, sh, dx, dy, dw, dh);
     };
 
+    //=========================================================================
+    // Starting Class Select Scene
+    //=========================================================================
+    function Scene_AIClassSelect() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Scene_AIClassSelect.prototype = Object.create(Scene_MenuBase.prototype);
+    Scene_AIClassSelect.prototype.constructor = Scene_AIClassSelect;
+
+    Scene_AIClassSelect.prototype.initialize = function () {
+        Scene_MenuBase.prototype.initialize.call(this);
+    };
+
+    Scene_AIClassSelect.prototype.create = function () {
+        Scene_MenuBase.prototype.create.call(this);
+        this.createHelpWindow();
+        this.createClassWindows();
+    };
+
+    Scene_AIClassSelect.prototype.createHelpWindow = function () {
+        this._helpWindow = new Window_Help(2);
+        this._helpWindow.setText(Config.language === 'es'
+            ? 'Elige clase inicial\nRevisa estadísticas, equipo, objetos y habilidades antes de confirmar.'
+            : 'Choose starting class\nReview stats, equipment, items, and skills before confirming.');
+        this.addWindow(this._helpWindow);
+    };
+
+    Scene_AIClassSelect.prototype.createClassWindows = function () {
+        const wy = this._helpWindow.height;
+        const wh = Graphics.boxHeight - wy;
+        const listW = Math.min(300, Math.floor(Graphics.boxWidth * 0.34));
+        this._classListWindow = new Window_AIClassList(0, wy, listW, wh);
+        this._classDetailWindow = new Window_AIClassDetails(listW, wy, Graphics.boxWidth - listW, wh);
+        this._classListWindow.setDetailWindow(this._classDetailWindow);
+        this._classListWindow.setHandler('ok', this.commandSelectClass.bind(this));
+        this._classListWindow.setHandler('cancel', this.popScene.bind(this));
+        this.addWindow(this._classListWindow);
+        this.addWindow(this._classDetailWindow);
+        const currentIndex = this._classListWindow.classIds().indexOf(Config.companionClass);
+        this._classListWindow.select(Math.max(0, currentIndex));
+        this._classListWindow.activate();
+        this._classListWindow.updateHelp();
+    };
+
+    Scene_AIClassSelect.prototype.commandSelectClass = function () {
+        const classId = this._classListWindow.currentClassId();
+        if (!classId || !STARTING_LOADOUTS[classId]) {
+            SoundManager.playBuzzer();
+            this._classListWindow.activate();
+            return;
+        }
+        Config.setCompanionClass(classId);
+        SoundManager.playOk();
+        this.popScene();
+    };
+
+    function Window_AIClassList() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Window_AIClassList.prototype = Object.create(Window_Selectable.prototype);
+    Window_AIClassList.prototype.constructor = Window_AIClassList;
+
+    Window_AIClassList.prototype.initialize = function (x, y, width, height) {
+        this._classIds = Object.keys(STARTING_LOADOUTS);
+        Window_Selectable.prototype.initialize.call(this, x, y, width, height);
+        this.refresh();
+    };
+
+    Window_AIClassList.prototype.classIds = function () {
+        return this._classIds || [];
+    };
+
+    Window_AIClassList.prototype.maxItems = function () {
+        return this.classIds().length;
+    };
+
+    Window_AIClassList.prototype.currentClassId = function () {
+        return this.classIds()[this.index()];
+    };
+
+    Window_AIClassList.prototype.setDetailWindow = function (window) {
+        this._detailWindow = window;
+        this.updateHelp();
+    };
+
+    Window_AIClassList.prototype.updateHelp = function () {
+        if (this._detailWindow) this._detailWindow.setClassId(this.currentClassId());
+    };
+
+    Window_AIClassList.prototype.drawItem = function (index) {
+        const classId = this.classIds()[index];
+        const loadout = STARTING_LOADOUTS[classId];
+        if (!loadout) return;
+        const rect = this.itemRectForText(index);
+        const selected = classId === Config.companionClass;
+        const name = Config.language === 'es' ? loadout.nameEs : loadout.name;
+        this.changePaintOpacity(true);
+        this.drawText(selected ? `> ${name}` : name, rect.x, rect.y, rect.width);
+    };
+
+    function Window_AIClassDetails() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Window_AIClassDetails.prototype = Object.create(Window_Base.prototype);
+    Window_AIClassDetails.prototype.constructor = Window_AIClassDetails;
+
+    Window_AIClassDetails.prototype.initialize = function (x, y, width, height) {
+        Window_Base.prototype.initialize.call(this, x, y, width, height);
+        this._classId = null;
+    };
+
+    Window_AIClassDetails.prototype.setClassId = function (classId) {
+        if (this._classId === classId) return;
+        this._classId = classId;
+        this.refresh();
+    };
+
+    Window_AIClassDetails.prototype.itemName = function (group, id) {
+        const table = group === 'weapon' ? $dataWeapons : group === 'armor' ? $dataArmors : group === 'skill' ? $dataSkills : $dataItems;
+        const entry = table && table[id];
+        return entry && entry.name ? entry.name : `#${id}`;
+    };
+
+    Window_AIClassDetails.prototype.wrapText = function (text, maxChars) {
+        const words = String(text || '').split(/\s+/);
+        const lines = [];
+        let line = '';
+        for (const word of words) {
+            const next = line ? `${line} ${word}` : word;
+            if (next.length > maxChars && line) {
+                lines.push(line);
+                line = word;
+            } else {
+                line = next;
+            }
+        }
+        if (line) lines.push(line);
+        return lines;
+    };
+
+    Window_AIClassDetails.prototype.refresh = function () {
+        this.contents.clear();
+        const loadout = STARTING_LOADOUTS[this._classId];
+        if (!loadout) return;
+        const es = Config.language === 'es';
+        let y = 0;
+        this.contents.fontSize = 20;
+        const lh = 24;
+        const w = this.contentsWidth();
+        const draw = (text, color) => {
+            if (color) this.changeTextColor(color);
+            this.drawText(String(text || ''), 0, y, w);
+            this.resetTextColor();
+            y += lh;
+        };
+        const drawWrapped = (text) => {
+            const maxChars = Math.max(36, Math.floor(w / 13));
+            for (const line of this.wrapText(text, maxChars)) draw(line);
+        };
+        const drawSection = (title) => {
+            y += 4;
+            this.changeTextColor(this.systemColor());
+            this.drawText(title, 0, y, w);
+            this.resetTextColor();
+            y += lh;
+        };
+
+        draw(es ? loadout.nameEs : loadout.name, this.systemColor());
+        drawWrapped(loadout.desc);
+
+        drawSection(es ? 'Estadísticas base aplicadas' : 'Applied base stats');
+        const s = loadout.stats || {};
+        draw(`ATK ${s.atk || '-'}   DEF ${s.def || '-'}   MAT ${s.matk || '-'}   MDF ${s.mdef || '-'}`);
+        draw(`AGI ${s.agi || '-'}   LUK ${s.luk || '-'}   HP/MP ${es ? 'sin cambio' : 'unchanged'}`);
+
+        drawSection(es ? 'Armas' : 'Weapons');
+        const weapons = (loadout.weapons || []).map(id => this.itemName('weapon', id));
+        draw(weapons.length ? weapons.join(', ') : (es ? 'Ninguna' : 'None'));
+
+        drawSection(es ? 'Armaduras / equipo' : 'Armor / gear');
+        const armors = (loadout.armors || []).map(id => this.itemName('armor', id));
+        draw(armors.length ? armors.join(', ') : (es ? 'Ninguna' : 'None'));
+
+        drawSection(es ? 'Objetos iniciales' : 'Starting items');
+        const items = (loadout.items || []).map(pair => `${this.itemName('item', pair[0])} x${pair[1]}`);
+        drawWrapped(items.length ? items.join(', ') : (es ? 'Ninguno' : 'None'));
+
+        drawSection(es ? 'Habilidades' : 'Skills');
+        const skills = (loadout.skills || []).map(id => this.itemName('skill', id));
+        drawWrapped(skills.length ? skills.join(', ') : (es ? 'Ninguna' : 'None'));
+
+        drawSection(es ? 'Nota' : 'Note');
+        drawWrapped(es
+            ? 'Se aplica al iniciar partida nueva o cuando el compañero se inicializa. No cambia partidas ya equipadas automáticamente.'
+            : 'Applied on new game or companion initialization. It does not automatically rewrite already-equipped saves.');
+        this.resetFontSettings();
+    };
+
     // Add to Title Screen instead of Options menu (YEP_OptionsCore is too complex)
     const _Window_TitleCommand_makeCommandList = Window_TitleCommand.prototype.makeCommandList;
     Window_TitleCommand.prototype.makeCommandList = function () {
@@ -8107,6 +8302,7 @@ Respond ONLY with this JSON:
     // Expose scene for external access
     window.Scene_AIConfig = Scene_AIConfig;
     window.Scene_AIAppearanceSelect = Scene_AIAppearanceSelect;
+    window.Scene_AIClassSelect = Scene_AIClassSelect;
 
     //=========================================================================
     // In-game Debug Log Viewer
