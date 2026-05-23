@@ -1549,18 +1549,27 @@
 
         _currentAppearance: localStorage.getItem('AI_Companion_Appearance') || 'dark_priest',
         _currentPersonality: localStorage.getItem('AI_Companion_Personality') || 'tactical',
+        _assetAvailabilityCache: {},
+        _availableAppearanceCache: null,
 
         assetExists(folder, name) {
             if (!name) return true;
+            const cacheKey = `${folder}:${name}`;
+            if (this._assetAvailabilityCache && this._assetAvailabilityCache[cacheKey] != null) {
+                return this._assetAvailabilityCache[cacheKey];
+            }
+            let result = true;
             try {
                 if (typeof require !== 'function' || typeof process === 'undefined' || !process.cwd) return true;
                 const fs = require('fs');
                 const path = require('path');
                 const dir = path.join(process.cwd(), 'www', 'img', folder);
-                return fs.existsSync(path.join(dir, `${name}.png`)) || fs.existsSync(path.join(dir, `${name}.rpgmvp`));
+                result = fs.existsSync(path.join(dir, `${name}.png`)) || fs.existsSync(path.join(dir, `${name}.rpgmvp`));
             } catch (e) {
-                return true;
+                result = true;
             }
+            if (this._assetAvailabilityCache) this._assetAvailabilityCache[cacheKey] = result;
+            return result;
         },
 
         isAppearanceAvailable(preset) {
@@ -1572,8 +1581,10 @@
         },
 
         getAvailableAppearances() {
+            if (this._availableAppearanceCache) return this._availableAppearanceCache;
             const available = this.appearances.filter(preset => this.isAppearanceAvailable(preset));
-            return available.length > 0 ? available : this.appearances;
+            this._availableAppearanceCache = available.length > 0 ? available : this.appearances;
+            return this._availableAppearanceCache;
         },
 
         getCurrentAppearance() {
@@ -7970,12 +7981,14 @@ Respond ONLY with this JSON:
     Window_AIAppearanceGrid.prototype.constructor = Window_AIAppearanceGrid;
 
     Window_AIAppearanceGrid.prototype.initialize = function (x, y, width, height) {
+        this._presets = CharacterPresets.getAvailableAppearances();
+        this._pendingPreviewLoads = {};
         Window_Selectable.prototype.initialize.call(this, x, y, width, height);
         this.refresh();
     };
 
     Window_AIAppearanceGrid.prototype.maxItems = function () {
-        return CharacterPresets.getAvailableAppearances().length;
+        return this._presets ? this._presets.length : 0;
     };
 
     Window_AIAppearanceGrid.prototype.maxCols = function () {
@@ -7991,7 +8004,7 @@ Respond ONLY with this JSON:
     };
 
     Window_AIAppearanceGrid.prototype.currentPreset = function () {
-        return CharacterPresets.getAvailableAppearances()[this.index()];
+        return this._presets ? this._presets[this.index()] : null;
     };
 
     Window_AIAppearanceGrid.prototype.refresh = function () {
@@ -8000,7 +8013,7 @@ Respond ONLY with this JSON:
     };
 
     Window_AIAppearanceGrid.prototype.drawItem = function (index) {
-        const preset = CharacterPresets.getAvailableAppearances()[index];
+        const preset = this._presets ? this._presets[index] : null;
         if (!preset) return;
         const rect = this.itemRect(index);
         const selected = preset.id === CharacterPresets._currentAppearance;
@@ -8027,7 +8040,7 @@ Respond ONLY with this JSON:
             if (bitmap.isReady()) {
                 this.drawScaledBitmap(bitmap, x, y, width, height);
             } else {
-                bitmap.addLoadListener(this.refresh.bind(this));
+                this.requestPreviewRefreshOnce(`picture:${preset.previewPicture}`, bitmap);
             }
             return;
         }
@@ -8045,9 +8058,19 @@ Respond ONLY with this JSON:
                 const dy = y + Math.floor((height - dh) / 2);
                 this.contents.blt(face, sx, sy, pw, ph, dx, dy, dw, dh);
             } else {
-                face.addLoadListener(this.refresh.bind(this));
+                this.requestPreviewRefreshOnce(`face:${preset.face}`, face);
             }
         }
+    };
+
+    Window_AIAppearanceGrid.prototype.requestPreviewRefreshOnce = function (key, bitmap) {
+        if (!this._pendingPreviewLoads) this._pendingPreviewLoads = {};
+        if (this._pendingPreviewLoads[key]) return;
+        this._pendingPreviewLoads[key] = true;
+        bitmap.addLoadListener(() => {
+            if (this._pendingPreviewLoads) delete this._pendingPreviewLoads[key];
+            if (this.parent && this.visible) this.refresh();
+        });
     };
 
     Window_AIAppearanceGrid.prototype.drawScaledBitmap = function (bitmap, x, y, width, height) {
