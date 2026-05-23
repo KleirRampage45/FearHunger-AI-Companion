@@ -8101,6 +8101,7 @@ Respond ONLY with this JSON:
 
     Scene_AIClassSelect.prototype.createHelpWindow = function () {
         this._helpWindow = new Window_Help(2);
+        this._helpWindow.contents.fontSize = 26;
         this._helpWindow.setText(Config.language === 'es'
             ? 'Elige clase inicial\nRevisa estadísticas, equipo, objetos y habilidades antes de confirmar.'
             : 'Choose starting class\nReview stats, equipment, items, and skills before confirming.');
@@ -8159,6 +8160,11 @@ Respond ONLY with this JSON:
 
     Window_AIClassList.prototype.currentClassId = function () {
         return this.classIds()[this.index()];
+    };
+
+    Window_AIClassList.prototype.select = function (index) {
+        Window_Selectable.prototype.select.call(this, index);
+        if (this._detailWindow) this._detailWindow.setClassId(this.currentClassId());
     };
 
     Window_AIClassList.prototype.setDetailWindow = function (window) {
@@ -8227,7 +8233,7 @@ Respond ONLY with this JSON:
         const loadout = STARTING_LOADOUTS[this._classId];
         if (!loadout) return;
         const es = Config.language === 'es';
-        let y = 0;
+        let y = 6;
         this.contents.fontSize = 20;
         const lh = 24;
         const w = this.contentsWidth();
