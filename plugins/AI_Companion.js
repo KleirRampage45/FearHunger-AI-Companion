@@ -8603,7 +8603,7 @@ Respond ONLY with this JSON:
         },
 
         applyBeforeOk(decision) {
-            if (!decision || decision.kind !== 'coin_face') return;
+            if (!decision || (decision.kind !== 'coin_face' && decision.kind !== 'coin_llm')) return;
             if (!decision.spendLuckyCoin || this.coinCount() <= 0) return;
             if (typeof Input === 'undefined' || !Input._currentState) return;
             Input._currentState.shift = true;
@@ -16244,6 +16244,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             lastBlockedLogAt: 0,
             lastScanLogAt: 0,
             pendingDecision: false,
+            pendingUiDecision: false,
+            lastUiPromptKey: '',
             lastRawLocalContent: '',
             lastLocalUsage: null,
             previousMoveSpeed: null,
@@ -16282,6 +16284,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastBlockedLogAt = 0;
             this._state.lastScanLogAt = 0;
             this._state.pendingDecision = false;
+            this._state.pendingUiDecision = false;
+            this._state.lastUiPromptKey = '';
             this._state.lastRawLocalContent = '';
             this._state.lastLocalUsage = null;
             this._state.stopReason = reason || '';
@@ -16316,6 +16320,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.noProgressCount = 0;
             this._state.lastUiAdvanceAt = 0;
             this._state.pendingDecision = false;
+            this._state.pendingUiDecision = false;
+            this._state.lastUiPromptKey = '';
             this._log('map_transfer', {
                 action: 'MAP_TRANSFER',
                 eventId: null,
@@ -16734,25 +16740,30 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (choiceWindow && choiceWindow.active) {
                 const choices = $gameMessage.choices ? $gameMessage.choices() : [];
                 const messageText = CoinFlipUi.messageText();
-                const coinDecision = CoinFlipUi.decision(choices, messageText);
-                const index = coinDecision.index || 0;
-                if (choiceWindow.select) choiceWindow.select(index);
-                CoinFlipUi.applyBeforeOk(coinDecision);
-                if (choiceWindow.processOk) choiceWindow.processOk();
-                this._log('ui_advance', { action: coinDecision.kind === 'generic' ? 'CHOICE' : 'COIN_FLIP_CHOICE', eventId: null }, (coinDecision.kind === 'generic' ? 'autopilot selected choice ' : 'autopilot coin flip choice ') + index + (coinDecision.label ? ' ' + coinDecision.label : '') + (coinDecision.reason ? ' — ' + coinDecision.reason : ''));
+                this._requestUiDecision('choice', {
+                    messageText,
+                    choices,
+                    choiceWindow
+                });
                 return true;
             }
             const numberWindow = messageWindow && messageWindow._numberWindow ? messageWindow._numberWindow : (scene && scene._numberWindow);
             if (numberWindow && numberWindow.active) {
-                if (numberWindow.processOk) numberWindow.processOk();
-                this._log('ui_advance', { action: 'NUMBER_INPUT', eventId: null }, 'autopilot confirmed number input');
+                this._requestUiDecision('number', {
+                    messageText: CoinFlipUi.messageText(),
+                    choices: ['confirm current number'],
+                    numberWindow
+                });
                 return true;
             }
             const itemWindow = messageWindow && messageWindow._itemWindow ? messageWindow._itemWindow : (scene && scene._itemWindow);
             if (itemWindow && itemWindow.active) {
-                if (itemWindow.select) itemWindow.select(0);
-                if (itemWindow.processOk) itemWindow.processOk();
-                this._log('ui_advance', { action: 'ITEM_CHOICE', eventId: null }, 'autopilot confirmed item choice');
+                const items = (itemWindow._data || []).map(item => item && item.name ? item.name : '').filter(Boolean);
+                this._requestUiDecision('item', {
+                    messageText: CoinFlipUi.messageText(),
+                    choices: items.length ? items : ['current item'],
+                    itemWindow
+                });
                 return true;
             }
             if (messageWindow && messageWindow.visible && !(messageWindow.isClosed && messageWindow.isClosed())) {
@@ -16768,6 +16779,164 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             }
             this._logBlocked('message busy but no active message/choice window found');
             return true;
+        },
+
+        _requestUiDecision(kind, ui) {
+            ui = ui || {};
+            const choices = ui.choices || [];
+            const promptKey = [
+                kind,
+                ui.messageText || '',
+                choices.join('|')
+            ].join('::');
+            if (this._state.pendingUiDecision && this._state.lastUiPromptKey === promptKey) return;
+            if (this._state.pendingUiDecision) return;
+            const now = Date.now();
+            if (now - (this._state.lastUiAdvanceAt || 0) < 700) return;
+            this._state.lastUiAdvanceAt = now;
+
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) {
+                this._log('ui_wait', { action: 'WAIT_FOR_LLM', eventId: null }, 'no local model configured for UI decision');
+                return;
+            }
+            if (LocalRequestQueue.isBusy()) {
+                this._log('ui_wait', { action: 'WAIT_FOR_LLM', eventId: null }, 'local model busy for UI decision');
+                return;
+            }
+
+            this._state.pendingUiDecision = true;
+            this._state.lastUiPromptKey = promptKey;
+            this._state.lastRawLocalContent = '';
+            this._state.lastLocalUsage = null;
+            const started = Date.now();
+            const prompt = this._buildUiDecisionPrompt(kind, ui.messageText || '', choices);
+            LocalRequestQueue.run('autopilot_ui', () => {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 9000);
+                return fetch(Config.getLocalEndpoint(), {
+                    method: 'POST',
+                    headers: Config.getLocalHeaders(),
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: Config.getAutonomyModel(),
+                        messages: [
+                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+                            { role: 'user', content: prompt }
+                        ],
+                        temperature: 1.0,
+                        top_p: 0.95,
+                        top_k: 64,
+                        max_tokens: 80,
+                        enable_thinking: false,
+                        stop: ['<turn|>']
+                    })
+                }).finally(() => clearTimeout(timer));
+            }, { skipIfBusy: true, drainMs: 2000 }).then(response => {
+                if (!this.isEnabled() || !$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return;
+                if (!response || !response.ok) {
+                    this._log('ui_wait', { action: 'WAIT_FOR_LLM', eventId: null }, response ? 'ui llm http ' + response.status : 'ui llm no response');
+                    return;
+                }
+                return response.json().then(data => {
+                    if (!this.isEnabled() || !$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return;
+                    this._state.lastLocalUsage = LLMStats.extract(data, Date.now() - started);
+                    this._state.lastRawLocalContent = String(
+                        data &&
+                        data.choices &&
+                        data.choices[0] &&
+                        data.choices[0].message &&
+                        data.choices[0].message.content
+                            ? data.choices[0].message.content
+                            : ''
+                    );
+                    if (this._state.lastRawLocalContent) Debug.log('[Autopilot UI LLM]', this._state.lastRawLocalContent);
+                    const parsed = GeminiAPIHandler._parseResponse(data);
+                    this._applyUiDecision(kind, ui, parsed);
+                });
+            }).catch(error => {
+                if (!(error && /local busy/i.test(String(error.message || '')))) {
+                    Debug.warn('[Autopilot] UI LLM failed:', error && error.message ? error.message : error);
+                }
+                this._log('ui_wait', { action: 'WAIT_FOR_LLM', eventId: null }, error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || ''))) ? 'ui llm timed out' : 'ui llm failed');
+            }).finally(() => {
+                this._state.pendingUiDecision = false;
+            });
+        },
+
+        _buildUiDecisionPrompt(kind, messageText, choices) {
+            let party = null;
+            try {
+                party = WorldStateEngine && WorldStateEngine.getSnapshot ? WorldStateEngine.getSnapshot().party : null;
+            } catch (e) {
+                party = null;
+            }
+            const state = {
+                kind,
+                messageText,
+                choices: (choices || []).map((label, index) => ({ index, label })),
+                luckyCoins: CoinFlipUi.coinCount(),
+                isCoinPrompt: CoinFlipUi.hasCoinPrompt(choices || [], messageText),
+                isFaceChoice: CoinFlipUi.isFaceChoice(choices || [], messageText),
+                isExtraCoinChoice: CoinFlipUi.isExtraCoinChoice(choices || [], messageText),
+                mapId: $gameMap ? $gameMap.mapId() : null,
+                mapName: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
+                party
+            };
+            return [
+                'You control an autonomous Fear & Hunger playtest.',
+                'Choose the next UI response. Code will only execute your selected option.',
+                'Return ONLY JSON.',
+                'For choice/item prompts, choose a valid listed index.',
+                'For coin flips, decide the face and whether spending a Lucky Coin is worth it. Do not waste Lucky Coins on low-value prompts.',
+                'For number prompts, choose CONFIRM if the current number is acceptable, otherwise WAIT.',
+                'Output schema: {"action":"SELECT_CHOICE|CONFIRM|WAIT","index":number|null,"useLuckyCoin":boolean,"reason":"short reason"}',
+                '',
+                'STATE:',
+                JSON.stringify(state)
+            ].join('\n');
+        },
+
+        _applyUiDecision(kind, ui, raw) {
+            const action = raw && raw.action ? String(raw.action).toUpperCase() : 'WAIT';
+            const reason = raw && (raw.reason || raw.reasoning) ? String(raw.reason || raw.reasoning).slice(0, 160) : 'llm ui decision';
+            if (action === 'WAIT') {
+                this._log('ui_wait', { action: 'WAIT', eventId: null, _autopilotSource: 'local_llm' }, reason);
+                return;
+            }
+            if (kind === 'number') {
+                if (action !== 'CONFIRM') {
+                    this._log('ui_wait', { action: 'WAIT', eventId: null, _autopilotSource: 'local_llm' }, reason);
+                    return;
+                }
+                if (ui.numberWindow && ui.numberWindow.processOk) ui.numberWindow.processOk();
+                this._log('ui_advance', { action: 'NUMBER_INPUT', eventId: null, _autopilotSource: 'local_llm' }, reason);
+                return;
+            }
+
+            const choices = ui.choices || [];
+            const maxIndex = Math.max(0, choices.length - 1);
+            const index = Math.max(0, Math.min(maxIndex, Number(raw && raw.index != null ? raw.index : 0) || 0));
+            if (kind === 'choice') {
+                const decision = {
+                    index,
+                    kind: CoinFlipUi.hasCoinPrompt(choices, ui.messageText || '') ? 'coin_llm' : 'generic_llm',
+                    label: choices[index],
+                    reason,
+                    spendLuckyCoin: !!(raw && raw.useLuckyCoin),
+                    coins: CoinFlipUi.coinCount()
+                };
+                if (ui.choiceWindow && ui.choiceWindow.select) ui.choiceWindow.select(index);
+                CoinFlipUi.applyBeforeOk(decision);
+                if (ui.choiceWindow && ui.choiceWindow.processOk) ui.choiceWindow.processOk();
+                this._log('ui_advance', { action: decision.kind === 'coin_llm' ? 'COIN_FLIP_CHOICE' : 'CHOICE', eventId: null, _autopilotSource: 'local_llm' }, 'llm selected choice ' + index + (decision.label ? ' ' + decision.label : '') + ' - ' + reason);
+                return;
+            }
+
+            if (kind === 'item') {
+                if (ui.itemWindow && ui.itemWindow.select) ui.itemWindow.select(index);
+                if (ui.itemWindow && ui.itemWindow.processOk) ui.itemWindow.processOk();
+                this._log('ui_advance', { action: 'ITEM_CHOICE', eventId: null, _autopilotSource: 'local_llm' }, 'llm selected item ' + index + (choices[index] ? ' ' + choices[index] : '') + ' - ' + reason);
+            }
         },
 
         _interact(eventId) {
