@@ -70,8 +70,12 @@ expectNotContains(plugin, 'chest_7', 'raw chest event leak');
 expectNotContains(plugin, 'chest_6', 'raw chest event leak');
 expectNotContains(plugin, 'cavegnome1 instead', 'debug note accidentally shipped');
 
-if (countMatches(plugin, /this\.addCommand\(Config\.language === 'es' \? 'Registro IA' : 'AI Log'/g) !== 1) {
-  fail('Title menu AI Log command should exist exactly once.');
+if (countMatches(plugin, /this\.addCommand\(es \? 'Registro IA' : 'AI Log', 'sectionLog'/g) !== 1) {
+  fail('Config hub AI Log command should exist exactly once.');
+}
+
+if (countMatches(plugin, /this\.addCommand\(Config\.language === 'es' \? 'Registro IA' : 'AI Log'/g) !== 0) {
+  fail('Title menu AI Log command should not exist; it belongs inside the config hub.');
 }
 
 if (countMatches(plugin, /this\.addCommand\(Config\.language === 'es' \? 'Compañero IA' : 'AI Companion'/g) !== 1) {

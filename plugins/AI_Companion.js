@@ -415,6 +415,17 @@
             localStorage.setItem('AI_Companion_AsyncCombatEnabled', on ? 'true' : 'false');
         },
 
+        setAmbientFallbackMode(mode) {
+            this.ambientFallbackMode = mode === 'legacy' ? 'legacy' : 'silent';
+            localStorage.setItem('AI_Companion_AmbientFallbackMode', this.ambientFallbackMode);
+        },
+
+        cycleAmbientFallbackMode() {
+            const next = this.ambientFallbackMode === 'legacy' ? 'silent' : 'legacy';
+            this.setAmbientFallbackMode(next);
+            return next;
+        },
+
         cycleChatTopP() {
             const values = [0.8, 0.9, 0.95, 1.0];
             const idx = values.indexOf(this.chatTopP);
@@ -682,6 +693,34 @@
             localStorage.setItem('AI_Companion_HybridRagLanguage', lang);
         },
 
+        cycleHybridRagMaxChunks() {
+            const values = [0, 2, 4, 6];
+            const idx = values.indexOf(this.hybridRagMaxChunks);
+            this.setHybridRagMaxChunks(values[(idx + 1 + values.length) % values.length]);
+            return this.hybridRagMaxChunks;
+        },
+
+        cycleHybridRagSimilarityThreshold() {
+            const values = [0.55, 0.65, 0.70, 0.80, 0.90];
+            const idx = values.indexOf(this.hybridRagSimilarityThreshold);
+            this.setHybridRagSimilarityThreshold(values[(idx + 1 + values.length) % values.length]);
+            return this.hybridRagSimilarityThreshold;
+        },
+
+        cycleHybridRagSpoilerLevel() {
+            const values = [0, 1, 2, 3, 4];
+            const idx = values.indexOf(this.hybridRagSpoilerLevel);
+            this.setHybridRagSpoilerLevel(values[(idx + 1 + values.length) % values.length]);
+            return this.hybridRagSpoilerLevel;
+        },
+
+        cycleHybridRagLanguage() {
+            const values = ['auto', 'es', 'en'];
+            const idx = values.indexOf(this.hybridRagLanguage);
+            this.setHybridRagLanguage(values[(idx + 1 + values.length) % values.length]);
+            return this.hybridRagLanguage;
+        },
+
         setPerformanceLogging(on) {
             this.performanceLogging = on !== false;
             localStorage.setItem('AI_Companion_PerformanceLogging', this.performanceLogging ? 'true' : 'false');
@@ -690,6 +729,13 @@
         setPerformanceLogIntervalMs(ms) {
             this.performanceLogIntervalMs = Math.max(1000, Math.min(30000, Number(ms) || 5000));
             localStorage.setItem('AI_Companion_PerformanceLogIntervalMs', String(this.performanceLogIntervalMs));
+        },
+
+        cyclePerformanceLogIntervalMs() {
+            const values = [1000, 2500, 5000, 10000, 30000];
+            const idx = values.indexOf(this.performanceLogIntervalMs);
+            this.setPerformanceLogIntervalMs(values[(idx + 1 + values.length) % values.length]);
+            return this.performanceLogIntervalMs;
         },
 
         setAutopilotEnabled(on) {
@@ -703,9 +749,23 @@
             localStorage.setItem('AI_Companion_AutopilotTickSeconds', String(this.autopilotTickSeconds));
         },
 
+        cycleAutopilotTickSeconds() {
+            const values = [1, 2, 3, 5, 10, 15];
+            const idx = values.indexOf(this.autopilotTickSeconds);
+            this.setAutopilotTickSeconds(values[(idx + 1 + values.length) % values.length]);
+            return this.autopilotTickSeconds;
+        },
+
         setAutopilotMaxRuntimeMinutes(minutes) {
             this.autopilotMaxRuntimeMinutes = Math.max(1, Math.min(180, Number(minutes) || 20));
             localStorage.setItem('AI_Companion_AutopilotMaxRuntimeMinutes', String(this.autopilotMaxRuntimeMinutes));
+        },
+
+        cycleAutopilotMaxRuntimeMinutes() {
+            const values = [5, 10, 20, 45, 90, 180];
+            const idx = values.indexOf(this.autopilotMaxRuntimeMinutes);
+            this.setAutopilotMaxRuntimeMinutes(values[(idx + 1 + values.length) % values.length]);
+            return this.autopilotMaxRuntimeMinutes;
         }
 	    };
 
@@ -6787,6 +6847,7 @@ Respond ONLY with this JSON:
 
     Scene_AIConfig.prototype.create = function () {
         Scene_MenuBase.prototype.create.call(this);
+        this._section = 'main';
         this.createHelpWindow();
         this.createStatusWindow();
         this.createCommandWindow();
@@ -6796,8 +6857,8 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.createHelpWindow = function () {
         this._helpWindow = new Window_Help(3);
         this._helpWindow.setText(Config.language === 'es'
-            ? 'Configuración del compañero IA\nAjusta chat, depuración y autonomía beta.\nElige una opción abajo.'
-            : 'AI Companion Configuration\nAdjust chat, debugging, and beta autonomy.\nSelect an option below.');
+            ? 'Compañero IA\nElige una categoría. Registro IA vive aquí junto a la configuración.'
+            : 'AI Companion\nChoose a category. AI Log now lives here with configuration.');
         this.addWindow(this._helpWindow);
     };
 
@@ -6829,10 +6890,39 @@ Respond ONLY with this JSON:
         const loadout = STARTING_LOADOUTS[Config.companionClass];
         const className = loadout ? (es ? loadout.nameEs : loadout.name) : Config.companionClass;
 
-        drawLine(`${es ? 'Compañero' : 'Companion'}: ${Config.companionName} | ${es ? 'Aspecto' : 'Look'}: ${CharacterPresets.getCurrentPresetName()} | ${es ? 'Clase' : 'Class'}: ${className}`, 0);
-        drawLine(`${es ? 'Persona' : 'Persona'}: ${CharacterPresets.getCurrentPersonalityName()} | ${es ? 'Custom' : 'Custom'}: ${Config.customPersonaEnabled ? 'ON' : 'OFF'} | ${es ? 'Modo' : 'Mode'}: ${Config.useMockAI ? 'mock' : 'API'}`, 1);
-        drawLine(`Chat: ${(PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider)} / ${chatModel} | ${apiStatus}`, 2);
-        drawLine(`${es ? 'Auto' : 'Auto'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'} ${Config.autonomyBehaviorProfile} / ${autonomyModel} (${autonomyRisk}) | temp ${Config.chatTemperature} top_p ${Config.chatTopP} top_k ${Config.chatTopK || 'off'}`, 3);
+        const section = this._section || 'main';
+        if (section === 'chat') {
+            drawLine(`Chat: ${(PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider)} / ${chatModel}`, 0);
+            drawLine(`${apiStatus} | local: ${short(Config.localModel, 36)}`, 1);
+            drawLine(`temp ${Config.chatTemperature} | top_p ${Config.chatTopP} | top_k ${Config.chatTopK || 'off'} | async combat ${Config.asyncCombatEnabled ? 'ON' : 'OFF'}`, 2);
+            drawLine(`${es ? 'Endpoint local' : 'Local endpoint'}: ${short(Config.localEndpoint, 72)}`, 3);
+        } else if (section === 'autonomy') {
+            drawLine(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'} | ${es ? 'modelo' : 'model'}: ${autonomyModel}`, 0);
+            drawLine(`${es ? 'Pulso' : 'Heartbeat'} ${Config.autonomyTickSeconds}s | ${es ? 'perfil' : 'profile'} ${Config.autonomyBehaviorProfile} | ${es ? 'botín' : 'loot'} ${Config.autonomyLootRadius}`, 1);
+            drawLine(`${es ? 'Explorar' : 'Scout'} ${Config.autonomyMaxScoutDistance} | ${es ? 'desvío' : 'detour'} ${Config.autonomyMaxDetourDistance} | ${es ? 'volver peligro' : 'return danger'} ${Config.autonomyAutoReturnOnDanger ? 'ON' : 'OFF'}`, 2);
+            drawLine(`${es ? 'NPCs' : 'NPCs'} ${Config.autonomyAllowNpcInteraction ? 'ON' : 'OFF'} | ${es ? 'puertas' : 'doors'} ${Config.autonomyAllowDoorTesting ? 'ON' : 'OFF'} | ${es ? 'pelea solo experimental' : 'solo fight experimental'} ${Config.autonomyAllowSoloEngagement ? 'ON' : 'OFF'}`, 3);
+        } else if (section === 'rag') {
+            drawLine(`RAG: ${Config.hybridRagEnabled ? 'ON' : 'OFF'} | ${es ? 'chunks' : 'chunks'} ${Config.hybridRagMaxChunks} | threshold ${Config.hybridRagSimilarityThreshold}`, 0);
+            drawLine(`${es ? 'Spoilers' : 'Spoilers'} ${Config.hybridRagSpoilerLevel} | ${es ? 'idioma' : 'language'} ${Config.hybridRagLanguage} | ${es ? 'memoria save' : 'save memory'} ${Config.hybridRagIncludeSaveMemory ? 'ON' : 'OFF'}`, 1);
+            drawLine(`${es ? 'Embeddings' : 'Embeddings'}: ${short(Config.hybridRagModel, 54)}`, 2);
+            drawLine(`${es ? 'Endpoint' : 'Endpoint'}: ${short(Config.hybridRagEndpoint, 72)}`, 3);
+        } else if (section === 'debug') {
+            const perf = window._AICompanionPerformanceMonitor;
+            drawLine(`${es ? 'Debug consola' : 'Debug console'} ${Config.debugMode ? 'ON' : 'OFF'} | ${es ? 'telemetría' : 'telemetry'} ${Config.performanceLogging ? 'ON' : 'OFF'} / ${Config.performanceLogIntervalMs}ms`, 0);
+            drawLine(`${es ? 'Overlay' : 'Overlay'} ${Config.debugOverlay ? 'ON' : 'OFF'} | ${es ? 'fallback ambiental' : 'ambient fallback'} ${Config.ambientFallbackMode}`, 1);
+            drawLine(`${es ? 'Cola local' : 'Local queue'}: ${LocalRequestQueue.isBusy() ? 'busy ' + (LocalRequestQueue._activeLabel || '') : 'idle'}`, 2);
+            drawLine(`${es ? 'FPS/RAM se registran en ai_companion_logs' : 'FPS/RAM are logged into ai_companion_logs'}`, 3);
+        } else if (section === 'autopilot') {
+            drawLine(`Autopilot: ${Config.autopilotEnabled ? 'ON' : 'OFF'} | tick ${Config.autopilotTickSeconds}s | max ${Config.autopilotMaxRuntimeMinutes}m`, 0);
+            drawLine(es ? 'Modo tesis: LLM elige metas, batalla y UI; código valida/ejecuta.' : 'Thesis mode: LLM chooses goals, battle, and UI; code validates/executes.', 1);
+            drawLine(es ? 'Si el modelo falla, autopilot espera/defiende; no inventa objetivos.' : 'If model fails, autopilot waits/defends; it does not invent goals.', 2);
+            drawLine(es ? 'Usar para pruebas largas, no para juego normal.' : 'Use for long tests, not normal play.', 3);
+        } else {
+            drawLine(`${es ? 'Compañero' : 'Companion'}: ${Config.companionName} | ${es ? 'Aspecto' : 'Look'}: ${CharacterPresets.getCurrentPresetName()} | ${es ? 'Clase' : 'Class'}: ${className}`, 0);
+            drawLine(`${es ? 'Persona' : 'Persona'}: ${CharacterPresets.getCurrentPersonalityName()} | ${es ? 'Custom' : 'Custom'}: ${Config.customPersonaEnabled ? 'ON' : 'OFF'} | ${es ? 'Modo' : 'Mode'}: ${Config.useMockAI ? 'mock' : 'API'}`, 1);
+            drawLine(`Chat: ${(PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider)} / ${chatModel} | ${apiStatus}`, 2);
+            drawLine(`${es ? 'Auto' : 'Auto'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'} ${Config.autonomyBehaviorProfile} / ${autonomyModel} (${autonomyRisk})`, 3);
+        }
         this._statusWindow.resetFontSettings();
     };
 
@@ -6849,10 +6939,24 @@ Respond ONLY with this JSON:
         const wh = Math.max(160, Graphics.boxHeight - wy);
         this._commandWindow = new Window_AIConfigCommand(0, wy, wh);
         this._commandWindow.setHelpWindow(this._helpWindow);
+        this._commandWindow.setHandler('sectionStatus', this.commandSectionStatus.bind(this));
+        this._commandWindow.setHandler('sectionCharacter', this.commandSectionCharacter.bind(this));
+        this._commandWindow.setHandler('sectionChat', this.commandSectionChat.bind(this));
+        this._commandWindow.setHandler('sectionAutonomy', this.commandSectionAutonomy.bind(this));
+        this._commandWindow.setHandler('sectionAutopilot', this.commandSectionAutopilot.bind(this));
+        this._commandWindow.setHandler('sectionRag', this.commandSectionRag.bind(this));
+        this._commandWindow.setHandler('sectionLog', this.commandOpenLog.bind(this));
+        this._commandWindow.setHandler('sectionDebug', this.commandSectionDebug.bind(this));
+        this._commandWindow.setHandler('sectionAdvanced', this.commandSectionAdvanced.bind(this));
+        this._commandWindow.setHandler('backSection', this.commandBackSection.bind(this));
         this._commandWindow.setHandler('apiKey', this.commandApiKey.bind(this));
         this._commandWindow.setHandler('toggleMock', this.commandToggleMock.bind(this));
         this._commandWindow.setHandler('toggleDebug', this.commandToggleDebug.bind(this));
         this._commandWindow.setHandler('toggleDebugOverlay', this.commandToggleDebugOverlay.bind(this));
+        this._commandWindow.setHandler('togglePerformanceLogging', this.commandTogglePerformanceLogging.bind(this));
+        this._commandWindow.setHandler('setPerformanceInterval', this.commandSetPerformanceInterval.bind(this));
+        this._commandWindow.setHandler('toggleAsyncCombat', this.commandToggleAsyncCombat.bind(this));
+        this._commandWindow.setHandler('toggleAmbientFallbacks', this.commandToggleAmbientFallbacks.bind(this));
         this._commandWindow.setHandler('setName', this.commandSetName.bind(this));
         this._commandWindow.setHandler('setAppearance', this.commandSetAppearance.bind(this));
         this._commandWindow.setHandler('setPersonality', this.commandSetPersonality.bind(this));
@@ -6881,9 +6985,48 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('toggleAutonomyDoors', this.commandToggleAutonomyDoors.bind(this));
         this._commandWindow.setHandler('toggleAutonomySolo', this.commandToggleAutonomySolo.bind(this));
         this._commandWindow.setHandler('toggleAutonomyReturn', this.commandToggleAutonomyReturn.bind(this));
+        this._commandWindow.setHandler('toggleAutopilot', this.commandToggleAutopilot.bind(this));
+        this._commandWindow.setHandler('setAutopilotTick', this.commandSetAutopilotTick.bind(this));
+        this._commandWindow.setHandler('setAutopilotRuntime', this.commandSetAutopilotRuntime.bind(this));
+        this._commandWindow.setHandler('toggleRag', this.commandToggleRag.bind(this));
+        this._commandWindow.setHandler('editRagEndpoint', this.commandEditRagEndpoint.bind(this));
+        this._commandWindow.setHandler('editRagModel', this.commandEditRagModel.bind(this));
+        this._commandWindow.setHandler('setRagChunks', this.commandSetRagChunks.bind(this));
+        this._commandWindow.setHandler('setRagThreshold', this.commandSetRagThreshold.bind(this));
+        this._commandWindow.setHandler('setRagSpoiler', this.commandSetRagSpoiler.bind(this));
+        this._commandWindow.setHandler('toggleRagSaveMemory', this.commandToggleRagSaveMemory.bind(this));
+        this._commandWindow.setHandler('setRagLanguage', this.commandSetRagLanguage.bind(this));
         this._commandWindow.setHandler('fetchModels', this.commandFetchModels.bind(this));
-        this._commandWindow.setHandler('cancel', this.popScene.bind(this));
+        this._commandWindow.setHandler('cancel', this.commandCancelConfig.bind(this));
         this.addWindow(this._commandWindow);
+    };
+
+    Scene_AIConfig.prototype._setSection = function(section) {
+        this._section = section || 'main';
+        SoundManager.playOk();
+        this._refreshConfigScene();
+        if (this._commandWindow && this._commandWindow.select) this._commandWindow.select(0);
+    };
+
+    Scene_AIConfig.prototype.commandSectionStatus = function () { this._setSection('status'); };
+    Scene_AIConfig.prototype.commandSectionCharacter = function () { this._setSection('character'); };
+    Scene_AIConfig.prototype.commandSectionChat = function () { this._setSection('chat'); };
+    Scene_AIConfig.prototype.commandSectionAutonomy = function () { this._setSection('autonomy'); };
+    Scene_AIConfig.prototype.commandSectionAutopilot = function () { this._setSection('autopilot'); };
+    Scene_AIConfig.prototype.commandSectionRag = function () { this._setSection('rag'); };
+    Scene_AIConfig.prototype.commandSectionDebug = function () { this._setSection('debug'); };
+    Scene_AIConfig.prototype.commandSectionAdvanced = function () { this._setSection('advanced'); };
+    Scene_AIConfig.prototype.commandBackSection = function () { this._setSection('main'); };
+    Scene_AIConfig.prototype.commandCancelConfig = function () {
+        if (this._section && this._section !== 'main') {
+            this.commandBackSection();
+            return;
+        }
+        this.popScene();
+    };
+    Scene_AIConfig.prototype.commandOpenLog = function () {
+        SoundManager.playOk();
+        SceneManager.push(Scene_AIDebugLog);
     };
 
     Scene_AIConfig.prototype.commandApiKey = function () {
@@ -6930,6 +7073,30 @@ Respond ONLY with this JSON:
         this._refreshConfigScene();
     };
 
+    Scene_AIConfig.prototype.commandTogglePerformanceLogging = function () {
+        Config.setPerformanceLogging(!Config.performanceLogging);
+        SoundManager.playOk();
+        this._refreshConfigScene();
+    };
+
+    Scene_AIConfig.prototype.commandSetPerformanceInterval = function () {
+        const next = Config.cyclePerformanceLogIntervalMs();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Intervalo de telemetría' : 'Telemetry interval'}: ${next}ms`);
+    };
+
+    Scene_AIConfig.prototype.commandToggleAsyncCombat = function () {
+        Config.setAsyncCombatEnabled(!Config.asyncCombatEnabled);
+        SoundManager.playOk();
+        this._refreshConfigScene();
+    };
+
+    Scene_AIConfig.prototype.commandToggleAmbientFallbacks = function () {
+        const next = Config.cycleAmbientFallbackMode();
+        SoundManager.playOk();
+        this._refreshConfigScene(`${Config.language === 'es' ? 'Fallback ambiental' : 'Ambient fallback'}: ${next}`);
+    };
+
     Scene_AIConfig.prototype.onInputOk = function () {
         const key = this._inputWindow.getKey();
         if (this._textInputPurpose && this._textInputPurpose !== 'apiKey') {
@@ -6954,6 +7121,12 @@ Respond ONLY with this JSON:
                     break;
                 case 'localModel':
                     Config.setLocalModel(text);
+                    break;
+                case 'ragEndpoint':
+                    Config.setHybridRagEndpoint(text);
+                    break;
+                case 'ragModel':
+                    Config.setHybridRagModel(text);
                     break;
             }
             SoundManager.playOk();
@@ -7257,6 +7430,74 @@ Respond ONLY with this JSON:
         this._refreshConfigScene();
     };
 
+    Scene_AIConfig.prototype.commandToggleAutopilot = function () {
+        Config.setAutopilotEnabled(!Config.autopilotEnabled);
+        SoundManager.playOk();
+        this._refreshConfigScene(Config.language === 'es'
+            ? `Autopilot: ${Config.autopilotEnabled ? 'ACTIVO' : 'apagado'}`
+            : `Autopilot: ${Config.autopilotEnabled ? 'ON' : 'OFF'}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutopilotTick = function () {
+        const next = Config.cycleAutopilotTickSeconds();
+        SoundManager.playOk();
+        this._refreshConfigScene(`Autopilot tick: ${next}s`);
+    };
+
+    Scene_AIConfig.prototype.commandSetAutopilotRuntime = function () {
+        const next = Config.cycleAutopilotMaxRuntimeMinutes();
+        SoundManager.playOk();
+        this._refreshConfigScene(`Autopilot max: ${next}m`);
+    };
+
+    Scene_AIConfig.prototype.commandToggleRag = function () {
+        Config.setHybridRagEnabled(!Config.hybridRagEnabled);
+        SoundManager.playOk();
+        this._refreshConfigScene(`Hybrid RAG: ${Config.hybridRagEnabled ? 'ON' : 'OFF'}`);
+    };
+
+    Scene_AIConfig.prototype.commandEditRagEndpoint = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('ragEndpoint', es ? 'Endpoint embeddings' : 'Embeddings endpoint', Config.hybridRagEndpoint,
+            es ? 'Pega endpoint /v1/embeddings de LM Studio.' : 'Paste LM Studio /v1/embeddings endpoint.');
+    };
+
+    Scene_AIConfig.prototype.commandEditRagModel = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('ragModel', es ? 'Modelo embeddings' : 'Embedding model', Config.hybridRagModel,
+            es ? 'Pega el ID exacto del modelo de embeddings.' : 'Paste exact embedding model ID.');
+    };
+
+    Scene_AIConfig.prototype.commandSetRagChunks = function () {
+        const next = Config.cycleHybridRagMaxChunks();
+        SoundManager.playOk();
+        this._refreshConfigScene(`RAG chunks: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetRagThreshold = function () {
+        const next = Config.cycleHybridRagSimilarityThreshold();
+        SoundManager.playOk();
+        this._refreshConfigScene(`RAG threshold: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandSetRagSpoiler = function () {
+        const next = Config.cycleHybridRagSpoilerLevel();
+        SoundManager.playOk();
+        this._refreshConfigScene(`RAG spoiler: ${next}`);
+    };
+
+    Scene_AIConfig.prototype.commandToggleRagSaveMemory = function () {
+        Config.setHybridRagIncludeSaveMemory(!Config.hybridRagIncludeSaveMemory);
+        SoundManager.playOk();
+        this._refreshConfigScene();
+    };
+
+    Scene_AIConfig.prototype.commandSetRagLanguage = function () {
+        const next = Config.cycleHybridRagLanguage();
+        SoundManager.playOk();
+        this._refreshConfigScene(`RAG language: ${next}`);
+    };
+
     // Fetch free models from OpenRouter
     Scene_AIConfig.prototype.commandFetchModels = async function () {
         const es = Config.language === 'es';
@@ -7312,67 +7553,139 @@ Respond ONLY with this JSON:
 
     Window_AIConfigCommand.prototype.makeCommandList = function () {
         const es = Config.language === 'es';
-        this.addCommand(es ? '--- Núcleo ---' : '--- Core ---', 'separator', false);
-        this.addCommand(es ? 'Configurar API Key' : 'Set API Key', 'apiKey');
+        const scene = SceneManager._scene;
+        const section = scene && scene._section ? scene._section : 'main';
+        const addBack = () => this.addCommand(es ? '< Volver' : '< Back', 'backSection');
+        const short = (value, max) => {
+            const text = String(value || '');
+            return text.length > max ? text.substring(0, Math.max(0, max - 3)) + '...' : text;
+        };
         const mockLabel = Config.forceMockAI ? (es ? 'Modo prueba: ON (pulsa para API real)' : 'Mock Mode: ON (click to use Real API)') :
             Config.apiKey ? (es ? 'Modo prueba: OFF (usando API real)' : 'Mock Mode: OFF (using Real API)') :
                 (es ? 'Modo prueba: ON (configura API key antes)' : 'Mock Mode: ON (set API key first)');
-        this.addCommand(mockLabel, 'toggleMock');
-        this.addCommand(es ? '--- Personaje ---' : '--- Character ---', 'separator', false);
-        this.addCommand(`${es ? 'Nombre' : 'Name'}: ${Config.companionName}`, 'setName');
-        this.addCommand(`${es ? 'Aspecto' : 'Appearance'}: ${CharacterPresets.getCurrentPresetName()}`, 'setAppearance');
-        this.addCommand(`${es ? 'Personalidad' : 'Personality'}: ${CharacterPresets.getCurrentPersonalityName()}`, 'setPersonality');
-        this.addCommand(`${es ? 'Perfil personalizado' : 'Custom persona'}: ${Config.customPersonaEnabled ? 'ON' : 'OFF'}`, 'toggleCustomPersona');
-        this.addCommand(es ? 'Editar historia' : 'Edit backstory', 'editBackstory');
-        this.addCommand(es ? 'Editar voz/estilo' : 'Edit voice/style', 'editSpeechStyle');
-        this.addCommand(es ? 'Editar metas' : 'Edit goals', 'editGoals');
-        this.addCommand(es ? 'Editar reglas' : 'Edit rules', 'editBehaviorRules');
-        const loadout = STARTING_LOADOUTS[Config.companionClass];
-        const className = loadout ? (es ? loadout.nameEs : loadout.name) : Config.companionClass;
-        this.addCommand(`${es ? 'Clase inicial' : 'Starting class'}: ${className}`, 'setClass');
-        this.addCommand(`${es ? 'Idioma' : 'Language'}: ${Config.language === 'es' ? 'Español' : 'English'}`, 'setLanguage');
-        this.addCommand(es ? '--- Chat / IA ---' : '--- Chat / AI ---', 'separator', false);
-        // Provider label
         const providerDef = PROVIDERS[Config.apiProvider] || PROVIDERS.groq;
         let providerLabel;
         if (Config.apiProvider === 'local') {
-            providerLabel = `Local (${Config.localModel.substring(0, 20)})`;
+            providerLabel = `Local (${short(Config.localModel, 20)})`;
         } else {
             providerLabel = providerDef.name;
         }
-        this.addCommand(`${es ? 'Proveedor' : 'Provider'}: ${providerLabel}`, 'setProvider');
-        // Model label
         const modelLabel = Config.apiProvider === 'local'
-            ? Config.localModel.substring(0, 30)
-            : (Config.chatModel || providerDef.defaultModels[0] || 'auto').split('/').pop().substring(0, 30);
-        this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
-        if (Config.apiProvider === 'local') {
+            ? short(Config.localModel, 30)
+            : short((Config.chatModel || providerDef.defaultModels[0] || 'auto').split('/').pop(), 30);
+        const loadout = STARTING_LOADOUTS[Config.companionClass];
+        const className = loadout ? (es ? loadout.nameEs : loadout.name) : Config.companionClass;
+
+        if (section === 'main') {
+            this.addCommand(es ? 'Estado rápido' : 'Quick status', 'sectionStatus');
+            this.addCommand(es ? 'Personaje' : 'Character', 'sectionCharacter');
+            this.addCommand(es ? 'Chat / Modelo' : 'Chat / Model', 'sectionChat');
+            this.addCommand(es ? 'Autonomía' : 'Autonomy', 'sectionAutonomy');
+            this.addCommand(es ? 'Autopilot / Pruebas' : 'Autopilot / Tests', 'sectionAutopilot');
+            this.addCommand(es ? 'Memoria / RAG' : 'Memory / RAG', 'sectionRag');
+            this.addCommand(es ? 'Registro IA' : 'AI Log', 'sectionLog');
+            this.addCommand(es ? 'Rendimiento / Debug' : 'Performance / Debug', 'sectionDebug');
+            this.addCommand(es ? 'Avanzado' : 'Advanced', 'sectionAdvanced');
+            return;
+        }
+
+        if (section === 'status') {
+            addBack();
+            this.addCommand(es ? 'Abrir Registro IA' : 'Open AI Log', 'sectionLog');
+            this.addCommand(es ? 'Personaje' : 'Character', 'sectionCharacter');
+            this.addCommand(es ? 'Chat / Modelo' : 'Chat / Model', 'sectionChat');
+            this.addCommand(es ? 'Autonomía' : 'Autonomy', 'sectionAutonomy');
+            this.addCommand(es ? 'Memoria / RAG' : 'Memory / RAG', 'sectionRag');
+            return;
+        }
+
+        if (section === 'character') {
+            addBack();
+            this.addCommand(`${es ? 'Nombre' : 'Name'}: ${Config.companionName}`, 'setName');
+            this.addCommand(`${es ? 'Aspecto' : 'Appearance'}: ${CharacterPresets.getCurrentPresetName()}`, 'setAppearance');
+            this.addCommand(`${es ? 'Personalidad' : 'Personality'}: ${CharacterPresets.getCurrentPersonalityName()}`, 'setPersonality');
+            this.addCommand(`${es ? 'Perfil personalizado' : 'Custom persona'}: ${Config.customPersonaEnabled ? 'ON' : 'OFF'}`, 'toggleCustomPersona');
+            this.addCommand(es ? 'Editar historia' : 'Edit backstory', 'editBackstory');
+            this.addCommand(es ? 'Editar voz/estilo' : 'Edit voice/style', 'editSpeechStyle');
+            this.addCommand(es ? 'Editar metas' : 'Edit goals', 'editGoals');
+            this.addCommand(es ? 'Editar reglas' : 'Edit rules', 'editBehaviorRules');
+            this.addCommand(`${es ? 'Clase inicial' : 'Starting class'}: ${className}`, 'setClass');
+            this.addCommand(`${es ? 'Idioma' : 'Language'}: ${Config.language === 'es' ? 'Español' : 'English'}`, 'setLanguage');
+            return;
+        }
+
+        if (section === 'chat') {
+            addBack();
+            this.addCommand(`${es ? 'Proveedor' : 'Provider'}: ${providerLabel}`, 'setProvider');
+            this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
             this.addCommand(es ? 'Editar endpoint local' : 'Edit local endpoint', 'editLocalEndpoint');
             this.addCommand(es ? 'Editar modelo local' : 'Edit local model', 'editLocalModel');
+            this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
+            this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
+            this.addCommand(`top_k: ${Config.chatTopK || 'off'} (${es ? 'solo local compatible' : 'local-compatible only'})`, 'setTopK');
+            this.addCommand(`${es ? 'Combate async' : 'Async combat'}: ${Config.asyncCombatEnabled ? 'ON' : 'OFF'}`, 'toggleAsyncCombat');
+            if (Config.apiProvider === 'openrouter') {
+                const freeCount = Config.getFreeModels().length;
+                this.addCommand(`${es ? 'Buscar modelos gratis' : 'Fetch Free Models'} (${freeCount})`, 'fetchModels');
+            }
+            return;
         }
-        this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
-        this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
-        this.addCommand(`top_k: ${Config.chatTopK || 'off'}`, 'setTopK');
-        // Fetch free models (OpenRouter only)
-        if (Config.apiProvider === 'openrouter') {
-            const freeCount = Config.getFreeModels().length;
-            this.addCommand(`${es ? 'Buscar modelos gratis' : 'Fetch Free Models'} (${freeCount})`, 'fetchModels');
+
+        if (section === 'autonomy') {
+            addBack();
+            this.addCommand(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'}`, 'toggleAutonomy');
+            this.addCommand(`${es ? 'Modelo' : 'Model'}: ${short(String(Config.getAutonomyModel()).split('/').pop(), 30)}`, 'setAutonomyModel');
+            this.addCommand(`${es ? 'Pulso' : 'Heartbeat'}: ${Config.autonomyTickSeconds}s`, 'setAutonomyTick');
+            this.addCommand(`${es ? 'Perfil' : 'Profile'}: ${Config.autonomyBehaviorProfile} (${es ? 'influye prompt' : 'prompt bias'})`, 'setAutonomyProfile');
+            this.addCommand(`${es ? 'Exploración máxima' : 'Max scout'}: ${Config.autonomyMaxScoutDistance}`, 'setAutonomyScout');
+            this.addCommand(`${es ? 'Desvío máximo' : 'Max detour'}: ${Config.autonomyMaxDetourDistance}`, 'setAutonomyDetour');
+            this.addCommand(`${es ? 'Radio de botín' : 'Loot radius'}: ${Config.autonomyLootRadius}`, 'setAutonomyLoot');
+            this.addCommand(`${es ? 'Hablar con NPCs' : 'Talk to NPCs'}: ${Config.autonomyAllowNpcInteraction ? 'ON' : 'OFF'}`, 'toggleAutonomyNpc');
+            this.addCommand(`${es ? 'Probar puertas' : 'Test doors'}: ${Config.autonomyAllowDoorTesting ? 'ON' : 'OFF'}`, 'toggleAutonomyDoors');
+            this.addCommand(`${es ? 'Volver si hay peligro' : 'Auto return on danger'}: ${Config.autonomyAutoReturnOnDanger ? 'ON' : 'OFF'}`, 'toggleAutonomyReturn');
+            this.addCommand(`${es ? 'Pelea en solitario EXP' : 'Solo engage EXP'}: ${Config.autonomyAllowSoloEngagement ? 'ON' : 'OFF'}`, 'toggleAutonomySolo', false);
+            return;
         }
-        this.addCommand(es ? '--- Autonomía beta ---' : '--- Beta Autonomy ---', 'separator', false);
-        this.addCommand(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'}`, 'toggleAutonomy');
-        this.addCommand(`${es ? 'Modelo de autonomía' : 'Autonomy model'}: ${String(Config.getAutonomyModel()).split('/').pop().substring(0, 30)}`, 'setAutonomyModel');
-        this.addCommand(`${es ? 'Pulso' : 'Heartbeat'}: ${Config.autonomyTickSeconds}s`, 'setAutonomyTick');
-        this.addCommand(`${es ? 'Perfil' : 'Profile'}: ${Config.autonomyBehaviorProfile}`, 'setAutonomyProfile');
-        this.addCommand(`${es ? 'Exploración máxima' : 'Max scout'}: ${Config.autonomyMaxScoutDistance}`, 'setAutonomyScout');
-        this.addCommand(`${es ? 'Desvío máximo' : 'Max detour'}: ${Config.autonomyMaxDetourDistance}`, 'setAutonomyDetour');
-        this.addCommand(`${es ? 'Radio de botín' : 'Loot radius'}: ${Config.autonomyLootRadius}`, 'setAutonomyLoot');
-        this.addCommand(`${es ? 'Hablar con NPCs' : 'Talk to NPCs'}: ${Config.autonomyAllowNpcInteraction ? 'ON' : 'OFF'}`, 'toggleAutonomyNpc');
-        this.addCommand(`${es ? 'Probar puertas' : 'Test doors'}: ${Config.autonomyAllowDoorTesting ? 'ON' : 'OFF'}`, 'toggleAutonomyDoors');
-        this.addCommand(`${es ? 'Pelea en solitario' : 'Solo engage'}: ${Config.autonomyAllowSoloEngagement ? 'ON' : 'OFF'}`, 'toggleAutonomySolo');
-        this.addCommand(`${es ? 'Volver si hay peligro' : 'Auto return on danger'}: ${Config.autonomyAutoReturnOnDanger ? 'ON' : 'OFF'}`, 'toggleAutonomyReturn');
-        this.addCommand(es ? '--- Depuración ---' : '--- Debug ---', 'separator', false);
-        this.addCommand(es ? `Consola debug: ${Config.debugMode ? 'SÍ' : 'NO'}` : `Debug console: ${Config.debugMode ? 'ON' : 'OFF'}`, 'toggleDebug');
-        this.addCommand(es ? `Overlay debug: ${Config.debugOverlay ? 'SÍ' : 'NO'}` : `Debug overlay: ${Config.debugOverlay ? 'ON' : 'OFF'}`, 'toggleDebugOverlay');
+
+        if (section === 'autopilot') {
+            addBack();
+            this.addCommand(`Autopilot: ${Config.autopilotEnabled ? 'ON' : 'OFF'}`, 'toggleAutopilot');
+            this.addCommand(`Tick: ${Config.autopilotTickSeconds}s`, 'setAutopilotTick');
+            this.addCommand(`${es ? 'Tiempo máximo' : 'Max runtime'}: ${Config.autopilotMaxRuntimeMinutes}m`, 'setAutopilotRuntime');
+            this.addCommand(es ? 'Ver Registro IA' : 'Open AI Log', 'sectionLog');
+            return;
+        }
+
+        if (section === 'rag') {
+            addBack();
+            this.addCommand(`Hybrid RAG: ${Config.hybridRagEnabled ? 'ON' : 'OFF'}`, 'toggleRag');
+            this.addCommand(es ? 'Editar endpoint embeddings' : 'Edit embeddings endpoint', 'editRagEndpoint');
+            this.addCommand(`${es ? 'Modelo embeddings' : 'Embedding model'}: ${short(Config.hybridRagModel, 34)}`, 'editRagModel');
+            this.addCommand(`Max chunks: ${Config.hybridRagMaxChunks}`, 'setRagChunks');
+            this.addCommand(`Threshold: ${Config.hybridRagSimilarityThreshold}`, 'setRagThreshold');
+            this.addCommand(`${es ? 'Spoiler level' : 'Spoiler level'}: ${Config.hybridRagSpoilerLevel}`, 'setRagSpoiler');
+            this.addCommand(`${es ? 'Memoria de save' : 'Save memory'}: ${Config.hybridRagIncludeSaveMemory ? 'ON' : 'OFF'}`, 'toggleRagSaveMemory');
+            this.addCommand(`${es ? 'Idioma RAG' : 'RAG language'}: ${Config.hybridRagLanguage}`, 'setRagLanguage');
+            return;
+        }
+
+        if (section === 'debug') {
+            addBack();
+            this.addCommand(es ? 'Abrir Registro IA' : 'Open AI Log', 'sectionLog');
+            this.addCommand(es ? `Consola debug: ${Config.debugMode ? 'SÍ' : 'NO'}` : `Debug console: ${Config.debugMode ? 'ON' : 'OFF'}`, 'toggleDebug');
+            this.addCommand(es ? `Overlay debug EXP: ${Config.debugOverlay ? 'SÍ' : 'NO'}` : `Debug overlay EXP: ${Config.debugOverlay ? 'ON' : 'OFF'}`, 'toggleDebugOverlay');
+            this.addCommand(`${es ? 'Telemetría FPS/RAM/CPU' : 'FPS/RAM/CPU telemetry'}: ${Config.performanceLogging ? 'ON' : 'OFF'}`, 'togglePerformanceLogging');
+            this.addCommand(`${es ? 'Intervalo telemetría' : 'Telemetry interval'}: ${Config.performanceLogIntervalMs}ms`, 'setPerformanceInterval');
+            return;
+        }
+
+        if (section === 'advanced') {
+            addBack();
+            this.addCommand(es ? 'Configurar API Key' : 'Set API Key', 'apiKey');
+            this.addCommand(mockLabel, 'toggleMock');
+            this.addCommand(`${es ? 'Fallback ambiental legacy' : 'Legacy ambient fallbacks'}: ${Config.ambientFallbackMode}`, 'toggleAmbientFallbacks');
+            this.addCommand(`${es ? 'Idioma' : 'Language'}: ${Config.language === 'es' ? 'Español' : 'English'}`, 'setLanguage');
+        }
     };
 
     Window_AIConfigCommand.prototype.updateHelp = function () {
@@ -7380,8 +7693,22 @@ Respond ONLY with this JSON:
         const es = Config.language === 'es';
         const symbol = this.currentSymbol();
         const help = {
+            sectionStatus: es ? 'Vista general de los sistemas activos.' : 'Overview of active systems.',
+            sectionCharacter: es ? 'Nombre, apariencia, personalidad y ficha del compañero.' : 'Name, appearance, personality, and character sheet.',
+            sectionChat: es ? 'Proveedor, modelo, endpoint local y muestreo del LLM.' : 'Provider, model, local endpoint, and LLM sampling.',
+            sectionAutonomy: es ? 'Autonomía normal del compañero. Requiere modelo local.' : 'Normal companion autonomy. Requires a local model.',
+            sectionAutopilot: es ? 'Modo de prueba: el LLM controla al jugador para playtests.' : 'Test mode: LLM controls the player for playtests.',
+            sectionRag: es ? 'Recuperación semántica de conocimiento/wiki y memoria de save.' : 'Semantic wiki/knowledge and save-memory retrieval.',
+            sectionLog: es ? 'Abre el registro reciente de IA, combate, chat, autonomía y errores.' : 'Open recent AI, combat, chat, autonomy, and error logs.',
+            sectionDebug: es ? 'Telemetría, consola, overlay y depuración.' : 'Telemetry, console, overlay, and debugging.',
+            sectionAdvanced: es ? 'Opciones internas o menos usadas.' : 'Internal or less common options.',
+            backSection: es ? 'Volver al hub principal.' : 'Return to the main hub.',
             apiKey: es ? 'Pega tu API key. Se usa para chat y funciones cloud.' : 'Paste your API key. Used for chat and cloud features.',
             toggleMock: es ? 'Activa o desactiva el modo de prueba sin llamadas reales.' : 'Toggle mock mode to disable real API calls.',
+            toggleAsyncCombat: es ? 'Combate async evita congelar el juego, pero puede ser menos estable.' : 'Async combat avoids freezing but may be less stable.',
+            togglePerformanceLogging: es ? 'Registra FPS, RAM del juego, CPU y latencia local en ai_companion_logs.' : 'Log FPS, game RAM, CPU, and local latency into ai_companion_logs.',
+            setPerformanceInterval: es ? 'Frecuencia de registro de telemetría.' : 'Telemetry logging frequency.',
+            toggleAmbientFallbacks: es ? 'Legacy genera frases locales si el LLM no habla; silent evita hardcoded ambient.' : 'Legacy uses local fallback lines if LLM is quiet; silent avoids hardcoded ambient.',
             setName: es ? 'Abre la edición nativa del nombre del compañero.' : 'Open the native companion name editor.',
             setAppearance: es ? 'Cambia el preset visual del compañero.' : 'Cycle the companion appearance preset.',
             setPersonality: es ? 'Cambia la personalidad base del compañero.' : 'Cycle the companion base personality.',
@@ -7400,19 +7727,30 @@ Respond ONLY with this JSON:
             setTopP: es ? 'Controla muestreo nucleus/top_p.' : 'Control nucleus/top_p sampling.',
             setTopK: es ? 'Controla muestreo top_k; 0 lo desactiva.' : 'Control top_k sampling; 0 disables it.',
             fetchModels: es ? 'Busca modelos gratis disponibles en OpenRouter.' : 'Fetch available free models from OpenRouter.',
-            toggleAutonomy: es ? 'Activa la futura autonomía beta. Por ahora es preparación/configuración.' : 'Enable future beta autonomy. For now this is configuration prep.',
+            toggleAutonomy: es ? 'Activa la autonomía real del compañero en mapa.' : 'Enable real map autonomy for the companion.',
             setAutonomyModel: es ? 'Modelo preferido para la autonomía. Lo ideal es mantenerlo local.' : 'Preferred model for autonomy. Local is recommended.',
-            setAutonomyTick: es ? 'Cada cuántos segundos tomaría decisiones la autonomía.' : 'How often autonomy would make decisions.',
-            setAutonomyProfile: es ? 'Riesgo base: cauteloso, balanceado o agresivo.' : 'Base risk profile: cautious, balanced, or aggressive.',
+            setAutonomyTick: es ? 'Cada cuántos segundos pide una meta nueva si no hay tarea activa.' : 'How often it asks for a new goal when no task is active.',
+            setAutonomyProfile: es ? 'Sesgo enviado al prompt; no es un control duro.' : 'Prompt bias; not a hard behavior switch.',
             setAutonomyScout: es ? 'Distancia máxima para alejarse explorando.' : 'Maximum distance the companion may scout away.',
             setAutonomyDetour: es ? 'Desvío máximo permitido para recoger o investigar.' : 'Maximum detour allowed for looting or checking something.',
             setAutonomyLoot: es ? 'Qué tan cerca debe estar el botín para ir por él.' : 'How close loot must be before going for it.',
             toggleAutonomyNpc: es ? 'Permite charlas automáticas con NPCs.' : 'Allow autonomous NPC interactions.',
             toggleAutonomyDoors: es ? 'Permite probar puertas o interactivos simples.' : 'Allow autonomous door and simple interactable testing.',
-            toggleAutonomySolo: es ? 'Permite entrar en combate sin el jugador cerca.' : 'Allow autonomous solo engagement.',
+            toggleAutonomySolo: es ? 'Experimental/deshabilitado: aún no hay acción LLM segura para iniciar combates.' : 'Experimental/disabled: no safe LLM fight-start action yet.',
             toggleAutonomyReturn: es ? 'Hace que vuelva al jugador cuando detecta peligro.' : 'Return to the player when danger rises.',
+            toggleAutopilot: es ? 'Modo de prueba LLM-only. Controla al jugador, no al compañero.' : 'LLM-only test mode. Controls the player, not the companion.',
+            setAutopilotTick: es ? 'Intervalo entre metas del autopilot.' : 'Interval between autopilot goals.',
+            setAutopilotRuntime: es ? 'Tiempo máximo antes de apagarse solo.' : 'Maximum runtime before auto-stop.',
+            toggleRag: es ? 'Activa recuperación semántica. Requiere modelo de embeddings corriendo.' : 'Enable semantic retrieval. Requires an embedding model.',
+            editRagEndpoint: es ? 'Endpoint local /v1/embeddings.' : 'Local /v1/embeddings endpoint.',
+            editRagModel: es ? 'Modelo de embeddings usado para buscar chunks.' : 'Embedding model used to search chunks.',
+            setRagChunks: es ? 'Cantidad máxima de fragmentos inyectados al chat.' : 'Maximum retrieved chunks injected into chat.',
+            setRagThreshold: es ? 'Similitud mínima para aceptar resultados.' : 'Minimum similarity for accepted results.',
+            setRagSpoiler: es ? 'Nivel de spoilers permitido en recuperación.' : 'Allowed spoiler level for retrieval.',
+            toggleRagSaveMemory: es ? 'Incluye memoria persistente del save junto al RAG.' : 'Include persistent save memory with RAG.',
+            setRagLanguage: es ? 'Idioma preferido de recuperación; auto usa idioma del plugin.' : 'Preferred retrieval language; auto follows plugin language.',
             toggleDebug: es ? 'Activa logs detallados en la consola F12.' : 'Enable detailed logs in the F12 console.',
-            toggleDebugOverlay: es ? 'Muestra información de depuración ligera cuando esté disponible.' : 'Show lightweight debug information when available.'
+            toggleDebugOverlay: es ? 'Experimental: bandera guardada para overlay; no todos los datos tienen renderer visible.' : 'Experimental: saved overlay flag; not every debug state has visible renderer.'
         };
         this._helpWindow.setText(help[symbol] || (es ? 'Configuración del compañero IA' : 'AI companion configuration'));
     };
@@ -7508,24 +7846,17 @@ Respond ONLY with this JSON:
         _Window_TitleCommand_makeCommandList.call(this);
         // Always add our command — base makeCommandList clears the list each time
         this.addCommand(Config.language === 'es' ? 'Compañero IA' : 'AI Companion', 'aiConfig');
-        this.addCommand(Config.language === 'es' ? 'Registro IA' : 'AI Log', 'aiDebugLog');
     };
 
     const _Scene_Title_createCommandWindow = Scene_Title.prototype.createCommandWindow;
     Scene_Title.prototype.createCommandWindow = function () {
         _Scene_Title_createCommandWindow.call(this);
         this._commandWindow.setHandler('aiConfig', this.commandAIConfig.bind(this));
-        this._commandWindow.setHandler('aiDebugLog', this.commandAIDebugLog.bind(this));
     };
 
     Scene_Title.prototype.commandAIConfig = function () {
         this._commandWindow.close();
         SceneManager.push(Scene_AIConfig);
-    };
-
-    Scene_Title.prototype.commandAIDebugLog = function () {
-        this._commandWindow.close();
-        SceneManager.push(Scene_AIDebugLog);
     };
 
     // Expose scene for external access
