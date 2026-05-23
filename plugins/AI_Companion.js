@@ -1518,19 +1518,19 @@
         // Appearance presets (Face, Sprite) - using available bust images
         // face/faceIndex/sprite must match game Actors; battlerName for battle sprite
         appearances: [
-            { id: 'dark_priest', name: 'Sacerdote oscuro', nameEn: 'Dark Priest', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1', previewPicture: 'portraitR_enki' },
-            { id: 'mercenary', name: 'Mercenario', nameEn: 'Mercenary', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1', previewPicture: 'portraitR_cahara' },
-            { id: 'knight', name: 'Caballero', nameEn: 'Knight', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1', previewPicture: 'portraitR_darce' },
-            { id: 'outlander', name: 'Forastero', nameEn: 'Outlander', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1', previewPicture: 'portraitR_ragn' },
-            { id: 'girl', name: 'Niña', nameEn: 'Girl', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle', previewPicture: 'portraitR_girl' },
-            { id: 'legarde', name: "Le'garde", nameEn: "Le'garde", face: 'Actor2', faceIndex: 0, sprite: 'captain', battlerName: 'captain1_1', previewPicture: 'portraitR_legarde' },
-            { id: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'intro_moonless1' },
-            { id: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'portraitR_nashrah' },
-            { id: 'demon_child', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle' },
-            { id: 'marriage', name: 'Matrimonio', nameEn: 'Marriage', face: 'Actor2', faceIndex: 4, sprite: 'marriage_of_flesh1', battlerName: 'marriage1_1' },
-            { id: 'fusion', name: 'Fusión', nameEn: 'Fusion', face: 'Actor2', faceIndex: 5, sprite: 'marriage_of_flesh2', battlerName: 'fusion1_1' },
-            { id: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'intro_ghoul1' },
-            { id: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'intro_skeleton1' },
+            { id: 'dark_priest', name: 'Sacerdote oscuro', nameEn: 'Dark Priest', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1', previewPicture: 'Actor1_7' },
+            { id: 'mercenary', name: 'Mercenario', nameEn: 'Mercenary', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1', previewPicture: 'Actor1_1' },
+            { id: 'knight', name: 'Caballero', nameEn: 'Knight', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1', previewPicture: 'Actor1_3' },
+            { id: 'outlander', name: 'Forastero', nameEn: 'Outlander', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1', previewPicture: 'Actor1_8' },
+            { id: 'girl', name: 'Niña', nameEn: 'Girl', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle', previewPicture: 'Actor1_4' },
+            { id: 'legarde', name: "Le'garde", nameEn: "Le'garde", face: 'Actor2', faceIndex: 0, sprite: 'captain', battlerName: 'captain1_1', previewPicture: 'Actor2_1' },
+            { id: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'Actor2_2' },
+            { id: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'Actor3_1' },
+            { id: 'demon_child', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle', previewPicture: 'Actor2_4' },
+            { id: 'marriage', name: 'Matrimonio', nameEn: 'Marriage', face: 'Actor2', faceIndex: 4, sprite: 'marriage_of_flesh1', battlerName: 'marriage1_1', previewPicture: 'Actor2_5' },
+            { id: 'fusion', name: 'Fusión', nameEn: 'Fusion', face: 'Actor2', faceIndex: 5, sprite: 'marriage_of_flesh2', battlerName: 'fusion1_1', previewPicture: 'Actor2_6' },
+            { id: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'Actor1_2' },
+            { id: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'Actor2_8' },
             { id: 'marcoh', name: 'Marcoh', nameEn: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1', previewPicture: 'Marcoh_faces_7' }
         ],
 
