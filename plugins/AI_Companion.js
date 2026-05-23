@@ -4843,13 +4843,7 @@ Reply with ONLY the category name, nothing else.`;
                 normalized.dialog = this._generateQuickDialog(normalized);
                 return normalized;
             }
-	            if (normalizedAction === 'guard' && kbEnemy && kbEnemy.coinFlipTurn && !this._isCoinFlipThreatActive(enemy, kbEnemy, battleState.turn_number)) {
-	                normalized.action = 'Atacar';
-	                normalized.limb = this._pickBestAliveLimb(enemy);
-	                normalized.reasoning = 'No active coin flip this turn; attacking instead of wasting a defend turn.';
-	                normalized.dialog = this._generateQuickDialog(normalized);
-	                AIState.currentStrategy = null;
-	            } else if (normalizedAction !== 'attack') {
+	            if (normalizedAction !== 'attack') {
 	                return normalized;
             }
 
@@ -5909,22 +5903,13 @@ Respond ONLY with this JSON:
         }
 
         static _getFallbackDecision() {
-            // When all models fail, at least ATTACK instead of wasting a turn defending
-            let targetName = 'unknown';
-            let limbName = null;
-            try {
-                const enemies = $gameTroop.members().filter(e => e.isAlive());
-                if (enemies.length > 0) {
-                    targetName = enemies[0].name().replace(/\s*\[.*?\]\s*$/, '').trim();
-                }
-            } catch (e) { /* troop may not be ready */ }
             const es = Config.language === 'es';
             return {
-                action: 'Atacar',
-                target: targetName,
+                action: 'Defenderse',
+                target: null,
                 limb: null,
-                reasoning: 'Fallback: all AI models unavailable, attacking by default',
-                dialog: es ? '¡No puedo pensar ahora, ataco!' : "Can't think straight, just attacking!"
+                reasoning: 'Fallback: no AI decision available, taking a defensive action.',
+                dialog: es ? 'No puedo pensar claro. Me cubro.' : "Can't think clearly. Guarding."
             };
         }
 
@@ -16258,6 +16243,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             lastMoveLogAt: 0,
             lastBlockedLogAt: 0,
             lastScanLogAt: 0,
+            pendingDecision: false,
+            lastRawLocalContent: '',
+            lastLocalUsage: null,
             previousMoveSpeed: null,
             stopReason: ''
         },
@@ -16293,6 +16281,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastMoveLogAt = 0;
             this._state.lastBlockedLogAt = 0;
             this._state.lastScanLogAt = 0;
+            this._state.pendingDecision = false;
+            this._state.lastRawLocalContent = '';
+            this._state.lastLocalUsage = null;
             this._state.stopReason = reason || '';
         },
 
@@ -16324,6 +16315,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.lastPositionAt = 0;
             this._state.noProgressCount = 0;
             this._state.lastUiAdvanceAt = 0;
+            this._state.pendingDecision = false;
             this._log('map_transfer', {
                 action: 'MAP_TRANSFER',
                 eventId: null,
@@ -16364,14 +16356,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 return;
             }
             if (this._maintainMovement()) return;
+            if (this._state.pendingDecision) return;
 
             const now = Date.now();
             const tickMs = Math.max(1000, Number(Config.autopilotTickSeconds || 3) * 1000);
             if (now - this._state.lastDecisionAt < tickMs) return;
             this._state.lastDecisionAt = now;
-            const decision = this._decide();
-            this._applyDecision(decision);
-            this._log('decision', decision, decision && decision.reason);
+            const snapshot = this._snapshot();
+            this._requestDecision(snapshot);
         },
 
         _snapshot() {
@@ -16423,153 +16415,207 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             this._state.previousMoveSpeed = null;
         },
 
-        _decide() {
-            const snap = this._snapshot();
-            const threat = this._nearestThreat(snap, 2);
-            if (threat) {
-                const point = this._findSafePoint(snap, threat);
-                if (point) return { action: 'MOVE', point, reason: 'evade nearby threat: ' + (threat.label || threat.type) };
-                return { action: 'HOLD', reason: 'threat nearby and no safe tile found' };
+        _requestDecision(snap) {
+            if (!snap) return;
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) {
+                const decision = { action: 'HOLD', reason: 'no local model configured', _autopilotSource: 'no_model' };
+                this._applyDecision(decision);
+                this._log('decision', decision, decision.reason);
+                return;
             }
-
-            const target = this._bestTarget(snap);
-            if (target) {
-                if (target.distance <= 1 || this._atApproach(target)) {
-                    return { action: 'INTERACT', eventId: target.eventId, reason: 'test interaction with ' + (target.label || target.type) };
+            if (LocalRequestQueue.isBusy()) {
+                const decision = { action: 'HOLD', reason: 'local model busy', _autopilotSource: 'local_busy' };
+                this._applyDecision(decision);
+                this._log('decision', decision, decision.reason);
+                return;
+            }
+            this._state.pendingDecision = true;
+            this._state.lastRawLocalContent = '';
+            this._state.lastLocalUsage = null;
+            const started = Date.now();
+            const prompt = this._buildDecisionPrompt(snap);
+            LocalRequestQueue.run('autopilot_goal', () => {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 9000);
+                return fetch(Config.getLocalEndpoint(), {
+                    method: 'POST',
+                    headers: Config.getLocalHeaders(),
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: Config.getAutonomyModel(),
+                        messages: [
+                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+                            { role: 'user', content: prompt }
+                        ],
+                        temperature: 1.0,
+                        top_p: 0.95,
+                        top_k: 64,
+                        max_tokens: 100,
+                        enable_thinking: false,
+                        stop: ['<turn|>']
+                    })
+                }).finally(() => clearTimeout(timer));
+            }, { skipIfBusy: true, drainMs: 2000 }).then(response => {
+                if (!this.isEnabled() || !this.canRunMap()) return;
+                if (!response || !response.ok) {
+                    const decision = { action: 'HOLD', reason: response ? 'local http error ' + response.status : 'no local response', _autopilotSource: 'llm_http_error' };
+                    this._applyDecision(decision);
+                    this._log('decision', decision, decision.reason);
+                    return;
                 }
-                return {
-                    action: 'MOVE_TO_EVENT',
-                    eventId: target.eventId,
-                    point: this._approachPoint(target),
-                    reason: 'move toward ' + (target.label || target.type)
-                };
-            }
-
-            const progressTarget = this._bestProgressTarget(snap);
-            if (progressTarget) {
-                if (progressTarget.distance <= 1 || this._atApproach(progressTarget)) {
-                    return { action: 'INTERACT', eventId: progressTarget.eventId, reason: 'use progress exit to ' + (progressTarget.transferMapName || progressTarget.label || 'next area') };
+                return response.json().then(data => {
+                    if (!this.isEnabled() || !this.canRunMap()) return;
+                    this._state.lastLocalUsage = LLMStats.extract(data, Date.now() - started);
+                    this._state.lastRawLocalContent = String(
+                        data &&
+                        data.choices &&
+                        data.choices[0] &&
+                        data.choices[0].message &&
+                        data.choices[0].message.content
+                            ? data.choices[0].message.content
+                            : ''
+                    );
+                    if (this._state.lastRawLocalContent) Debug.log('[Autopilot LLM]', this._state.lastRawLocalContent);
+                    const parsed = GeminiAPIHandler._parseResponse(data);
+                    const decision = this._normalizeLlmDecision(snap, parsed);
+                    this._applyDecision(decision);
+                    this._log('decision', decision, decision.reason || '');
+                });
+            }).catch(error => {
+                if (!(error && /local busy/i.test(String(error.message || '')))) {
+                    Debug.warn('[Autopilot] LLM goal failed:', error && error.message ? error.message : error);
                 }
-                return {
-                    action: 'MOVE_TO_EVENT',
-                    eventId: progressTarget.eventId,
-                    point: this._approachPoint(progressTarget),
-                    reason: 'move toward progress exit ' + (progressTarget.transferMapName || progressTarget.label || '')
+                if (!this.isEnabled()) return;
+                const decision = {
+                    action: 'HOLD',
+                    reason: error && (error.name === 'AbortError' || /aborted/i.test(String(error.message || ''))) ? 'local model timed out' : 'local model failed',
+                    _autopilotSource: 'llm_error'
                 };
-            }
-
-            const frontier = this._bestFrontier(snap);
-            if (frontier) return { action: 'MOVE', point: { x: frontier.x, y: frontier.y }, frontierKey: frontier.key, reason: 'explore nearest frontier' };
-            const backtrack = this._deadEndBacktrackTarget(snap);
-            if (backtrack) return backtrack;
-            return { action: 'HOLD', reason: 'no target or frontier found' };
+                this._applyDecision(decision);
+                this._log('decision', decision, decision.reason);
+            }).finally(() => {
+                this._state.pendingDecision = false;
+            });
         },
 
-        _bestFrontier(snap) {
-            const now = Date.now();
-            const attempted = this._state.attemptedFrontiers || {};
-            const blocked = this._state.blockedPoints || {};
-            return (snap.frontiers || [])
-                .map(point => Object.assign({}, point, { key: snap.mapId + ':' + point.x + ':' + point.y }))
-                .filter(point => point &&
-                    point.distance > 1 &&
-                    (!attempted[point.key] || attempted[point.key] <= now) &&
-                    (!blocked[point.key] || blocked[point.key] <= now) &&
-                    this._canReachPoint(point.x, point.y, 96))
-                .sort((a, b) => a.distance - b.distance)[0] || null;
-        },
-
-        _deadEndBacktrackTarget(snap) {
-            if (!snap || !snap.player) return null;
-            const key = String(snap.mapId) + ':' + snap.player.x + ':' + snap.player.y;
-            if (this._state.lastHoldKey === key) this._state.holdCount = (this._state.holdCount || 0) + 1;
-            else {
-                this._state.lastHoldKey = key;
-                this._state.holdCount = 1;
-            }
-            if (this._state.holdCount < 4) return null;
-            this._state.reverseTransferCooldowns = {};
-            const exits = (snap.nearby || [])
-                .filter(item => item && item.type === 'door' && item.transferMapId != null && item.eventId != null && this._canReachApproach(item))
-                .sort((a, b) => (a.distance || 999) - (b.distance || 999));
-            const exit = exits[0];
-            if (!exit) return null;
-            if (exit.distance <= 1 || this._atApproach(exit)) {
-                return { action: 'INTERACT', eventId: exit.eventId, reason: 'dead-end at entrance; backtracking through reachable exit' };
-            }
-            return {
-                action: 'MOVE_TO_EVENT',
-                eventId: exit.eventId,
-                point: this._approachPoint(exit),
-                reason: 'dead-end at entrance; move to backtrack exit'
+        _buildDecisionPrompt(snap) {
+            const eventOptions = this._llmEventOptions(snap);
+            const frontierOptions = this._llmFrontierOptions(snap);
+            const state = {
+                mapId: snap.mapId,
+                mapName: snap.mapName,
+                player: snap.player,
+                hpPct: snap.hpPct,
+                visitedMaps: this._state.visitedMaps || {},
+                recentBlockedEvents: this._state.blockedEvents || {},
+                recentBlockedPoints: this._state.blockedPoints || {},
+                events: eventOptions,
+                frontiers: frontierOptions,
+                visibleThreats: (snap.nearby || []).filter(item => item.type === 'enemy' || item.type === 'trap' || item.type === 'hazard').slice(0, 8).map(item => ({
+                    eventId: item.eventId,
+                    label: item.label,
+                    type: item.type,
+                    subtype: item.subtype,
+                    distance: item.distance,
+                    direction: item.direction
+                }))
             };
+            return [
+                'You are controlling the player character in Fear & Hunger for an autonomous playtest.',
+                'You decide the next goal. Code will only execute and validate your selected goal.',
+                'Return ONLY JSON. Do not explain outside JSON.',
+                'Allowed actions:',
+                '- HOLD: wait in place.',
+                '- MOVE_TO_EVENT: move to a listed eventId.',
+                '- INTERACT: interact with a listed eventId only if adjacent/reached.',
+                '- MOVE_FRONTIER: move to a listed frontierIndex.',
+                'Choose useful progress, nearby loot, doors, NPCs, or safe exploration based only on listed data.',
+                'Do not choose enemies/traps/hazards as events. If danger is too close, choose HOLD or a safer frontier.',
+                'Do not repeat recently blocked event IDs or points.',
+                'Output schema: {"action":"HOLD|MOVE_TO_EVENT|INTERACT|MOVE_FRONTIER","eventId":number|null,"frontierIndex":number|null,"reason":"short reason"}',
+                '',
+                'STATE:',
+                JSON.stringify(state)
+            ].join('\n');
         },
 
-        _nearestThreat(snap, maxDistance) {
-            const limit = maxDistance || 2;
-            return (snap.nearby || [])
-                .filter(item => item &&
-                    item.type === 'enemy' &&
-                    !(AutonomySystem && AutonomySystem._isFalseThreat && AutonomySystem._isFalseThreat(item)) &&
-                    item.distance <= limit)
-                .sort((a, b) => a.distance - b.distance)[0] || null;
-        },
-
-        _bestTarget(snap) {
+        _llmEventOptions(snap) {
             const cooldown = AutonomySystem && AutonomySystem._isEventOnCooldown ? AutonomySystem._isEventOnCooldown.bind(AutonomySystem) : () => false;
             const searched = AutonomySystem && AutonomySystem._isEventSearched ? AutonomySystem._isEventSearched.bind(AutonomySystem) : () => false;
             const blocked = this._state.blockedEvents || {};
             const now = Date.now();
-            const score = item => {
-                if (item.type === 'loot') return 5 + item.distance;
-                if (item.type === 'container') return 10 + item.distance;
-                if (item.type === 'door') return 20 + item.distance + this._transferVisitPenalty(item);
-                if (item.type === 'npc') return 35 + item.distance;
-                return 99 + item.distance;
-            };
             return (snap.nearby || [])
                 .filter(item => item &&
                     item.eventId != null &&
-                    item.distance <= 6 &&
+                    item.distance <= 7 &&
                     !cooldown(item.eventId) &&
                     !searched(item.eventId) &&
                     (!blocked[item.eventId] || blocked[item.eventId] <= now) &&
                     (item.type === 'loot' || item.type === 'container' || item.type === 'door' || item.type === 'npc') &&
                     !(item.type === 'door' && this._isReverseTransferTarget(item)) &&
                     this._canReachApproach(item))
-                .sort((a, b) => score(a) - score(b))[0] || null;
+                .slice(0, 12)
+                .map(item => ({
+                    eventId: item.eventId,
+                    label: item.label,
+                    type: item.type,
+                    subtype: item.subtype,
+                    distance: item.distance,
+                    direction: item.direction,
+                    transferMapId: item.transferMapId,
+                    transferMapName: item.transferMapName,
+                    hint: item.textHints || ''
+                }));
         },
 
-        _bestProgressTarget(snap) {
-            if (!$gameMap || !EnvironmentScanner || !EnvironmentScanner._eventSnapshot) return null;
-            const cooldown = AutonomySystem && AutonomySystem._isEventOnCooldown ? AutonomySystem._isEventOnCooldown.bind(AutonomySystem) : () => false;
-            const searched = AutonomySystem && AutonomySystem._isEventSearched ? AutonomySystem._isEventSearched.bind(AutonomySystem) : () => false;
-            const blocked = this._state.blockedEvents || {};
+        _llmFrontierOptions(snap) {
             const now = Date.now();
-            const currentMapId = $gameMap.mapId();
-            const origin = snap && snap.player ? snap.player : $gamePlayer;
-            return ($gameMap.events ? $gameMap.events() : [])
-                .map(event => {
-                    if (!event || (event.isErased && event.isErased())) return null;
-                    const item = EnvironmentScanner._eventSnapshot(event, $gamePlayer);
-                    if (!item || (item.eventId == null && item.id == null)) return null;
-                    if (item.transferMapId == null || Number(item.transferMapId) === Number(currentMapId)) return null;
-                    return Object.assign({}, item, {
-                        eventId: item.eventId != null ? item.eventId : item.id,
-                        distance: Math.abs(origin.x - item.x) + Math.abs(origin.y - item.y)
-                    });
-                })
-                .filter(item => item &&
-                    !cooldown(item.eventId) &&
-                    !searched(item.eventId) &&
-                    (!blocked[item.eventId] || blocked[item.eventId] <= now) &&
-                    !this._isReverseTransferTarget(item) &&
-                    this._canReachApproach(item))
-                .sort((a, b) => {
-                    const da = (a.distance || 999) + this._transferVisitPenalty(a);
-                    const db = (b.distance || 999) + this._transferVisitPenalty(b);
-                    return da - db;
-                })[0] || null;
+            const attempted = this._state.attemptedFrontiers || {};
+            const blocked = this._state.blockedPoints || {};
+            return (snap.frontiers || [])
+                .map((point, index) => Object.assign({}, point, { index, key: snap.mapId + ':' + point.x + ':' + point.y }))
+                .filter(point => point &&
+                    point.distance > 1 &&
+                    (!attempted[point.key] || attempted[point.key] <= now) &&
+                    (!blocked[point.key] || blocked[point.key] <= now) &&
+                    this._canReachPoint(point.x, point.y, 96))
+                .slice(0, 6)
+                .map(point => ({ index: point.index, x: point.x, y: point.y, distance: point.distance }));
+        },
+
+        _normalizeLlmDecision(snap, raw) {
+            if (!raw || !raw.action) return { action: 'HOLD', reason: 'llm returned no usable goal', _autopilotSource: 'llm_parse_fallback' };
+            const action = String(raw.action || '').toUpperCase();
+            const reason = String(raw.reason || raw.reasoning || 'llm goal').slice(0, 160);
+            if (action === 'HOLD') return { action: 'HOLD', reason, _autopilotSource: 'local_llm' };
+            if (action === 'MOVE_FRONTIER') {
+                const idx = Number(raw.frontierIndex);
+                const frontier = this._llmFrontierOptions(snap).find(point => point.index === idx);
+                if (!frontier) return { action: 'HOLD', reason: 'llm chose unavailable frontier', _autopilotSource: 'llm_invalid_frontier' };
+                return {
+                    action: 'MOVE',
+                    point: { x: frontier.x, y: frontier.y },
+                    frontierKey: snap.mapId + ':' + frontier.x + ':' + frontier.y,
+                    reason,
+                    _autopilotSource: 'local_llm'
+                };
+            }
+            if (action === 'MOVE_TO_EVENT' || action === 'INTERACT') {
+                const eventId = Number(raw.eventId);
+                const target = this._llmEventOptions(snap).find(item => Number(item.eventId) === eventId);
+                if (!target) return { action: 'HOLD', reason: 'llm chose unavailable event', _autopilotSource: 'llm_invalid_event' };
+                if (target.distance <= 1 || this._atApproach(target)) {
+                    return { action: 'INTERACT', eventId: target.eventId, reason, _autopilotSource: 'local_llm' };
+                }
+                return {
+                    action: 'MOVE_TO_EVENT',
+                    eventId: target.eventId,
+                    point: this._approachPoint(target),
+                    reason,
+                    _autopilotSource: 'local_llm'
+                };
+            }
+            return { action: 'HOLD', reason: 'llm chose invalid action', _autopilotSource: 'llm_invalid_action' };
         },
 
         _transferKey(fromMapId, toMapId) {
@@ -16588,13 +16634,6 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return true;
         },
 
-        _transferVisitPenalty(item) {
-            if (!item || item.transferMapId == null) return 0;
-            const visited = this._state.visitedMaps || {};
-            const count = Number(visited[Number(item.transferMapId)] || 0);
-            return count * 25;
-        },
-
         _approachPoint(target) {
             if (!target) return null;
             if (target.approachX != null && target.approachY != null) return { x: target.approachX, y: target.approachY, faceDirection: target.faceDirection || null };
@@ -16610,34 +16649,6 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const point = this._approachPoint(target);
             if (!point) return false;
             return this._canReachPoint(point.x, point.y, 96);
-        },
-
-        _findSafePoint(snap, threat) {
-            const origin = snap.player;
-            let best = null;
-            for (let radius = 1; radius <= 4; radius++) {
-                for (let dx = -radius; dx <= radius; dx++) {
-                    for (let dy = -radius; dy <= radius; dy++) {
-                        if (Math.abs(dx) + Math.abs(dy) !== radius) continue;
-                        const x = origin.x + dx;
-                        const y = origin.y + dy;
-                        if (!$gameMap.isValid(x, y)) continue;
-                        if (!EnvironmentScanner._tileStandable(x, y)) continue;
-                        if ($gameMap.eventsXyNt && $gameMap.eventsXyNt(x, y).some(e => e && e.isNormalPriority && e.isNormalPriority())) continue;
-                        if (this._isStepBlockedByEvent(x, y, null)) continue;
-                        const blockedKey = ($gameMap ? $gameMap.mapId() : 0) + ':' + x + ':' + y;
-                        if (this._state.blockedPoints && this._state.blockedPoints[blockedKey] && this._state.blockedPoints[blockedKey] > Date.now()) continue;
-                        const dir = $gamePlayer.findDirectionTo ? $gamePlayer.findDirectionTo(x, y) : 0;
-                        if (dir <= 0) continue;
-                        if (!this._canReachPoint(x, y, 64)) continue;
-                        const threatDist = Math.abs(x - threat.x) + Math.abs(y - threat.y);
-                        const travel = Math.abs(x - origin.x) + Math.abs(y - origin.y);
-                        const score = threatDist * 10 - travel;
-                        if (!best || score > best.score) best = { x, y, score };
-                    }
-                }
-            }
-            return best ? { x: best.x, y: best.y } : null;
         },
 
         _applyDecision(decision) {
@@ -16913,19 +16924,120 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         battleDecision(actor, battleState) {
             if (!this.isEnabled() || !actor || !battleState) return null;
-            const enemy = (battleState.enemies || []).find(e => e && e.alive);
-            if (!enemy) return { action: 'Defenderse', target: null, limb: null, reasoning: 'no live enemy', dialog: '', strategy: 'hold' };
-            const decision = {
-                action: 'Atacar',
-                target: enemy.name,
+            const decision = this._requestBattleDecisionSync(actor, battleState);
+            this._log('battle_decision', decision, actor.name ? actor.name() : 'actor');
+            return decision;
+        },
+
+        _requestBattleDecisionSync(actor, battleState) {
+            const actorName = actor && actor.name ? actor.name() : 'actor';
+            const hold = reason => ({
+                action: 'Defenderse',
+                target: null,
                 limb: null,
-                reasoning: 'autopilot delegates target limb to known enemy policy',
+                reasoning: reason || 'No valid LLM battle decision.',
                 dialog: '',
-                strategy: 'use known enemy limb priority'
-            };
-            const normalized = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
-            this._log('battle_decision', normalized, actor.name ? actor.name() : 'actor');
-            return normalized;
+                strategy: 'hold'
+            });
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return hold('No local model configured for autopilot battle.');
+            if (LocalRequestQueue.isBusy()) return hold('Local model busy; defending.');
+            const prompt = this._buildBattleDecisionPrompt(actor, battleState);
+            try {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', Config.getLocalEndpoint(), false);
+                const headers = Config.getLocalHeaders();
+                for (const key in headers) xhr.setRequestHeader(key, headers[key]);
+                const started = performance.now();
+                LocalRequestQueue.enterSync('autopilot_battle');
+                try {
+                    xhr.send(JSON.stringify({
+                        model: Config.getAutonomyModel(),
+                        messages: [
+                            { role: 'system', content: 'Output raw JSON only. No markdown. No analysis.' },
+                            { role: 'user', content: prompt }
+                        ],
+                        temperature: 1.0,
+                        top_p: 0.95,
+                        top_k: 64,
+                        max_tokens: 100,
+                        enable_thinking: false,
+                        stop: ['<turn|>']
+                    }));
+                } finally {
+                    LocalRequestQueue.leaveSync();
+                }
+                if (xhr.status !== 200) return hold('Local battle model HTTP ' + xhr.status + '; defending.');
+                const data = JSON.parse(xhr.responseText);
+                this._state.lastLocalUsage = LLMStats.extract(data, Math.round(performance.now() - started));
+                this._state.lastRawLocalContent = String(
+                    data &&
+                    data.choices &&
+                    data.choices[0] &&
+                    data.choices[0].message &&
+                    data.choices[0].message.content
+                        ? data.choices[0].message.content
+                        : ''
+                );
+                if (this._state.lastRawLocalContent) Debug.log('[Autopilot Battle LLM]', this._state.lastRawLocalContent);
+                const parsed = GeminiAPIHandler._parseResponse(data);
+                if (!parsed || !parsed.action) return hold('Local battle model returned no valid action.');
+                let normalized = ActionExecutor.normalizeDecisionForBattle(parsed, battleState);
+                if (!normalized || !normalized.action) return hold('Normalized battle decision was invalid.');
+                normalized.reasoning = normalized.reasoning || ('LLM battle decision for ' + actorName);
+                normalized._autopilotSource = 'local_llm';
+                return normalized;
+            } catch (e) {
+                Debug.warn('[Autopilot] battle LLM failed:', e && e.message ? e.message : e);
+                return hold('Local battle model failed; defending.');
+            }
+        },
+
+        _buildBattleDecisionPrompt(actor, battleState) {
+            const actorName = actor && actor.name ? actor.name() : 'actor';
+            const states = actor && actor.states ? actor.states().map(s => s.name).filter(Boolean) : [];
+            const skills = actor && actor.skills ? actor.skills().map(s => s.name).slice(0, 10) : [];
+            const items = $gameParty && $gameParty.items ? $gameParty.items().filter(item => item && $gameParty.numItems(item) > 0).map(item => item.name).slice(0, 12) : [];
+            const enemies = (battleState.enemies || []).filter(e => e && e.alive).map(enemy => ({
+                name: enemy.name,
+                hp: enemy.hp,
+                max_hp: enemy.max_hp,
+                limbs: Object.entries(enemy.limbs || {}).filter(([, limb]) => limb && limb.alive).map(([key]) => key),
+                knowledge: (typeof FearHungerKB !== 'undefined' && KBLookupCache && KBLookupCache.enemyHints) ? KBLookupCache.enemyHints(enemy.name) : null
+            }));
+            const allies = (battleState.allies || []).map(ally => ({
+                name: ally.name,
+                hp: ally.hp,
+                max_hp: ally.max_hp,
+                states: ally.states || []
+            }));
+            return [
+                'You control one actor in a Fear & Hunger battle.',
+                'You decide this actor turn. Code will only execute/validate your selected action.',
+                'Return ONLY JSON.',
+                'Use exact live enemy names and live limb names from STATE.',
+                'You may use exact item names from STATE if tactically worth the turn.',
+                'Defend only if coin flip risk, survival risk, or no good action.',
+                'Output schema: {"action":"Atacar|Defenderse|skill_name|item_name","target":"enemy_or_ally_name|null","limb":"live_limb|null","reasoning":"short reason","dialog":"optional short line","strategy":"short plan"}',
+                '',
+                'STATE:',
+                JSON.stringify({
+                    actor: {
+                        name: actorName,
+                        hp: actor ? actor.hp : null,
+                        max_hp: actor ? actor.mhp : null,
+                        mp: actor ? actor.mp : null,
+                        max_mp: actor ? actor.mmp : null,
+                        states,
+                        skills
+                    },
+                    turn: battleState.turn_number,
+                    enemies,
+                    allies,
+                    partyItems: items,
+                    recentActions: AIState.combatActionHistory || [],
+                    playerActions: AIState.playerActionHistory || []
+                })
+            ].join('\n');
         },
 
         _log(kind, decision, reason) {
@@ -16934,11 +17046,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     kind,
                     enabled: Config.autopilotEnabled,
                     map_id: $gameMap ? $gameMap.mapId() : null,
-                    map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
-                    action: decision ? decision.action : null,
-                    target: decision ? decision.target : null,
-                    limb: decision ? decision.limb : null,
-                    event_id: decision && decision.eventId != null ? decision.eventId : null,
+                map_name: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : null,
+                action: decision ? decision.action : null,
+                target: decision ? decision.target : null,
+                limb: decision ? decision.limb : null,
+                source: decision && decision._autopilotSource ? decision._autopilotSource : null,
+                event_id: decision && decision.eventId != null ? decision.eventId : null,
                     target_point: decision && decision.point ? decision.point : null,
                     scene: SceneManager._scene && SceneManager._scene.constructor ? SceneManager._scene.constructor.name : null,
                     player: $gamePlayer ? {
@@ -16948,8 +17061,11 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         moving: !!($gamePlayer.isMoving && $gamePlayer.isMoving())
                     } : null,
                     message_busy: !!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()),
-                    reason: reason || (decision && decision.reason) || '',
-                    state: Object.assign({}, this._state, { visitedPoints: undefined })
+                reason: reason || (decision && decision.reason) || '',
+                raw_response_content: decision && decision._autopilotSource === 'local_llm' ? (this._state.lastRawLocalContent || null) : null,
+                llm_usage: decision && decision._autopilotSource === 'local_llm' ? (this._state.lastLocalUsage || null) : null,
+                tokens_per_second: decision && decision._autopilotSource === 'local_llm' && this._state.lastLocalUsage ? this._state.lastLocalUsage.tokens_per_second : null,
+                state: Object.assign({}, this._state, { visitedPoints: undefined })
                 });
                 Debug.log('[Autopilot]', kind, {
 	                    action: decision ? decision.action : null,
@@ -16957,6 +17073,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 	                    limb: decision ? decision.limb : null,
 	                    eventId: decision && decision.eventId != null ? decision.eventId : null,
                     point: decision && decision.point ? decision.point : null,
+                    source: decision && decision._autopilotSource ? decision._autopilotSource : null,
                     reason: reason || (decision && decision.reason) || ''
                 });
             } catch (e) {
