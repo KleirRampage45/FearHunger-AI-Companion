@@ -16568,6 +16568,11 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     subtype: item.subtype,
                     distance: item.distance,
                     direction: item.direction,
+                    x: item.x,
+                    y: item.y,
+                    approachX: item.approachX,
+                    approachY: item.approachY,
+                    faceDirection: item.faceDirection,
                     transferMapId: item.transferMapId,
                     transferMapName: item.transferMapName,
                     hint: item.textHints || ''
@@ -16613,10 +16618,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 if (target.distance <= 1 || this._atApproach(target)) {
                     return { action: 'INTERACT', eventId: target.eventId, reason, _autopilotSource: 'local_llm' };
                 }
+                const point = this._approachPoint(target);
+                if (!point || point.x == null || point.y == null) {
+                    return { action: 'HOLD', reason: 'llm target has no reachable approach point', _autopilotSource: 'llm_invalid_point' };
+                }
                 return {
                     action: 'MOVE_TO_EVENT',
                     eventId: target.eventId,
-                    point: this._approachPoint(target),
+                    point,
                     reason,
                     _autopilotSource: 'local_llm'
                 };
@@ -16675,6 +16684,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 return;
             }
             if (decision.action === 'MOVE_TO_EVENT' || decision.action === 'MOVE') {
+                if (!decision.point || decision.point.x == null || decision.point.y == null) {
+                    this._log('decision', { action: 'HOLD', eventId: decision.eventId, _autopilotSource: decision._autopilotSource }, 'invalid move target from LLM');
+                    this._state.mode = 'hold';
+                    this._state.targetPoint = null;
+                    this._state.targetEventId = null;
+                    return;
+                }
                 this._state.holdCount = 0;
                 this._state.mode = 'move';
                 this._state.targetEventId = decision.eventId != null ? decision.eventId : null;
@@ -17231,8 +17247,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     } : null,
                     message_busy: !!($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()),
                 reason: reason || (decision && decision.reason) || '',
-                raw_response_content: decision && decision._autopilotSource === 'local_llm' ? (this._state.lastRawLocalContent || null) : null,
-                llm_usage: decision && decision._autopilotSource === 'local_llm' ? (this._state.lastLocalUsage || null) : null,
+                raw_response_content: decision && /llm/i.test(String(decision._autopilotSource || '')) ? (this._state.lastRawLocalContent || null) : null,
+                llm_usage: decision && /llm/i.test(String(decision._autopilotSource || '')) ? (this._state.lastLocalUsage || null) : null,
                 tokens_per_second: decision && decision._autopilotSource === 'local_llm' && this._state.lastLocalUsage ? this._state.lastLocalUsage.tokens_per_second : null,
                 state: Object.assign({}, this._state, { visitedPoints: undefined })
                 });
