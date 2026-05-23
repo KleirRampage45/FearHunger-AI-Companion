@@ -1518,12 +1518,20 @@
         // Appearance presets (Face, Sprite) - using available bust images
         // face/faceIndex/sprite must match game Actors; battlerName for battle sprite
         appearances: [
-            { id: 'dark_priest', name: 'Sacerdote oscuro', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1' },
-            { id: 'mercenary', name: 'Mercenario', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1' },
-            { id: 'knight', name: 'Caballero', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1' },
-            { id: 'outlander', name: 'Forastero', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1' },
-            { id: 'girl', name: 'Niña', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle' },
-            { id: 'marcoh', name: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1' }
+            { id: 'dark_priest', name: 'Sacerdote oscuro', nameEn: 'Dark Priest', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1', previewPicture: 'portraitR_enki' },
+            { id: 'mercenary', name: 'Mercenario', nameEn: 'Mercenary', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1', previewPicture: 'portraitR_cahara' },
+            { id: 'knight', name: 'Caballero', nameEn: 'Knight', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1', previewPicture: 'portraitR_darce' },
+            { id: 'outlander', name: 'Forastero', nameEn: 'Outlander', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1', previewPicture: 'portraitR_ragn' },
+            { id: 'girl', name: 'Niña', nameEn: 'Girl', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle', previewPicture: 'portraitR_girl' },
+            { id: 'legarde', name: "Le'garde", nameEn: "Le'garde", face: 'Actor2', faceIndex: 0, sprite: 'captain', battlerName: 'captain1_1', previewPicture: 'portraitR_legarde' },
+            { id: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'intro_moonless1' },
+            { id: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'portraitR_nashrah' },
+            { id: 'demon_child', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle' },
+            { id: 'marriage', name: 'Matrimonio', nameEn: 'Marriage', face: 'Actor2', faceIndex: 4, sprite: 'marriage_of_flesh1', battlerName: 'marriage1_1' },
+            { id: 'fusion', name: 'Fusión', nameEn: 'Fusion', face: 'Actor2', faceIndex: 5, sprite: 'marriage_of_flesh2', battlerName: 'fusion1_1' },
+            { id: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'intro_ghoul1' },
+            { id: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'intro_skeleton1' },
+            { id: 'marcoh', name: 'Marcoh', nameEn: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1', previewPicture: 'Marcoh_faces_7' }
         ],
 
         // Personality types — richer descriptions for better AI behavior
@@ -1542,8 +1550,35 @@
         _currentAppearance: localStorage.getItem('AI_Companion_Appearance') || 'dark_priest',
         _currentPersonality: localStorage.getItem('AI_Companion_Personality') || 'tactical',
 
+        assetExists(folder, name) {
+            if (!name) return true;
+            try {
+                if (typeof require !== 'function' || typeof process === 'undefined' || !process.cwd) return true;
+                const fs = require('fs');
+                const path = require('path');
+                const dir = path.join(process.cwd(), 'www', 'img', folder);
+                return fs.existsSync(path.join(dir, `${name}.png`)) || fs.existsSync(path.join(dir, `${name}.rpgmvp`));
+            } catch (e) {
+                return true;
+            }
+        },
+
+        isAppearanceAvailable(preset) {
+            if (!preset) return false;
+            return this.assetExists('characters', preset.sprite)
+                && this.assetExists('sv_actors', preset.battlerName)
+                && this.assetExists('faces', preset.face)
+                && (!preset.previewPicture || this.assetExists('pictures', preset.previewPicture));
+        },
+
+        getAvailableAppearances() {
+            const available = this.appearances.filter(preset => this.isAppearanceAvailable(preset));
+            return available.length > 0 ? available : this.appearances;
+        },
+
         getCurrentAppearance() {
-            return this.appearances.find(a => a.id === this._currentAppearance) || this.appearances[0];
+            const available = this.getAvailableAppearances();
+            return available.find(a => a.id === this._currentAppearance) || available[0];
         },
 
         getCurrentPersonality() {
@@ -1551,7 +1586,12 @@
         },
 
         getCurrentPresetName() {
-            return this.getCurrentAppearance().name;
+            return this.getAppearanceName(this.getCurrentAppearance());
+        },
+
+        getAppearanceName(preset) {
+            const app = preset || this.getCurrentAppearance();
+            return Config.language === 'es' ? app.name : (app.nameEn || app.name);
         },
 
         getCurrentPersonalityName() {
@@ -6848,10 +6888,19 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.create = function () {
         Scene_MenuBase.prototype.create.call(this);
         this._section = 'main';
+        this._lastSectionIndex = { main: 0 };
         this.createHelpWindow();
         this.createStatusWindow();
         this.createCommandWindow();
         this._inputMode = false;
+    };
+
+    Scene_AIConfig.prototype.start = function () {
+        Scene_MenuBase.prototype.start.call(this);
+        if (this._commandWindow) {
+            this._refreshConfigScene();
+            this._restoreSectionCursor();
+        }
     };
 
     Scene_AIConfig.prototype.createHelpWindow = function () {
@@ -6928,9 +6977,13 @@ Respond ONLY with this JSON:
 
     Scene_AIConfig.prototype._refreshConfigScene = function (helpText) {
         if (helpText) this._helpWindow.setText(helpText);
+        const index = this._commandWindow ? this._commandWindow.index() : 0;
         this.refreshStatus();
         this._commandWindow.refresh();
+        const max = this._commandWindow.maxItems ? this._commandWindow.maxItems() : 0;
+        if (max > 0) this._commandWindow.select(Math.max(0, Math.min(index, max - 1)));
         this._commandWindow.activate();
+        if (this._commandWindow.ensureCursorVisible) this._commandWindow.ensureCursorVisible();
         this._commandWindow.updateHelp();
     };
 
@@ -7001,11 +7054,31 @@ Respond ONLY with this JSON:
         this.addWindow(this._commandWindow);
     };
 
+    Scene_AIConfig.prototype._rememberSectionCursor = function () {
+        if (!this._lastSectionIndex) this._lastSectionIndex = {};
+        if (this._commandWindow && this._section) {
+            this._lastSectionIndex[this._section] = Math.max(0, this._commandWindow.index());
+        }
+    };
+
+    Scene_AIConfig.prototype._restoreSectionCursor = function () {
+        if (!this._commandWindow) return;
+        const max = this._commandWindow.maxItems ? this._commandWindow.maxItems() : 0;
+        if (max <= 0) return;
+        const remembered = this._lastSectionIndex && this._lastSectionIndex[this._section] != null
+            ? this._lastSectionIndex[this._section]
+            : 0;
+        this._commandWindow.select(Math.max(0, Math.min(remembered, max - 1)));
+        if (this._commandWindow.ensureCursorVisible) this._commandWindow.ensureCursorVisible();
+        this._commandWindow.updateHelp();
+    };
+
     Scene_AIConfig.prototype._setSection = function(section) {
+        this._rememberSectionCursor();
         this._section = section || 'main';
         SoundManager.playOk();
         this._refreshConfigScene();
-        if (this._commandWindow && this._commandWindow.select) this._commandWindow.select(0);
+        this._restoreSectionCursor();
     };
 
     Scene_AIConfig.prototype.commandSectionStatus = function () { this._setSection('status'); };
@@ -7025,6 +7098,7 @@ Respond ONLY with this JSON:
         this.popScene();
     };
     Scene_AIConfig.prototype.commandOpenLog = function () {
+        this._rememberSectionCursor();
         SoundManager.playOk();
         SceneManager.push(Scene_AIDebugLog);
     };
@@ -7220,12 +7294,9 @@ Respond ONLY with this JSON:
 
     // Appearance cycling handler
     Scene_AIConfig.prototype.commandSetAppearance = function () {
-        const presets = CharacterPresets.appearances;
-        const currentIndex = presets.findIndex(p => p.id === CharacterPresets._currentAppearance);
-        const nextIndex = (currentIndex + 1) % presets.length;
-        CharacterPresets.setAppearance(presets[nextIndex].id);
+        this._rememberSectionCursor();
         SoundManager.playOk();
-        this._refreshConfigScene(`Appearance: ${presets[nextIndex].name}`);
+        SceneManager.push(Scene_AIAppearanceSelect);
     };
 
     // Personality cycling handler
@@ -7840,6 +7911,157 @@ Respond ONLY with this JSON:
         this.active = true;
     };
 
+    //=========================================================================
+    // Appearance Select Scene
+    //=========================================================================
+    function Scene_AIAppearanceSelect() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Scene_AIAppearanceSelect.prototype = Object.create(Scene_MenuBase.prototype);
+    Scene_AIAppearanceSelect.prototype.constructor = Scene_AIAppearanceSelect;
+
+    Scene_AIAppearanceSelect.prototype.initialize = function () {
+        Scene_MenuBase.prototype.initialize.call(this);
+    };
+
+    Scene_AIAppearanceSelect.prototype.create = function () {
+        Scene_MenuBase.prototype.create.call(this);
+        this.createHelpWindow();
+        this.createAppearanceWindow();
+    };
+
+    Scene_AIAppearanceSelect.prototype.createHelpWindow = function () {
+        this._helpWindow = new Window_Help(2);
+        this._helpWindow.setText(Config.language === 'es'
+            ? 'Elige apariencia compatible\nSolo aparecen presets con sprite de mapa y battler lateral conocidos.'
+            : 'Choose compatible appearance\nOnly presets with known map sprite and side-view battler are listed.');
+        this.addWindow(this._helpWindow);
+    };
+
+    Scene_AIAppearanceSelect.prototype.createAppearanceWindow = function () {
+        const wy = this._helpWindow.height;
+        this._appearanceWindow = new Window_AIAppearanceGrid(0, wy, Graphics.boxWidth, Graphics.boxHeight - wy);
+        this._appearanceWindow.setHandler('ok', this.commandSelectAppearance.bind(this));
+        this._appearanceWindow.setHandler('cancel', this.popScene.bind(this));
+        this.addWindow(this._appearanceWindow);
+        const currentIndex = CharacterPresets.getAvailableAppearances().findIndex(p => p.id === CharacterPresets._currentAppearance);
+        this._appearanceWindow.select(Math.max(0, currentIndex));
+        this._appearanceWindow.activate();
+    };
+
+    Scene_AIAppearanceSelect.prototype.commandSelectAppearance = function () {
+        const preset = this._appearanceWindow.currentPreset();
+        if (!preset) {
+            SoundManager.playBuzzer();
+            this._appearanceWindow.activate();
+            return;
+        }
+        CharacterPresets.setAppearance(preset.id);
+        SoundManager.playOk();
+        this.popScene();
+    };
+
+    function Window_AIAppearanceGrid() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Window_AIAppearanceGrid.prototype = Object.create(Window_Selectable.prototype);
+    Window_AIAppearanceGrid.prototype.constructor = Window_AIAppearanceGrid;
+
+    Window_AIAppearanceGrid.prototype.initialize = function (x, y, width, height) {
+        Window_Selectable.prototype.initialize.call(this, x, y, width, height);
+        this.refresh();
+    };
+
+    Window_AIAppearanceGrid.prototype.maxItems = function () {
+        return CharacterPresets.getAvailableAppearances().length;
+    };
+
+    Window_AIAppearanceGrid.prototype.maxCols = function () {
+        return Graphics.boxWidth >= 760 ? 4 : 3;
+    };
+
+    Window_AIAppearanceGrid.prototype.itemHeight = function () {
+        return 160;
+    };
+
+    Window_AIAppearanceGrid.prototype.spacing = function () {
+        return 12;
+    };
+
+    Window_AIAppearanceGrid.prototype.currentPreset = function () {
+        return CharacterPresets.getAvailableAppearances()[this.index()];
+    };
+
+    Window_AIAppearanceGrid.prototype.refresh = function () {
+        this.contents.clear();
+        this.drawAllItems();
+    };
+
+    Window_AIAppearanceGrid.prototype.drawItem = function (index) {
+        const preset = CharacterPresets.getAvailableAppearances()[index];
+        if (!preset) return;
+        const rect = this.itemRect(index);
+        const selected = preset.id === CharacterPresets._currentAppearance;
+        const label = CharacterPresets.getAppearanceName(preset);
+        const imageX = rect.x + 10;
+        const imageY = rect.y + 8;
+        const imageW = Math.max(80, rect.width - 20);
+        const imageH = 98;
+        this.changePaintOpacity(true);
+        this.drawText(label, rect.x + 8, rect.y + imageH + 16, rect.width - 16, 'center');
+        this.contents.paintOpacity = selected ? 255 : 180;
+        this.drawAppearancePreview(preset, imageX, imageY, imageW, imageH);
+        this.contents.paintOpacity = 255;
+        if (selected) {
+            this.changeTextColor(this.systemColor());
+            this.drawText(Config.language === 'es' ? 'Actual' : 'Current', rect.x + 8, rect.y + imageH + 44, rect.width - 16, 'center');
+            this.resetTextColor();
+        }
+    };
+
+    Window_AIAppearanceGrid.prototype.drawAppearancePreview = function (preset, x, y, width, height) {
+        if (preset.previewPicture) {
+            const bitmap = ImageManager.loadPicture(preset.previewPicture);
+            if (bitmap.isReady()) {
+                this.drawScaledBitmap(bitmap, x, y, width, height);
+            } else {
+                bitmap.addLoadListener(this.refresh.bind(this));
+            }
+            return;
+        }
+        if (preset.face) {
+            const face = ImageManager.loadFace(preset.face);
+            if (face.isReady()) {
+                const pw = Window_Base._faceWidth;
+                const ph = Window_Base._faceHeight;
+                const sx = (preset.faceIndex % 4) * pw;
+                const sy = Math.floor(preset.faceIndex / 4) * ph;
+                const scale = Math.min(width / pw, height / ph);
+                const dw = Math.floor(pw * scale);
+                const dh = Math.floor(ph * scale);
+                const dx = x + Math.floor((width - dw) / 2);
+                const dy = y + Math.floor((height - dh) / 2);
+                this.contents.blt(face, sx, sy, pw, ph, dx, dy, dw, dh);
+            } else {
+                face.addLoadListener(this.refresh.bind(this));
+            }
+        }
+    };
+
+    Window_AIAppearanceGrid.prototype.drawScaledBitmap = function (bitmap, x, y, width, height) {
+        const sw = bitmap.width;
+        const sh = bitmap.height;
+        if (sw <= 0 || sh <= 0) return;
+        const scale = Math.min(width / sw, height / sh);
+        const dw = Math.floor(sw * scale);
+        const dh = Math.floor(sh * scale);
+        const dx = x + Math.floor((width - dw) / 2);
+        const dy = y + Math.floor((height - dh) / 2);
+        this.contents.blt(bitmap, 0, 0, sw, sh, dx, dy, dw, dh);
+    };
+
     // Add to Title Screen instead of Options menu (YEP_OptionsCore is too complex)
     const _Window_TitleCommand_makeCommandList = Window_TitleCommand.prototype.makeCommandList;
     Window_TitleCommand.prototype.makeCommandList = function () {
@@ -7861,6 +8083,7 @@ Respond ONLY with this JSON:
 
     // Expose scene for external access
     window.Scene_AIConfig = Scene_AIConfig;
+    window.Scene_AIAppearanceSelect = Scene_AIAppearanceSelect;
 
     //=========================================================================
     // In-game Debug Log Viewer
