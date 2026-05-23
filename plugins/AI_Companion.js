@@ -17110,22 +17110,23 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         battleDecision(actor, battleState) {
             if (!this.isEnabled() || !actor || !battleState) return null;
             const decision = this._requestBattleDecisionSync(actor, battleState);
-            this._log('battle_decision', decision, actor.name ? actor.name() : 'actor');
+            this._log('battle_decision', decision, decision && decision.reasoning ? decision.reasoning : (actor.name ? actor.name() : 'actor'));
             return decision;
         },
 
         _requestBattleDecisionSync(actor, battleState) {
             const actorName = actor && actor.name ? actor.name() : 'actor';
-            const hold = reason => ({
+            const hold = (reason, source) => ({
                 action: 'Defenderse',
                 target: null,
                 limb: null,
                 reasoning: reason || 'No valid LLM battle decision.',
                 dialog: '',
-                strategy: 'hold'
+                strategy: 'hold',
+                _autopilotSource: source || 'battle_fallback'
             });
-            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return hold('No local model configured for autopilot battle.');
-            if (LocalRequestQueue.isBusy()) return hold('Local model busy; defending.');
+            if (!Config.getLocalEndpoint() || !Config.getAutonomyModel()) return hold('No local model configured for autopilot battle.', 'no_model');
+            if (LocalRequestQueue.isBusy()) return hold('Local model busy; defending.', 'local_busy');
             const prompt = this._buildBattleDecisionPrompt(actor, battleState);
             try {
                 const xhr = new XMLHttpRequest();
@@ -17144,14 +17145,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         temperature: 1.0,
                         top_p: 0.95,
                         top_k: 64,
-                        max_tokens: 100,
+                        max_tokens: 180,
                         enable_thinking: false,
                         stop: ['<turn|>']
                     }));
                 } finally {
                     LocalRequestQueue.leaveSync();
                 }
-                if (xhr.status !== 200) return hold('Local battle model HTTP ' + xhr.status + '; defending.');
+                if (xhr.status !== 200) return hold('Local battle model HTTP ' + xhr.status + '; defending.', 'llm_http_error');
                 const data = JSON.parse(xhr.responseText);
                 this._state.lastLocalUsage = LLMStats.extract(data, Math.round(performance.now() - started));
                 this._state.lastRawLocalContent = String(
@@ -17165,15 +17166,15 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 );
                 if (this._state.lastRawLocalContent) Debug.log('[Autopilot Battle LLM]', this._state.lastRawLocalContent);
                 const parsed = GeminiAPIHandler._parseResponse(data);
-                if (!parsed || !parsed.action) return hold('Local battle model returned no valid action.');
+                if (!parsed || !parsed.action) return hold('Local battle model returned no valid action.', 'llm_parse_fallback');
                 let normalized = ActionExecutor.normalizeDecisionForBattle(parsed, battleState);
-                if (!normalized || !normalized.action) return hold('Normalized battle decision was invalid.');
+                if (!normalized || !normalized.action) return hold('Normalized battle decision was invalid.', 'llm_invalid_action');
                 normalized.reasoning = normalized.reasoning || ('LLM battle decision for ' + actorName);
                 normalized._autopilotSource = 'local_llm';
                 return normalized;
             } catch (e) {
                 Debug.warn('[Autopilot] battle LLM failed:', e && e.message ? e.message : e);
-                return hold('Local battle model failed; defending.');
+                return hold('Local battle model failed; defending.', 'llm_error');
             }
         },
 
@@ -17202,6 +17203,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 'Use exact live enemy names and live limb names from STATE.',
                 'You may use exact item names from STATE if tactically worth the turn.',
                 'Defend only if coin flip risk, survival risk, or no good action.',
+                'Keep every string short: reasoning <= 10 words, dialog <= 8 words, strategy <= 10 words.',
                 'Output schema: {"action":"Atacar|Defenderse|skill_name|item_name","target":"enemy_or_ally_name|null","limb":"live_limb|null","reasoning":"short reason","dialog":"optional short line","strategy":"short plan"}',
                 '',
                 'STATE:',
