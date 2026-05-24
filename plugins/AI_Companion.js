@@ -369,9 +369,12 @@
             const preset = typeof CharacterPresets !== 'undefined' && CharacterPresets.getCurrentPersonality
                 ? CharacterPresets.getCurrentPersonality()
                 : null;
+            const appearanceBlock = typeof CharacterPresets !== 'undefined' && CharacterPresets.getCurrentPersonaBlock
+                ? CharacterPresets.getCurrentPersonaBlock()
+                : '';
             this.personality = this.customPersonaEnabled && this.customSpeechStyle
                 ? this.customSpeechStyle
-                : (preset && preset.traits ? preset.traits : String(parameters['personality'] || 'survival-first, cautious, trauma-aware'));
+                : [preset && preset.traits ? preset.traits : String(parameters['personality'] || 'survival-first, cautious, trauma-aware'), appearanceBlock].filter(Boolean).join('\n');
         },
 
         getPersonaBackstory() {
@@ -386,6 +389,10 @@
             const lines = [];
             lines.push(`IDENTITY: You are ${this.companionName}. Never claim to be another person.`);
             lines.push(`PERSONALITY AND VOICE: ${this.personality}`);
+            if (typeof CharacterPresets !== 'undefined' && CharacterPresets.getCurrentPersonaBlock && this.customPersonaEnabled) {
+                const appearanceBlock = CharacterPresets.getCurrentPersonaBlock();
+                if (appearanceBlock) lines.push(appearanceBlock);
+            }
             const backstory = this.getPersonaBackstory();
             if (backstory) lines.push(`BACKSTORY: ${backstory}`);
             if (this.customPersonaEnabled && this.customGoals) lines.push(`PERSONAL GOALS: ${this.customGoals}`);
@@ -1518,20 +1525,40 @@
         // Appearance presets (Face, Sprite) - using available bust images
         // face/faceIndex/sprite must match game Actors; battlerName for battle sprite
         appearances: [
-            { id: 'dark_priest', name: 'Sacerdote oscuro', nameEn: 'Dark Priest', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1', previewPicture: 'Actor1_7' },
-            { id: 'mercenary', name: 'Mercenario', nameEn: 'Mercenary', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1', previewPicture: 'Actor1_1' },
-            { id: 'knight', name: 'Caballero', nameEn: 'Knight', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1', previewPicture: 'Actor1_3' },
-            { id: 'outlander', name: 'Forastero', nameEn: 'Outlander', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1', previewPicture: 'Actor1_8' },
-            { id: 'girl', name: 'Niña', nameEn: 'Girl', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle', previewPicture: 'Actor1_4' },
-            { id: 'legarde', name: "Le'garde", nameEn: "Le'garde", face: 'Actor2', faceIndex: 0, sprite: 'captain', battlerName: 'captain1_1', previewPicture: 'Actor2_1' },
-            { id: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'Actor2_2' },
-            { id: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'Actor3_1' },
-            { id: 'demon_child', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle', previewPicture: 'Actor2_4' },
-            { id: 'marriage', name: 'Matrimonio', nameEn: 'Marriage', face: 'Actor2', faceIndex: 4, sprite: 'marriage_of_flesh1', battlerName: 'marriage1_1', previewPicture: 'Actor2_5' },
-            { id: 'fusion', name: 'Fusión', nameEn: 'Fusion', face: 'Actor2', faceIndex: 5, sprite: 'marriage_of_flesh2', battlerName: 'fusion1_1', previewPicture: 'Actor2_6' },
-            { id: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'Actor1_2' },
-            { id: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'Actor2_8' },
-            { id: 'marcoh', name: 'Marcoh', nameEn: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1', previewPicture: 'Marcoh_faces_7' }
+            { id: 'dark_priest', name: 'Sacerdote oscuro', nameEn: 'Dark Priest', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1', previewPicture: 'Actor1_7',
+                persona: 'A withdrawn dark priest. Speaks precisely, with suspicion and occult knowledge. Never sounds cheerful; treats survival as a grim calculation.' },
+            { id: 'mercenary', name: 'Mercenario', nameEn: 'Mercenary', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1', previewPicture: 'Actor1_1',
+                persona: 'A pragmatic mercenary. Speaks like a survivor, values silver, food, escape routes, and practical risk. Dry humor, never heroic speeches.' },
+            { id: 'knight', name: 'Caballero', nameEn: 'Knight', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1', previewPicture: 'Actor1_3',
+                persona: 'A disciplined knight. Protective, dutiful, direct. Carries guilt and faith, but keeps command language short under danger.' },
+            { id: 'outlander', name: 'Forastero', nameEn: 'Outlander', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1', previewPicture: 'Actor1_8',
+                persona: 'A hardened outlander and hunter. Taciturn, blunt, survivalist. Notices tracks, beasts, wounds, and ambushes before social niceties.' },
+            { id: 'girl', name: 'Niña', nameEn: 'Girl', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle', previewPicture: 'Actor1_4',
+                persona: 'A frightened child. Speaks rarely and simply. Does not provide confident tactical lectures; reacts with fear, trust, confusion, or small observations.' },
+            { id: 'legarde', name: "Le'garde", nameEn: "Le'garde", face: 'Actor2', faceIndex: 0, sprite: 'captain', battlerName: 'captain1_1', previewPicture: 'Actor2_1',
+                persona: 'A charismatic prisoner-captain. Calm, commanding, messianic undertone. Speaks with restraint and conviction, never as an omniscient guide.' },
+            { id: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'Actor2_2',
+                persona: 'Moonless is a wolf-like beast companion. It does not speak human language. It communicates through posture, growls, sniffing, whines, and protective movement.',
+                speechMode: 'beast', noAmbientSpeech: true, narratorEs: 'Moonless te observa en silencio. Solo responde con un leve gruñido.', narratorEn: 'Moonless watches silently. It answers only with a low growl.' },
+            { id: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'Actor3_1',
+                persona: "A severed ancient wizard-head. Arrogant, mocking, impatient, and knowledgeable about occult matters. Speaks sharply, never humble, never sentimental." },
+            { id: 'demon_child', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle', previewPicture: 'Actor2_4',
+                persona: 'A demon child. Speaks in broken, eerie, childish fragments. Curious and unsettling, not rational or tactical unless guided.',
+                speechMode: 'limited' },
+            { id: 'marriage', name: 'Matrimonio', nameEn: 'Marriage', face: 'Actor2', faceIndex: 4, sprite: 'marriage_of_flesh1', battlerName: 'marriage1_1', previewPicture: 'Actor2_5',
+                persona: 'A marriage of flesh. Speech is strained, plural, fragmented, and bodily. It should sound like two damaged instincts sharing one throat.',
+                speechMode: 'limited' },
+            { id: 'fusion', name: 'Fusión', nameEn: 'Fusion', face: 'Actor2', faceIndex: 5, sprite: 'marriage_of_flesh2', battlerName: 'fusion1_1', previewPicture: 'Actor2_6',
+                persona: 'A warped fusion. Speaks only in pained, fragmented impressions. Avoid fluent explanations; use body horror, confusion, and instinct.',
+                speechMode: 'limited' },
+            { id: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'Actor1_2',
+                persona: 'A near-mindless ghoul. It does not hold conversation. It may groan, twitch, stare, or obey simple battle instinct.',
+                speechMode: 'mindless', noAmbientSpeech: true, narratorEs: 'Intentas hablar con el ghoul, pero solo emite un gemido húmedo.', narratorEn: 'You try to speak to the ghoul, but it only answers with a wet groan.' },
+            { id: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'Actor2_8',
+                persona: 'An animated skeleton. It does not speak. It can fight, follow, and gesture, but has no normal conversation.',
+                speechMode: 'silent', noAmbientSpeech: true, narratorEs: 'Intentas hablar con el esqueleto. No responde.', narratorEn: 'You try to speak to the skeleton. It does not respond.' },
+            { id: 'marcoh', name: 'Marcoh', nameEn: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1', previewPicture: 'Marcoh_faces_7',
+                persona: 'Marcoh is quiet, physically imposing, gentle, and haunted by guilt. He speaks in short, humble lines and protects others through action more than words.' }
         ],
 
         // Personality types — richer descriptions for better AI behavior
@@ -1609,10 +1636,39 @@
             return this.getCurrentPersonality().name;
         },
 
+        getCurrentPersonaBlock() {
+            const app = this.getCurrentAppearance();
+            const lines = [];
+            if (app) lines.push(`SELECTED APPEARANCE: ${this.getAppearanceName(app)} (${app.id}).`);
+            if (app && app.persona) lines.push(`APPEARANCE PERSONA: ${app.persona}`);
+            if (app && app.speechMode) {
+                lines.push(`SPEECH MODE: ${app.speechMode}. This overrides generic personality if there is a conflict.`);
+                if (app.speechMode === 'silent') lines.push('Do not produce spoken dialogue. Use empty dialog or narrator-style nonresponse only.');
+                if (app.speechMode === 'mindless') lines.push('Do not produce fluent speech. Use brief groans, ellipses, or narrator-style nonresponse only.');
+                if (app.speechMode === 'beast') lines.push('Do not produce human speech. Use animal gestures, growls, or narrator-style nonresponse only.');
+                if (app.speechMode === 'limited') lines.push('Use short broken fragments. Avoid articulate lectures or tactical speeches.');
+            }
+            return lines.join('\n');
+        },
+
+        canCurrentAppearanceSpeak() {
+            const app = this.getCurrentAppearance();
+            return !(app && (app.speechMode === 'silent' || app.speechMode === 'mindless' || app.speechMode === 'beast'));
+        },
+
+        currentNarratorResponse() {
+            const app = this.getCurrentAppearance();
+            if (!app) return '';
+            return Config.language === 'es'
+                ? (app.narratorEs || 'No hay respuesta.')
+                : (app.narratorEn || 'There is no response.');
+        },
+
         setAppearance(id) {
             this._currentAppearance = id;
             localStorage.setItem('AI_Companion_Appearance', id);
             this.applyAppearanceToActor();
+            Config.refreshPersonality();
         },
 
         applyAppearanceToActor() {
@@ -4644,7 +4700,10 @@ Reply with ONLY the category name, nothing else.`;
 
             // Show dialog: ALWAYS if it contains tactical/coordination content, 50% otherwise
             const hasTacticalContent = decision.dialog && /\!|primero|brazo|arma|cuidado|guardia|moneda|curar|heal/i.test(decision.dialog);
-            if (hasTacticalContent || Math.random() < 0.5) {
+            const canSpeak = !(typeof CharacterPresets !== 'undefined' &&
+                CharacterPresets.canCurrentAppearanceSpeak &&
+                !CharacterPresets.canCurrentAppearanceSpeak());
+            if (canSpeak && (hasTacticalContent || Math.random() < 0.5)) {
                 let dialogText = (decision.dialog && decision.dialog.trim()) ? decision.dialog : null;
                 // Fallback to generated dialog if LLM returned empty/bad dialog
                 if (!dialogText) {
@@ -12839,6 +12898,39 @@ Respond ONLY with this JSON:
                 }
             }
 
+            if (typeof CharacterPresets !== 'undefined' &&
+                CharacterPresets.canCurrentAppearanceSpeak &&
+                !CharacterPresets.canCurrentAppearanceSpeak()) {
+                const response = CharacterPresets.currentNarratorResponse
+                    ? CharacterPresets.currentNarratorResponse()
+                    : (Config.language === 'es' ? 'No hay respuesta.' : 'There is no response.');
+                const intent = { types: ['nonverbal_companion'], primary: 'nonverbal_companion', confidence: 1, entities: [] };
+                this.addToHistory('companion', response, exchangeContext);
+                this.addTranscriptMessage('companion', response, exchangeContext);
+                DialogueMemory.rememberLine(response, 'chat', dialogueMeta);
+                ThesisLogger.log('chat', {
+                    player_message: playerMessage,
+                    intent: intent,
+                    prompt_length: 0,
+                    prompt_sections: null,
+                    response_text: response,
+                    response_source: 'appearance_nonverbal',
+                    latency_ms: 0,
+                    model_used: null,
+                    rag_chunk_ids: null,
+                    grounding_mode: 'structured_confirmed'
+                });
+                DebugState.captureChat({
+                    player_message: playerMessage,
+                    intent: intent,
+                    response_text: response,
+                    response_source: 'appearance_nonverbal',
+                    latency_ms: 0,
+                    model_used: null
+                });
+                return response;
+            }
+
             const context = this.getContext();
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
             this._normalizeIntentForRecruitmentQuery(playerMessage, intent);
@@ -13508,7 +13600,14 @@ CRITICAL GAME RULES (NEVER violate these):
         THOUGHT_LLM_MIN_INTERVAL: 3500,
         STARTUP_DELAY: 8000,  // 8 seconds — stay silent after game starts
 
+        _appearanceAllowsSpeech() {
+            return !(typeof CharacterPresets !== 'undefined' &&
+                CharacterPresets.canCurrentAppearanceSpeak &&
+                !CharacterPresets.canCurrentAppearanceSpeak());
+        },
+
         canSpeak() {
+            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             // Don't speak during startup (save loading, title, initialization)
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
@@ -13529,6 +13628,7 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakSupport() {
+            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) return false;
@@ -13543,6 +13643,7 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakReactive() {
+            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             const scene = SceneManager._scene;
@@ -13555,6 +13656,7 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakProactive() {
+            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             const scene = SceneManager._scene;
@@ -14798,6 +14900,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         },
 
         _speak(text, topic) {
+            if (typeof CharacterPresets !== 'undefined' && CharacterPresets.getCurrentAppearance) {
+                const appearance = CharacterPresets.getCurrentAppearance();
+                if (appearance && appearance.noAmbientSpeech) {
+                    Debug.log('[Ambient] Suppressed nonverbal appearance line:', appearance.id, topic);
+                    return;
+                }
+            }
             if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) {
                 Debug.log('[Ambient] Suppressed message while chat/message scene unavailable:', topic);
                 return;
