@@ -14954,6 +14954,79 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             }
         },
 
+        _showTopOverlay(text) {
+            const scene = SceneManager && SceneManager._scene;
+            if (!scene || !text) return;
+            if (scene._aiAmbientOverlaySprite) {
+                try {
+                    if (scene._aiAmbientOverlaySprite.parent) scene.removeChild(scene._aiAmbientOverlaySprite);
+                    if (scene._aiAmbientOverlaySprite.bitmap) scene._aiAmbientOverlaySprite.bitmap = null;
+                } catch (e) { /* cleanup */ }
+                if (scene._aiAmbientOverlayTimer) clearInterval(scene._aiAmbientOverlayTimer);
+            }
+
+            const maxChars = 130;
+            const clean = String(text).length > maxChars ? String(text).slice(0, maxChars) + '...' : String(text);
+            const maxLineLen = 58;
+            const words = clean.split(/\s+/);
+            const lines = [];
+            let line = '';
+            for (let i = 0; i < words.length; i++) {
+                const word = words[i];
+                if (line && line.length + word.length + 1 > maxLineLen) {
+                    lines.push(line);
+                    line = word;
+                } else {
+                    line += (line ? ' ' : '') + word;
+                }
+            }
+            if (line) lines.push(line);
+            const displayLines = lines.slice(0, 2);
+            const bannerWidth = Math.min(Graphics.width - 48, 900);
+            const bannerHeight = 26 + displayLines.length * 24;
+            const sprite = new Sprite(new Bitmap(bannerWidth, bannerHeight));
+            sprite.bitmap.fillRect(0, 0, bannerWidth, bannerHeight, 'rgba(0, 0, 0, 0.62)');
+            sprite.bitmap.fontSize = 20;
+            sprite.bitmap.textColor = '#f2f2f2';
+            sprite.bitmap.outlineColor = '#000000';
+            sprite.bitmap.outlineWidth = 3;
+            for (let i = 0; i < displayLines.length; i++) {
+                sprite.bitmap.drawText(displayLines[i], 18, 10 + i * 24, bannerWidth - 36, 24, 'center');
+            }
+            sprite.x = Math.floor((Graphics.width - bannerWidth) / 2);
+            sprite.y = 10;
+            sprite.opacity = 0;
+            scene.addChild(sprite);
+            scene._aiAmbientOverlaySprite = sprite;
+
+            let frames = 0;
+            const timer = setInterval(() => {
+                frames++;
+                if (frames <= 10) {
+                    sprite.opacity = Math.min(255, sprite.opacity + 28);
+                } else if (frames > 210) {
+                    sprite.opacity -= 7;
+                    if (sprite.opacity <= 0) {
+                        clearInterval(timer);
+                        try {
+                            if (sprite.parent) scene.removeChild(sprite);
+                            if (sprite.bitmap) sprite.bitmap = null;
+                            scene._aiAmbientOverlaySprite = null;
+                        } catch (e) { /* cleanup */ }
+                    }
+                }
+                if (frames > 360) {
+                    clearInterval(timer);
+                    try {
+                        if (sprite.parent) scene.removeChild(sprite);
+                        if (sprite.bitmap) sprite.bitmap = null;
+                        scene._aiAmbientOverlaySprite = null;
+                    } catch (e) { /* cleanup */ }
+                }
+            }, 16);
+            scene._aiAmbientOverlayTimer = timer;
+        },
+
         _speak(text, topic) {
             if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) {
                 Debug.log('[Ambient] Suppressed message while chat/message scene unavailable:', topic);
@@ -14985,38 +15058,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 text_length: text.length
             });
 
-            // Use configured appearance
-            const appearance = CharacterPresets.getCurrentAppearance();
-            $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
-            $gameMessage.setBackground(0);
-            $gameMessage.setPositionType(2);
-
-            // Truncate to fit the game's message window (face image takes space, ~35 chars per line, 4 lines max = ~140 chars)
-            const namePrefix = `\\c[6]${Config.companionName}\\c[0]: `;
-            const maxChars = 130;
-            let cleanText = text.length > maxChars ? text.substring(0, maxChars) + '...' : text;
-
-            // Word-wrap: split into lines of ~35 chars to avoid horizontal overflow
-            const maxLineLen = 36;
-            const words = cleanText.split(' ');
-            const lines = [];
-            let currentLine = '';
-            for (const word of words) {
-                if (currentLine.length + word.length + 1 > maxLineLen && currentLine.length > 0) {
-                    lines.push(currentLine);
-                    currentLine = word;
-                } else {
-                    currentLine += (currentLine ? ' ' : '') + word;
-                }
-            }
-            if (currentLine) lines.push(currentLine);
-
-            // First line has the name prefix, max 4 lines total for the message window
-            const displayLines = lines.slice(0, 4);
-            $gameMessage.add(namePrefix + displayLines[0]);
-            for (let i = 1; i < displayLines.length; i++) {
-                $gameMessage.add(displayLines[i]);
-            }
+            this._showTopOverlay(text);
         }
     };
 
