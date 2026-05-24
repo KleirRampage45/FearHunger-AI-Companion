@@ -4732,17 +4732,14 @@ Reply with ONLY the category name, nothing else.`;
                 limb: decision.limb || 'none'
             });
 
-            // Show dialog: ALWAYS if it contains tactical/coordination content, 50% otherwise
-            const hasTacticalContent = decision.dialog && /\!|primero|brazo|arma|cuidado|guardia|moneda|curar|heal/i.test(decision.dialog);
+            // Show combat dialogue only when it carries tactical content. Random flavor
+            // one-liners from small local models tend to become filler ("S... suave...").
+            const hasTacticalContent = this._isUsefulCombatDialog(decision.dialog, decision);
             const canSpeak = !(typeof CharacterPresets !== 'undefined' &&
                 CharacterPresets.canCurrentAppearanceSpeak &&
                 !CharacterPresets.canCurrentAppearanceSpeak());
-            if (canSpeak && (hasTacticalContent || Math.random() < 0.5)) {
+            if (canSpeak && hasTacticalContent) {
                 let dialogText = (decision.dialog && decision.dialog.trim()) ? decision.dialog : null;
-                // Fallback to generated dialog if LLM returned empty/bad dialog
-                if (!dialogText) {
-                    dialogText = this._generateQuickDialog(decision);
-                }
                 if (dialogText) {
                     this._showDialogue(dialogText);
                     // Track dialog for variety in future prompts
@@ -5052,6 +5049,18 @@ Reply with ONLY the category name, nothing else.`;
             return /going for|aim for|holding position|bracing|staying defensive|watch my flank|keep your guard up|no mercy|stay focused|together now|take away its weapon|crippling its reach|slow it down|it won't run|this ends it|disabling/i.test(String(text || ''));
         }
 
+        static _isUsefulCombatDialog(text, decision) {
+            const raw = String(text || '').trim();
+            if (!raw) return false;
+            if (raw.length < 5 || raw.length > 60) return false;
+            if (/^(?:s+[\s.·-]*)?(?:suave|bien|ok|okay|vale|vamos|mm+|m-?m+|eh+|ah+)[.!…\s]*$/i.test(raw)) return false;
+            if (/^(?:s+[\s.·-]*)?suave/i.test(raw)) return false;
+            const tactical = /\!|primero|brazo|arma|cuidado|guardia|moneda|curar|heal|pierna|cabeza|torso|aguij[oó]n|stinger|defiend|defend|atac|attack/i.test(raw);
+            if (tactical) return true;
+            const action = String(decision && decision.action || '');
+            return /curar|heal|defend|defender/i.test(action);
+        }
+
         static _dialogConflictsWithLimb(text, limb) {
             const msg = String(text || '').toLowerCase();
             const normalizedLimb = this._normalizeLimbName(limb);
@@ -5070,7 +5079,7 @@ Reply with ONLY the category name, nothing else.`;
             const normalizedAction = this._normalizeActionName(normalized.action);
             if (normalized.dialog) {
                 normalized.dialog = Config.cleanGeneratedText(normalized.dialog);
-                if (/\([^)]{2,120}\)/.test(normalized.dialog) || normalized.dialog.length > 50 || /^(m-?m+|mm+|espero|por favor|a ver si)/i.test(normalized.dialog)) {
+                if (/\([^)]{2,120}\)/.test(normalized.dialog) || normalized.dialog.length > 60 || /^(m-?m+|mm+|espero|por favor|a ver si|s+[\s.·-]*suave|suave)/i.test(normalized.dialog)) {
                     normalized.dialog = '';
                 }
             }
@@ -15206,7 +15215,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 return reply;
             }
             if (!this._isAffirmative(message)) {
-                return es ? `Solo dime sí o no para ${pending.itemName}.` : `Just tell me yes or no for ${pending.itemName}.`;
+                return null;
             }
             const item = this._findItem(pending.itemId);
             const target = $gameActors && $gameActors.actor ? $gameActors.actor(pending.actorId) : null;
