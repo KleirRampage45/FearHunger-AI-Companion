@@ -118,6 +118,7 @@
     };
 
     const _providerOrder = ['groq', 'openrouter', 'local'];
+    const NON_PLAYABLE_BOOT_MAP_IDS = [10, 72];
     const FAST_AUTONOMY_MODEL_HINTS = [
         'gemma-4-e4b-uncensored-hauhaucs-aggressive',
         'gemma-4',
@@ -1732,6 +1733,37 @@
 
     // Load saved personality/persona
     Config.refreshPersonality();
+
+    const GameplayGate = {
+        isBootOrIntroMap() {
+            const id = $gameMap && $gameMap.mapId ? Number($gameMap.mapId()) : 0;
+            return NON_PLAYABLE_BOOT_MAP_IDS.indexOf(id) >= 0;
+        },
+
+        isMapGameplayReady(options) {
+            const opts = options || {};
+            const scene = SceneManager && SceneManager._scene;
+            const sceneName = scene && scene.constructor ? scene.constructor.name : '';
+            if (sceneName !== 'Scene_Map') return false;
+            if (!$gameMap || !$gamePlayer || !$gameParty) return false;
+            if (this.isBootOrIntroMap()) return false;
+            if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
+            if ($gameMap.isEventRunning && $gameMap.isEventRunning()) return false;
+            if (!opts.allowMessage && $gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
+            if ($gamePlayer.canMove && !$gamePlayer.canMove()) return false;
+            return true;
+        },
+
+        canRunMapAi() {
+            return this.isMapGameplayReady();
+        },
+
+        canQueueMapMessage() {
+            return this.isMapGameplayReady();
+        }
+    };
+
+    window._AICompanionGameplayGate = GameplayGate;
 
     //=========================================================================
     // AI Companion State
@@ -9628,7 +9660,7 @@ Respond ONLY with this JSON:
             if (Config.autopilotEnabled) return false;
             if (!$gameParty || !$gameParty.members || !$gameParty.members().some(m => m && m.actorId && m.actorId() === Config.companionActorId)) return false;
             if (!$gameMap || !$gamePlayer || $gameParty.inBattle()) return false;
-            if (!SceneManager._scene || SceneManager._scene.constructor.name !== 'Scene_Map') return false;
+            if (typeof GameplayGate !== 'undefined' && !GameplayGate.canRunMapAi()) return false;
             if (ChatSystem && ChatSystem.isActive && ChatSystem.isActive()) return false;
             if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
             if (!this.getFollower()) return false;
@@ -12696,7 +12728,9 @@ Respond ONLY with this JSON:
             if (this.isChatSceneActive()) return false;
             const scene = SceneManager && SceneManager._scene;
             const sceneName = scene && scene.constructor ? scene.constructor.name : '';
-            return sceneName === 'Scene_Map' || sceneName === 'Scene_Battle';
+            if (sceneName === 'Scene_Battle') return true;
+            if (sceneName === 'Scene_Map') return typeof GameplayGate === 'undefined' || GameplayGate.canQueueMapMessage();
+            return false;
         },
 
         _clearQueuedAiMessages() {
@@ -16608,14 +16642,17 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
     //=========================================================================
     // Hook: Keypress T to open chat
-    //=========================================================================
-    const _Scene_Map_update = Scene_Map.prototype.update;
-    Scene_Map.prototype.update = function () {
-        _Scene_Map_update.call(this);
-        PerformanceMonitor.tick('Scene_Map');
+	    //=========================================================================
+	    const _Scene_Map_update = Scene_Map.prototype.update;
+	    Scene_Map.prototype.update = function () {
+	        _Scene_Map_update.call(this);
+	        PerformanceMonitor.tick('Scene_Map');
 
-        // Periodic hunger awareness check
-        AmbientDialogue.checkHunger();
+	        const aiMapReady = typeof GameplayGate === 'undefined' || GameplayGate.canRunMapAi();
+	        if (!aiMapReady) return;
+
+	        // Periodic hunger awareness check
+	        AmbientDialogue.checkHunger();
         AmbientDialogue.checkSupportNeeds();
 
         // Proactive trap/threat warning from EnvironmentScanner
