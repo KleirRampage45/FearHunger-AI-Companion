@@ -1664,6 +1664,40 @@
                 : (app.narratorEn || 'There is no response.');
         },
 
+        narratorAmbientLine(text, topic) {
+            const app = this.getCurrentAppearance();
+            if (!app || this.canCurrentAppearanceSpeak()) return String(text || '');
+            const es = Config.language === 'es';
+            const name = this.getAppearanceName(app);
+            const raw = String(text || '').toLowerCase();
+            const seesObject = /(found|find|notice|chest|barrel|crate|book|shelf|loot|item|cofre|barril|caja|libro|estante|objeto|encuentra|nota)/i.test(raw);
+            const hunger = /(hungry|hunger|hambre|hambr)/i.test(raw);
+            const danger = /(danger|enemy|threat|uneasy|afraid|miedo|peligro|enemigo|amenaza|inquiet)/i.test(raw);
+            const darkness = /(dark|light|torch|candle|oscur|luz|vela|antorcha|yesquero)/i.test(raw);
+            const movement = /(open|search|take|grab|pick|revis|abr|tom|agarra|recoge|interact)/i.test(raw);
+            if (app.id === 'moonless') {
+                if (hunger) return es ? 'Moonless parece tener hambre.' : 'Moonless seems hungry.';
+                if (danger) return es ? 'Moonless se queda inquieta, olfateando el aire.' : 'Moonless seems uneasy, sniffing the air.';
+                if (seesObject) return es ? 'Moonless parece haber encontrado algo.' : 'Moonless seems to have found something.';
+                if (darkness) return es ? 'Moonless reacciona a la oscuridad de la sala.' : 'Moonless reacts to the darkness in the room.';
+                return es ? 'Moonless se mueve en silencio, atenta a la sala.' : 'Moonless moves silently, alert to the room.';
+            }
+            if (app.id === 'ghoul') {
+                if (hunger) return es ? 'El ghoul parece arrastrarse por hambre.' : 'The ghoul seems driven by hunger.';
+                if (danger) return es ? 'El ghoul se tensa, como si hubiera percibido peligro.' : 'The ghoul stiffens, as if it sensed danger.';
+                if (seesObject) return es ? 'El ghoul parece haber visto algo cercano.' : 'The ghoul seems to have noticed something nearby.';
+                if (movement) return es ? 'El ghoul se arrastra hacia algo sin decir palabra.' : 'The ghoul shambles toward something without a word.';
+                return es ? 'El ghoul emite un ruido bajo, casi sin intención clara.' : 'The ghoul makes a low sound, with little clear intent.';
+            }
+            if (app.id === 'skeleton') {
+                if (danger) return es ? 'El esqueleto se queda inmóvil, orientado hacia el peligro.' : 'The skeleton goes still, facing the danger.';
+                if (seesObject) return es ? 'El esqueleto parece haber localizado algo.' : 'The skeleton seems to have located something.';
+                if (movement) return es ? 'El esqueleto se mueve para revisar algo cercano.' : 'The skeleton moves to inspect something nearby.';
+                return es ? 'El esqueleto se mueve sin decir palabra.' : 'The skeleton moves without a word.';
+            }
+            return es ? `${name} no responde con palabras.` : `${name} does not answer with words.`;
+        },
+
         setAppearance(id) {
             this._currentAppearance = id;
             localStorage.setItem('AI_Companion_Appearance', id);
@@ -13600,14 +13634,7 @@ CRITICAL GAME RULES (NEVER violate these):
         THOUGHT_LLM_MIN_INTERVAL: 3500,
         STARTUP_DELAY: 8000,  // 8 seconds — stay silent after game starts
 
-        _appearanceAllowsSpeech() {
-            return !(typeof CharacterPresets !== 'undefined' &&
-                CharacterPresets.canCurrentAppearanceSpeak &&
-                !CharacterPresets.canCurrentAppearanceSpeak());
-        },
-
         canSpeak() {
-            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             // Don't speak during startup (save loading, title, initialization)
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
@@ -13628,7 +13655,6 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakSupport() {
-            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) return false;
@@ -13643,7 +13669,6 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakReactive() {
-            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             const scene = SceneManager._scene;
@@ -13656,7 +13681,6 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         canSpeakProactive() {
-            if (!this._appearanceAllowsSpeech()) return false;
             if (typeof PlayerAutopilot !== 'undefined' && PlayerAutopilot.isEnabled && PlayerAutopilot.isEnabled()) return false;
             if (Date.now() - this._gameStartTime < this.STARTUP_DELAY) return false;
             const scene = SceneManager._scene;
@@ -14051,14 +14075,8 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 });
                 if (!shouldSpeak) return;
                 DialogueMemory.rememberFact(factKey, clean, 'proactive_chat', { mapId: $gameMap ? $gameMap.mapId() : null });
-                DialogueMemory.rememberLine(clean, 'proactive_chat', { mapId: $gameMap ? $gameMap.mapId() : null });
-                ThesisLogger.log('ambient', { topic: 'proactive_chat', text: clean, text_length: clean.length });
                 console.log('[Proactive Chat]', clean);
-                if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
-                    ActionExecutor._showDialogue(clean);
-                } else {
-                    this._speak(clean, 'proactive_chat');
-                }
+                this._speak(clean, 'proactive_chat');
             };
             if (Config.useMockAI) return;
             try {
@@ -14217,13 +14235,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 });
                 if (!shouldSpeak) return;
                 DialogueMemory.rememberFact(factKey, clean, 'autonomy_reactive', { mapId: $gameMap ? $gameMap.mapId() : null });
-                DialogueMemory.rememberLine(clean, 'autonomy_reactive', { mapId: $gameMap ? $gameMap.mapId() : null });
-                ThesisLogger.log('ambient', { topic: 'autonomy_reactive', text: clean, text_length: clean.length });
-                if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
-                    ActionExecutor._showDialogue(clean);
-                } else {
-                    this._speak(clean, 'autonomy_reactive');
-                }
+                this._speak(clean, 'autonomy_reactive');
             };
             if (Config.useMockAI) return;
             try {
@@ -14900,16 +14912,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         },
 
         _speak(text, topic) {
-            if (typeof CharacterPresets !== 'undefined' && CharacterPresets.getCurrentAppearance) {
-                const appearance = CharacterPresets.getCurrentAppearance();
-                if (appearance && appearance.noAmbientSpeech) {
-                    Debug.log('[Ambient] Suppressed nonverbal appearance line:', appearance.id, topic);
-                    return;
-                }
-            }
             if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) {
                 Debug.log('[Ambient] Suppressed message while chat/message scene unavailable:', topic);
                 return;
+            }
+            if (typeof CharacterPresets !== 'undefined' && CharacterPresets.narratorAmbientLine) {
+                text = CharacterPresets.narratorAmbientLine(text, topic);
             }
             text = Config.cleanGeneratedText(text);
             if (!text || !this._passesLanguageQuality(text, Config.language === 'es')) {
