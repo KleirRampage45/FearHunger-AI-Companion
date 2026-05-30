@@ -74,6 +74,18 @@ expectNotContains(plugin, 'No puedo pensar claro. Me cubro.', 'hardcoded combat 
 expectNotContains(plugin, '_generateQuickDialog', 'hardcoded combat quick-dialog generator');
 expectNotContains(plugin, 'narratorAmbientLine', 'hardcoded nonverbal ambient narration');
 expectNotContains(plugin, 'currentNarratorResponse', 'hardcoded nonverbal chat response');
+expectNotContains(plugin, 'AmbientDialogue.onAutonomyIntent(action, target);', 'routine autonomy action chatter invocation');
+expectNotContains(plugin, 'AmbientDialogue.checkProactiveChat();', 'routine proactive object chatter invocation');
+expectNotContains(plugin, 'this._showBackgroundLootSummary(rewards);', 'routine background-loot chatter invocation');
+
+const itemPickupStart = plugin.indexOf('onItemPickup(item, source) {');
+const itemPickupEnd = plugin.indexOf('async _generateItemComment', itemPickupStart);
+const itemPickup = itemPickupStart >= 0 && itemPickupEnd > itemPickupStart
+  ? plugin.slice(itemPickupStart, itemPickupEnd)
+  : '';
+if (!itemPickup || itemPickup.indexOf('EquipmentApproval.consider(item, source)') > itemPickup.indexOf('if (!this.canSpeak()) return;')) {
+  fail('Equipment opportunities must be detected before ambient speech cooldown exits.');
+}
 
 if (countMatches(plugin, /this\.addCommand\(es \? 'Registro IA' : 'AI Log', 'sectionLog'/g) !== 1) {
   fail('Config hub AI Log command should exist exactly once.');

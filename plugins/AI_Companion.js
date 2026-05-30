@@ -10689,9 +10689,6 @@ Respond ONLY with this JSON:
             this._state.targetLabel = target.label;
             this._state.targetAction = action;
             if (!preserveTask) {
-                if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue.onAutonomyIntent) {
-                    AmbientDialogue.onAutonomyIntent(action, target);
-                }
                 this._beginTask(action, {
                     eventId: target.eventId,
                     distance: this._state.targetApproach ? this._distance(this.getFollower(), this._state.targetApproach) : target.distance,
@@ -11279,7 +11276,6 @@ Respond ONLY with this JSON:
                 this._setEventCooldown(plan.eventId, 90000);
                 this._markEventSearched(plan.eventId, plan.type, rewards.length > 0 ? 'background_loot' : 'background_loot_empty');
                 this._rememberBackgroundLootResult(plan, rewards);
-                this._showBackgroundLootSummary(rewards);
                 Debug.log('[BackgroundLoot]', {
                     eventId: plan.eventId,
                     label: plan.label,
@@ -13394,12 +13390,18 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         onItemPickup(item, source) {
-            if (!this.canSpeak()) return;
             if (!item) return;
 
             // Determine item significance
             const isWeapon = DataManager.isWeapon(item);
             const isArmor = DataManager.isArmor(item);
+            if ((isWeapon || isArmor) &&
+                typeof EquipmentApproval !== 'undefined' &&
+                EquipmentApproval.consider(item, source)) {
+                return;
+            }
+            if (!this.canSpeak()) return;
+
             let kbItem = null;
             if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getItemInfo) {
                 kbItem = KBLookupCache.itemInfo(item.name);
@@ -13420,15 +13422,7 @@ CRITICAL GAME RULES (NEVER violate these):
                 return;
             }
 
-            if (source && source !== 'Player' &&
-                (isWeapon || isArmor) &&
-                typeof EquipmentApproval !== 'undefined' &&
-                EquipmentApproval.consider(item, source)) {
-                return;
-            }
-
-            // Generate AI comment
-            this._generateItemComment(item, kbItem, isWeapon, isArmor, isFood, isHungry, source);
+            Debug.log('[Ambient] Quiet mode: suppressing routine item comment:', item.name);
         },
 
         async _generateItemComment(item, kbItem, isWeapon, isArmor, isFood, isHungry, source) {
@@ -14286,8 +14280,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
 
             Debug.log('[Ambient] First visit to:', mapName, '- generating AI comment');
 
-            // Generate AI-powered comment asynchronously
-            this._generateRoomComment(locationEntry, mapName);
+            Debug.log('[Ambient] Quiet mode: suppressing routine room-entry comment:', mapName);
         },
 
         async _generateRoomComment(locationEntry, mapName) {
@@ -14952,8 +14945,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return lines.slice(0, maxLines || 4);
         },
 
-        async _generatePromptText(candidate) {
-            if (Config.useMockAI) return '';
+        async _generateRecommendation(candidate) {
+            if (Config.useMockAI) return null;
             try {
                 const es = Config.language === 'es';
                 const endpoint = Config.getEndpoint();
@@ -14962,15 +14955,16 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const currentName = candidate.current ? candidate.current.name : 'empty slot';
                 const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
-                    `Write ONE short approval request, under 16 words.\n` +
-                    `You found gear for yourself and need player consent before equipping.\n` +
+                    `${Config.getPersonaPromptBlock()}\n` +
+                    `Decide whether you want to ask the player for permission to equip found gear.\n` +
                     `Item: ${candidate.item.name}\n` +
                     `Current gear in that slot: ${currentName}\n` +
                     `New score: ${candidate.newScore}; current score: ${candidate.currentScore}\n` +
-                    `Do not claim you already equipped it. Ask if you should equip it.\n` +
-                    `Do not mention stats unless natural.`;
+                    `Return JSON only: {"suggest":true|false,"line":"short approval question or empty string","reason":"short private reason"}\n` +
+                    `If suggest is true, line must ask permission in under 16 words.\n` +
+                    `Do not claim you already equipped it. Do not mention stats unless natural.`;
                 const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 1400);
+                const timer = setTimeout(() => controller.abort(), 1800);
                 let resp;
                 try {
                     resp = await LocalRequestQueue.runOptional('equipment_prompt', () => fetch(endpoint, {
@@ -14980,8 +14974,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         body: JSON.stringify({
                             model,
                             messages: [{ role: 'system', content: prompt }],
-                            max_tokens: 44,
-                            temperature: 0.8
+                            max_tokens: 72,
+                            temperature: 0.5
                         })
                     }));
                 } finally {
@@ -14989,13 +14983,18 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 }
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
-                const text = data.choices?.[0]?.message?.content?.trim();
-                const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
-                if (!cleaned || cleaned.length < 5) return '';
-                return cleaned;
+                const raw = data.choices?.[0]?.message?.content || '';
+                const cleaned = String(raw).replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+                const match = cleaned.match(/\{[\s\S]*\}/);
+                const decision = JSON.parse(match ? match[0] : cleaned);
+                return {
+                    suggest: decision && decision.suggest === true,
+                    line: Config.cleanGeneratedText(decision && decision.line || ''),
+                    reason: String(decision && decision.reason || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+                };
             } catch (e) {
-                Debug.warn('[EquipmentApproval] Prompt generation failed:', e.message);
-                return '';
+                Debug.warn('[EquipmentApproval] Recommendation failed:', e.message);
+                return null;
             }
         },
 
@@ -15036,10 +15035,21 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         },
 
         async _requestPrompt(candidate, source) {
-            const text = await this._generatePromptText(candidate);
+            const recommendation = await this._generateRecommendation(candidate);
             const refreshed = this._candidate(candidate.actor, candidate.item);
             if (!refreshed) return false;
             candidate = refreshed;
+            if (!recommendation || !recommendation.suggest) {
+                ThesisLogger.log('game_event', {
+                    event: 'equipment_suggestion_skipped',
+                    actor_name: candidate.actor.name(),
+                    item_name: candidate.item.name,
+                    source: source || null,
+                    model_decision: recommendation || null
+                });
+                return false;
+            }
+            const text = recommendation.line || '';
             const shown = this._showPrompt(candidate, text);
             if (shown) {
                 ThesisLogger.log('ambient', {
@@ -15049,7 +15059,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     item_name: candidate.item.name,
                     current_item: candidate.current ? candidate.current.name : null,
                     new_score: candidate.newScore,
-                    current_score: candidate.currentScore
+                    current_score: candidate.currentScore,
+                    model_reason: recommendation.reason || null
                 });
             }
             return shown;
@@ -15077,15 +15088,25 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         },
 
         consider(item, source) {
-            if (!source || source === 'Player') return false;
             if (!item || (!DataManager.isWeapon(item) && !DataManager.isArmor(item))) return false;
             const companion = $gameActors && $gameActors.actor ? $gameActors.actor(Config.companionActorId) : null;
             const candidate = this._candidate(companion, item);
             if (!candidate) return false;
+            const itemSource = source || 'party';
+            ShortTermMemory.addEvent(`Equipment opportunity for ${Config.companionName}: ${item.name}; current slot: ${candidate.current ? candidate.current.name : 'empty'}.`);
+            ThesisLogger.log('game_event', {
+                event: 'equipment_opportunity_detected',
+                actor_name: companion && companion.name ? companion.name() : null,
+                item_name: item.name,
+                source: itemSource,
+                current_item: candidate.current ? candidate.current.name : null,
+                new_score: candidate.newScore,
+                current_score: candidate.currentScore
+            });
             if (!AmbientDialogue.canSpeakSupport || !AmbientDialogue.canSpeakSupport()) {
-                return this._queue(candidate, source);
+                return this._queue(candidate, itemSource);
             }
-            this._requestPrompt(candidate, source);
+            this._requestPrompt(candidate, itemSource);
             return true;
         }
     };
@@ -16215,8 +16236,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
         // Proactive trap/threat warning from EnvironmentScanner
         AmbientDialogue.checkNearbyThreats();
-        AmbientDialogue.checkProactiveChat();
-        EquipmentApproval.update();
+	        EquipmentApproval.update();
 
         // Optional local-only companion autonomy heartbeat.
         // Autopilot test mode owns whole-party map progression to avoid two agents fighting over doors/transfers.
