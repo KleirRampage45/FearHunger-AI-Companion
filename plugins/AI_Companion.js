@@ -471,7 +471,10 @@
             const raw = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
             const name = String(this.companionName || '').replace(/\s+/g, ' ').trim().toLowerCase();
             if (!raw || !name) return false;
-            return raw.indexOf(`soy ${name}`) === 0 || raw.indexOf(`i am ${name}`) === 0 || raw.indexOf(`i'm ${name}`) === 0;
+            return raw.indexOf(`soy ${name}`) === 0 ||
+                raw.indexOf(`yo soy ${name}`) === 0 ||
+                raw.indexOf(`i am ${name}`) === 0 ||
+                raw.indexOf(`i'm ${name}`) === 0;
         },
 
         cleanGeneratedText(text) {
@@ -14259,6 +14262,9 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             if (isLight && !mentionsLighting) {
                 return fallback;
             }
+            if (isLight && /(luz apagada|unlit (?:room )?light)/i.test(lower)) {
+                return fallback;
+            }
             if (isLight && /(vela|candle|torch|antorcha|farol|lantern)/i.test(lower)) {
                 return fallback;
             }
@@ -14307,7 +14313,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             const es = Config.language === 'es';
             const isLightTarget = target && target.subtype === 'light_source';
             const targetLabel = isLightTarget
-                ? (es ? 'luz apagada de la sala' : 'unlit room light')
+                ? (es ? 'sala oscura' : 'dark room')
                 : (target.label || 'object');
             const show = async text => {
                 const clean = String(text || '').trim();
@@ -14341,7 +14347,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     `Target label: ${targetLabel}\n` +
                     `NPC name: ${target.npcName || target.speakerName || 'none'}\n` +
                     `Hints: ${target.textHints || 'none'}\n` +
-                    `If this is a light source, you are using a yesquero to light the room. Do NOT say you are picking up or holding a candle, torch, lantern, or object.\n` +
+                    `If this is a light source, you are using a yesquero to light the room. Describe lighting the room naturally. Do NOT repeat an internal object label such as "unlit light" or "luz apagada". Do NOT say you are picking up or holding a candle, torch, lantern, or object.\n` +
                     `No lists. No extra explanation.`;
                 const controller = new AbortController();
                 const timer = setTimeout(() => controller.abort(), 1200);
