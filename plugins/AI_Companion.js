@@ -3464,7 +3464,6 @@ Reply with ONLY the category name, nothing else.`;
             add(74, [39, 40, 41, 148, 155], 'container', 'barrel', 'Barril');
             add(74, [42, 43, 44, 45, 147, 149, 150], 'container', 'crate', 'Caja');
             add(74, [47], 'shop', 'merchant', 'Mercader');
-            add(74, [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87], 'npc', 'legarde', "Le'garde");
             add(74, [102, 113, 114], 'enemy', 'moonless', 'Moonless', { danger: 'high' });
             add(74, [108, 109], 'container', 'hidden_loot', 'Contenedor');
             add(74, [156], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
@@ -4081,6 +4080,11 @@ Reply with ONLY the category name, nothing else.`;
             if (tags.length === 0) return null;
 
             const type = registryEntry && registryEntry.type ? registryEntry.type : this._eventType(tags);
+            if (!hasVisiblePresentation && (type === 'npc' || type === 'shop' || type === 'enemy')) {
+                // Dialogue and boundary events may mention actors that are not
+                // physically present. Do not expose them as visible entities.
+                return null;
+            }
             const subtype = registryEntry && registryEntry.subtype ? registryEntry.subtype : this._subtypeFor(type, data, page, metadata);
             const dx = event.x - px;
             const dy = event.y - py;
