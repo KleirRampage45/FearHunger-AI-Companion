@@ -497,6 +497,7 @@
                     .replace(/\bsuroeste\b/gi, 'suroeste');
             }
             out = out.replace(/\*\*/g, '').replace(/\*/g, '');
+            out = out.replace(/\bMap\s*#?\s*\d+\b/gi, es ? 'zona desconocida' : 'unknown area');
             return out.replace(/\s+/g, ' ').trim();
         },
 
@@ -4458,6 +4459,7 @@ Reply with ONLY the category name, nothing else.`;
             if (!$gameMap) return { displayName: 'Unknown', tips: [] };
             const mapId = String($gameMap.mapId());
             const displayName = ($dataMap && $gameMap.displayName()) || ('Map ' + mapId);
+            const safeFallbackName = Config.language === 'es' ? 'Zona desconocida' : 'Unknown area';
 
             // Try KB matching first (dynamic)
             const kbMatch = this._matchKB(displayName);
@@ -4466,7 +4468,7 @@ Reply with ONLY the category name, nothing else.`;
             // Fallback to ID-based tips
             const byId = this.mapTipsFallback[mapId];
             return {
-	                displayName: byId ? byId.displayName : Locale.text(displayName),
+	                displayName: byId ? byId.displayName : safeFallbackName,
                 rawDisplayName: displayName,
                 tips: byId && byId.tips ? byId.tips : []
             };
