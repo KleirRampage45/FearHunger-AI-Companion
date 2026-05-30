@@ -9691,6 +9691,19 @@ Respond ONLY with this JSON:
             this._maintainMovement();
 
             const now = Date.now();
+            if (this._state.currentTask) {
+                const taskAgeMs = now - (this._state.currentTask.startedAt || now);
+                if (taskAgeMs < 12000) return;
+                Debug.warn('[Autonomy] Releasing stalled task:', this._state.currentTask);
+                if (this._state.currentTask.eventId != null) {
+                    this._setEventCooldown(this._state.currentTask.eventId, 15000);
+                }
+                this._clearTask();
+                this._state.mode = 'follow';
+                this._state.targetEventId = null;
+                this._state.targetPoint = null;
+                this._state.targetApproach = null;
+            }
             const tickMs = Math.max(2000, Config.autonomyTickSeconds * 1000);
             if (this._state.pending || now - this._state.lastTickAt < tickMs) return;
             if (LocalRequestQueue.isBusy()) {
@@ -14208,6 +14221,16 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             if (Config.isSelfIntroFiller(raw)) {
                 return fallback;
             }
+            if (es && /\b(?:abre|revisa|busca|mira|toma|agarra|recoge|enciende|usa)\b/i.test(lower)) {
+                return fallback;
+            }
+            if (!es && /\b(?:open|check|search|look|take|grab|pick up|light|use)\b/i.test(lower) && !/\bi\b/i.test(lower)) {
+                return fallback;
+            }
+            const companionName = String(Config.companionName || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (companionName && new RegExp(`\\b${companionName}\\s+(?:abre|revisa|busca|mira|toma|agarra|recoge|enciende|usa|opens?|checks?|searches?|looks?|takes?|grabs?|lights?|uses?)\\b`, 'i').test(raw)) {
+                return fallback;
+            }
             if (!this._passesLanguageQuality(raw, es)) {
                 return fallback;
             }
@@ -14293,6 +14316,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                     `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
                     `Say ONE short line, under 12 words, before you ${String(action).toLowerCase()} something.\n` +
                     `You ARE ${Config.companionName}. Speak in first person.\n` +
+                    `${es ? 'Usa primera persona: "Abro", "Busco", "Reviso". NUNCA órdenes como "Abre" o "Busca".' : 'Use first person: "I open", "I search", "I check". NEVER commands like "Open" or "Search".'}\n` +
                     `Do not say generic filler like "I am here", "still here", or your own name.\n` +
                     `No parenthetical stage directions. Do not narrate actions in parentheses.\n` +
                     `No poetic roleplay. State intent plainly.\n` +
