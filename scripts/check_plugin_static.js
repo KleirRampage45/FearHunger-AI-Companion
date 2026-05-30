@@ -60,7 +60,6 @@ expectContains(plugin, 'const ThesisLogger = {', 'ThesisLogger module');
 expectContains(plugin, 'window.Scene_AIDebugLog = Scene_AIDebugLog;', 'AI Log scene export');
 expectContains(plugin, "Config.language === 'es'", 'language branching');
 expectContains(plugin, '_localizeLabel(label)', 'scanner label localization');
-expectContains(plugin, 'ambientFallbackMode', 'hardcoded ambient fallback gate');
 expectContains(plugin, 'getPersonaPromptBlock()', 'custom persona prompt block');
 expectContains(plugin, 'STORY GOALS AND PROGRESS', 'story goal prompt section');
 
@@ -69,6 +68,12 @@ expectNotContains(plugin, 'David.', 'hardcoded player name David');
 expectNotContains(plugin, 'chest_7', 'raw chest event leak');
 expectNotContains(plugin, 'chest_6', 'raw chest event leak');
 expectNotContains(plugin, 'cavegnome1 instead', 'debug note accidentally shipped');
+expectNotContains(plugin, 'ambientFallbackMode', 'legacy hardcoded ambient fallback setting');
+expectNotContains(plugin, 'KBFallback', 'LLM-free companion chat impersonation');
+expectNotContains(plugin, 'No puedo pensar claro. Me cubro.', 'hardcoded combat fallback dialogue');
+expectNotContains(plugin, '_generateQuickDialog', 'hardcoded combat quick-dialog generator');
+expectNotContains(plugin, 'narratorAmbientLine', 'hardcoded nonverbal ambient narration');
+expectNotContains(plugin, 'currentNarratorResponse', 'hardcoded nonverbal chat response');
 
 if (countMatches(plugin, /this\.addCommand\(es \? 'Registro IA' : 'AI Log', 'sectionLog'/g) !== 1) {
   fail('Config hub AI Log command should exist exactly once.');

@@ -172,7 +172,6 @@
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
-        ambientFallbackMode: localStorage.getItem('AI_Companion_AmbientFallbackMode') || 'silent',
         asyncCombatEnabled: localStorage.getItem('AI_Companion_AsyncCombatEnabled') === 'true',
 
         // Cached free models from OpenRouter
@@ -423,17 +422,6 @@
             localStorage.setItem('AI_Companion_AsyncCombatEnabled', on ? 'true' : 'false');
         },
 
-        setAmbientFallbackMode(mode) {
-            this.ambientFallbackMode = mode === 'legacy' ? 'legacy' : 'silent';
-            localStorage.setItem('AI_Companion_AmbientFallbackMode', this.ambientFallbackMode);
-        },
-
-        cycleAmbientFallbackMode() {
-            const next = this.ambientFallbackMode === 'legacy' ? 'silent' : 'legacy';
-            this.setAmbientFallbackMode(next);
-            return next;
-        },
-
         cycleChatTopP() {
             const values = [0.8, 0.9, 0.95, 1.0];
             const idx = values.indexOf(this.chatTopP);
@@ -463,10 +451,6 @@
             return settings;
         },
 
-        shouldUseAmbientFallbacks() {
-            return this.ambientFallbackMode === 'legacy';
-        },
-
         isSelfIntroFiller(text) {
             const raw = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
             const name = String(this.companionName || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -488,11 +472,6 @@
             out = out.replace(/\b(?:Lo miro bien|I look carefully|What is inside\?|Qué hay dentro\?)\b\.?/gi, '');
             if (es) {
                 out = out
-                    .replace(/\bI will check the door\b/gi, 'Reviso la puerta')
-                    .replace(/\bI\s+examino\b/gi, 'Examino')
-                    .replace(/\bI\s+reviso\b/gi, 'Reviso')
-                    .replace(/\bI\s+abro\b/gi, 'Abro')
-                    .replace(/\bI\s+busco\b/gi, 'Busco')
                     .replace(/\bal\s+aqu[ií]\b/gi, 'aquí')
                     .replace(/\bnorteeste\b/gi, 'noreste')
                     .replace(/\bnorteoeste\b/gi, 'noroeste')
@@ -1544,7 +1523,7 @@
                 persona: 'A charismatic prisoner-captain. Calm, commanding, messianic undertone. Speaks with restraint and conviction, never as an omniscient guide.' },
             { id: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'Actor2_2',
                 persona: 'Moonless is a wolf-like beast companion. It does not speak human language. It communicates through posture, growls, sniffing, whines, and protective movement.',
-                speechMode: 'beast', noAmbientSpeech: true, narratorEs: 'Moonless te observa en silencio. Solo responde con un leve gruñido.', narratorEn: 'Moonless watches silently. It answers only with a low growl.' },
+                speechMode: 'beast', noAmbientSpeech: true },
             { id: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'Actor3_1',
                 persona: "A severed ancient wizard-head. Arrogant, mocking, impatient, and knowledgeable about occult matters. Speaks sharply, never humble, never sentimental." },
             { id: 'demon_child', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle', previewPicture: 'Actor2_4',
@@ -1558,10 +1537,10 @@
                 speechMode: 'limited' },
             { id: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'Actor1_2',
                 persona: 'A near-mindless ghoul. It does not hold conversation. It may groan, twitch, stare, or obey simple battle instinct.',
-                speechMode: 'mindless', noAmbientSpeech: true, narratorEs: 'Intentas hablar con el ghoul, pero solo emite un gemido húmedo.', narratorEn: 'You try to speak to the ghoul, but it only answers with a wet groan.' },
+                speechMode: 'mindless', noAmbientSpeech: true },
             { id: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'Actor2_8',
                 persona: 'An animated skeleton. It does not speak. It can fight, follow, and gesture, but has no normal conversation.',
-                speechMode: 'silent', noAmbientSpeech: true, narratorEs: 'Intentas hablar con el esqueleto. No responde.', narratorEn: 'You try to speak to the skeleton. It does not respond.' },
+                speechMode: 'silent', noAmbientSpeech: true },
             { id: 'marcoh', name: 'Marcoh', nameEn: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1', previewPicture: 'Marcoh_faces_7',
                 persona: 'Marcoh is quiet, physically imposing, gentle, and haunted by guilt. He speaks in short, humble lines and protects others through action more than words.' }
         ],
@@ -1659,48 +1638,6 @@
         canCurrentAppearanceSpeak() {
             const app = this.getCurrentAppearance();
             return !(app && (app.speechMode === 'silent' || app.speechMode === 'mindless' || app.speechMode === 'beast'));
-        },
-
-        currentNarratorResponse() {
-            const app = this.getCurrentAppearance();
-            if (!app) return '';
-            return Config.language === 'es'
-                ? (app.narratorEs || 'No hay respuesta.')
-                : (app.narratorEn || 'There is no response.');
-        },
-
-        narratorAmbientLine(text, topic) {
-            const app = this.getCurrentAppearance();
-            if (!app || this.canCurrentAppearanceSpeak()) return String(text || '');
-            const es = Config.language === 'es';
-            const name = this.getAppearanceName(app);
-            const raw = String(text || '').toLowerCase();
-            const seesObject = /(found|find|notice|chest|barrel|crate|book|shelf|loot|item|cofre|barril|caja|libro|estante|objeto|encuentra|nota)/i.test(raw);
-            const hunger = /(hungry|hunger|hambre|hambr)/i.test(raw);
-            const danger = /(danger|enemy|threat|uneasy|afraid|miedo|peligro|enemigo|amenaza|inquiet)/i.test(raw);
-            const darkness = /(dark|light|torch|candle|oscur|luz|vela|antorcha|yesquero)/i.test(raw);
-            const movement = /(open|search|take|grab|pick|revis|abr|tom|agarra|recoge|interact)/i.test(raw);
-            if (app.id === 'moonless') {
-                if (hunger) return es ? 'Moonless parece tener hambre.' : 'Moonless seems hungry.';
-                if (danger) return es ? 'Moonless se queda inquieta, olfateando el aire.' : 'Moonless seems uneasy, sniffing the air.';
-                if (seesObject) return es ? 'Moonless parece haber encontrado algo.' : 'Moonless seems to have found something.';
-                if (darkness) return es ? 'Moonless reacciona a la oscuridad de la sala.' : 'Moonless reacts to the darkness in the room.';
-                return es ? 'Moonless se mueve en silencio, atenta a la sala.' : 'Moonless moves silently, alert to the room.';
-            }
-            if (app.id === 'ghoul') {
-                if (hunger) return es ? 'El ghoul parece arrastrarse por hambre.' : 'The ghoul seems driven by hunger.';
-                if (danger) return es ? 'El ghoul se tensa, como si hubiera percibido peligro.' : 'The ghoul stiffens, as if it sensed danger.';
-                if (seesObject) return es ? 'El ghoul parece haber visto algo cercano.' : 'The ghoul seems to have noticed something nearby.';
-                if (movement) return es ? 'El ghoul se arrastra hacia algo sin decir palabra.' : 'The ghoul shambles toward something without a word.';
-                return es ? 'El ghoul emite un ruido bajo, casi sin intención clara.' : 'The ghoul makes a low sound, with little clear intent.';
-            }
-            if (app.id === 'skeleton') {
-                if (danger) return es ? 'El esqueleto se queda inmóvil, orientado hacia el peligro.' : 'The skeleton goes still, facing the danger.';
-                if (seesObject) return es ? 'El esqueleto parece haber localizado algo.' : 'The skeleton seems to have located something.';
-                if (movement) return es ? 'El esqueleto se mueve para revisar algo cercano.' : 'The skeleton moves to inspect something nearby.';
-                return es ? 'El esqueleto se mueve sin decir palabra.' : 'The skeleton moves without a word.';
-            }
-            return es ? `${name} no responde con palabras.` : `${name} does not answer with words.`;
         },
 
         setAppearance(id) {
@@ -2694,149 +2631,6 @@ Reply with ONLY the category name, nothing else.`;
             this._cache.clear();
         }
     };
-
-	    //=========================================================================
-	    // KBFallback — LLM-free responses from KB data (Phase 6 safety net)
-	    //=========================================================================
-	    const KBFallback = {
-	        _playerName(context) {
-	            return context && context.player_name ? context.player_name : (Config.language === 'es' ? 'tú' : 'you');
-	        },
-
-	        _lineListFromBlock(block, heading, maxLines) {
-	            const text = String(block || '');
-	            const lines = text.split(/\n/);
-	            const out = [];
-	            let active = false;
-	            for (const raw of lines) {
-	                const line = raw.trim();
-	                if (!line) continue;
-	                if (line.toUpperCase().indexOf(heading.toUpperCase()) === 0) {
-	                    active = true;
-	                    continue;
-	                }
-	                if (active && /^[A-ZÁÉÍÓÚÑ /]+:$/.test(line)) break;
-	                if (active && /^-\s+/.test(line)) out.push(line.replace(/^-\s+/, ''));
-	                if (out.length >= maxLines) break;
-	            }
-	            return out;
-	        },
-
-	        _buildStoryRecall(context, playerMessage) {
-	            const es = Config.language === 'es';
-	            const playerName = this._playerName(context);
-	            const story = context && context.story_goal_memory ? context.story_goal_memory : '';
-	            const milestones = this._lineListFromBlock(story, 'HITOS RECIENTES OBSERVADOS:', 4);
-	            const leads = this._lineListFromBlock(story, 'SOSPECHAS / RUMBOS POSIBLES:', 2)
-	                .map(line => line.replace(/\s+\(\d+%\)$/, ''));
-	            const personal = this._lineListFromBlock(story, 'METAS PERSONALES DEL COMPAÑERO:', 2);
-	            const asksGoals = /objetiv|meta|goal|objective|progress|progreso|rumbo|next/i.test(playerMessage || '');
-
-	            if (asksGoals && leads.length > 0) {
-	                return es
-	                    ? `Ahora mismo, ${playerName}, creo que deberíamos ${leads[0].charAt(0).toLowerCase() + leads[0].slice(1)}. También quiero mantenernos vivos y no hacer daño innecesario.`
-	                    : `Right now, ${playerName}, I think we should ${leads[0].charAt(0).toLowerCase() + leads[0].slice(1)}. I also want to keep us alive and avoid needless cruelty.`;
-	            }
-
-	            if (milestones.length > 0) {
-	                const short = milestones.slice(0, 3).join('; ');
-	                const lead = leads.length > 0 ? leads[0].replace(/\.$/, '') : '';
-	                if (es) {
-	                    return lead
-	                        ? `Recuerdo esto, ${playerName}: ${short}. Por ahora parece más prudente ${lead.charAt(0).toLowerCase() + lead.slice(1)}.`
-	                        : `Recuerdo esto, ${playerName}: ${short}.`;
-	                }
-	                return lead
-	                    ? `I remember this, ${playerName}: ${short}. For now it seems safest to ${lead.charAt(0).toLowerCase() + lead.slice(1)}.`
-	                    : `I remember this, ${playerName}: ${short}.`;
-	            }
-
-	            if (personal.length > 0) {
-	                return es
-	                    ? `Aún no tengo mucho claro, ${playerName}, pero sé que quiero ${personal[0].charAt(0).toLowerCase() + personal[0].slice(1)}.`
-	                    : `I do not have much clear yet, ${playerName}, but I know I want to ${personal[0].charAt(0).toLowerCase() + personal[0].slice(1)}.`;
-	            }
-
-	            return es
-	                ? `Todavía recuerdo poco, ${playerName}. Sigamos mirando con cuidado y atando cabos.`
-	                : `I still remember little, ${playerName}. Let us keep looking carefully and piece things together.`;
-	        },
-
-	        _buildGeneric(context) {
-	            const es = Config.language === 'es';
-	            const playerName = this._playerName(context);
-	            if (context && context.current_map) {
-	                return es
-	                    ? `Estoy aquí contigo, ${playerName}. Estamos en ${context.current_map}, y por ahora conviene avanzar con cuidado.`
-	                    : `I am here with you, ${playerName}. We are in ${context.current_map}, and for now we should move carefully.`;
-	            }
-	            return es ? `Estoy aquí contigo, ${playerName}.` : `I am here with you, ${playerName}.`;
-	        },
-
-	        respond(intent, context, playerMessage) {
-	            if (!intent || !intent.types) return this._buildGeneric(context);
-
-	            if (intent.primary === 'memory_recall') {
-	                return this._buildStoryRecall(context, playerMessage);
-	            }
-
-            // Try to give a KB-based answer for the primary intent
-            if (intent.primary === 'item_info' && intent.entities.length > 0) {
-                const entity = intent.entities.find(e => e.type === 'item');
-                if (entity && entity.match) {
-                    const item = entity.match;
-                    let text = item.description || '';
-                    if (item.effect) text += ` ${item.effect}.`;
-                    if (item.tips) text += ` ${item.tips}`;
-                    return text || (Config.language === 'es' ? 'No tengo información sobre eso.' : "I don't know about that.");
-                }
-            }
-
-            if (intent.primary === 'tactical' && intent.entities.length > 0) {
-                const entity = intent.entities.find(e => e.type === 'enemy');
-                if (entity && entity.match && typeof FearHungerKB !== 'undefined') {
-                    const enemy = entity.match;
-                    const prompt = KBLookupCache.combatPrompt(entity.name);
-                    if (prompt) return prompt;
-                    const priority = enemy.limbPriority || enemy.priority || [];
-                    const hints = enemy.hints || [];
-                    const lines = [];
-	                    lines.push(`${Config.language === 'es' ? (enemy.displayNameEs || enemy.displayName || entity.name) : (enemy.displayName || enemy.displayNameEs || entity.name)}:`);
-	                    if (enemy.tactics) lines.push(Locale.text(enemy.tactics));
-	                    if (priority.length > 0) lines.push(Config.language === 'es'
-	                        ? `Prioridad: ${priority.join(' > ')}`
-	                        : `Priority: ${priority.join(' > ')}`);
-	                    if (enemy.coinFlipTurn) lines.push(Config.language === 'es'
-	                        ? `Coin flip en turno ${enemy.coinFlipTurn}: hay que matar o defender antes.`
-	                        : `Coin flip on turn ${enemy.coinFlipTurn}: kill it or defend before then.`);
-	                    if (hints.length > 0) lines.push(Config.language === 'es'
-	                        ? `Notas: ${hints.slice(0, 2).join('; ')}`
-	                        : `Notes: ${hints.slice(0, 2).map(h => Locale.text(h)).join('; ')}`);
-                    return lines.join(' ') || (Config.language === 'es' ? 'No sé mucho de ese enemigo.' : "I don't know much about that enemy.");
-                }
-            }
-
-	            if (intent.primary === 'status_help') {
-                // Try to find the status from entities or keywords
-                if (typeof FearHungerKB !== 'undefined' && FearHungerKB.getStatusEffect) {
-                    for (const word of intent.entities.map(e => e.name).concat(intent.types)) {
-                        const effect = KBLookupCache.statusEffect(word);
-	                        if (effect) return Config.language === 'es'
-	                            ? `${effect.name}: ${effect.effect} Cura: ${effect.cure}`
-	                            : `${Locale.text(effect.name)}: ${Locale.text(effect.effect)} Cure: ${Locale.text(effect.cure)}`;
-                    }
-                }
-                const statusReference = KBLookupCache.statusEffectsPrompt();
-                if (statusReference) return statusReference.split('\n').slice(0, 6).join('\n');
-	            }
-
-	            if (intent.primary === 'generic_query' || intent.primary === 'emotional' || intent.primary === 'social' || intent.primary === 'location') {
-	                return this._buildGeneric(context);
-	            }
-
-	            return this._buildStoryRecall(context, playerMessage);
-	        }
-	    };
 
     //=========================================================================
     // HybridRAG — Vector-based semantic retrieval supplementing structured KB
@@ -4803,13 +4597,6 @@ Reply with ONLY the category name, nothing else.`;
             return this.ACTION_ALIASES[key] || key;
         }
 
-        static _generateQuickDialog(decision) {
-            if (typeof GeminiAPIHandler !== 'undefined' && GeminiAPIHandler._generateQuickDialog) {
-                return GeminiAPIHandler._generateQuickDialog(decision);
-            }
-            return null;
-        }
-
         static _findSkillByName(actor, name) {
             return actor.skills().find(s =>
                 s.name.toLowerCase() === name.toLowerCase()
@@ -5137,7 +4924,7 @@ Reply with ONLY the category name, nothing else.`;
                 normalized.action = 'Defenderse';
                 normalized.limb = null;
                 normalized.reasoning = 'Coin flip threat active this turn; defending instead of attacking.';
-                normalized.dialog = this._generateQuickDialog(normalized);
+                normalized.dialog = '';
                 return normalized;
             }
 	            if (normalizedAction !== 'attack') {
@@ -5183,7 +4970,7 @@ Reply with ONLY the category name, nothing else.`;
             normalized.limb = chosenLimb || null;
 
             if (!normalized.dialog || this._dialogLooksEnglish(normalized.dialog) || this._dialogConflictsWithLimb(normalized.dialog, normalized.limb) || requestedLimb !== normalized.limb) {
-                normalized.dialog = this._generateQuickDialog(normalized);
+                normalized.dialog = '';
             }
 
             return normalized;
@@ -6104,66 +5891,6 @@ Respond ONLY with this JSON:
             return fallbackDecision;
         }
 
-        static _generateQuickDialog(decision) {
-            // Generate varied contextual dialog based on action and target
-            const actionLower = decision.action.toLowerCase();
-            const limbTarget = decision.limb ? decision.limb.toLowerCase() : null;
-            const targetName = decision.target || 'enemy';
-
-            if (actionLower === 'attack') {
-                const generalLines = Config.language === 'es'
-                    ? [
-                        "¡Voy!",
-                        "¡Lo tengo!",
-                        "¡Cúbreme!",
-                        "¡No bajes la guardia!",
-                        "¡Ahora!",
-                        "¡Sigue!",
-                        "¡Juntos!"
-                    ]
-                    : [
-                        "Striking now!",
-                        "I'll handle this one!",
-                        "Watch my flank!",
-                        "Keep your guard up!",
-                        "No mercy!",
-                        "Stay focused!",
-                        "Together now!"
-                    ];
-
-                // Limb-specific lines
-                if (limbTarget === 'head') {
-                    const headLines = Config.language === 'es'
-                        ? ["¡A la cabeza!", "¡Al cráneo!", "¡Una buena ahí!", "¡Remátalo!"]
-                        : ["Going for the head!", "Aim for the skull!", "One clean strike!", "This ends it!"];
-                    return headLines[Math.floor(Math.random() * headLines.length)];
-                } else if (limbTarget && limbTarget.includes('arm')) {
-                    const armLines = Config.language === 'es'
-                        ? ["¡Al brazo!", "¡Quítale el alcance!", "¡Córtale ese brazo!"]
-                        : ["Disabling its arm!", "Take away its weapon!", "Crippling its reach!"];
-                    return armLines[Math.floor(Math.random() * armLines.length)];
-                } else if (limbTarget && limbTarget.includes('leg')) {
-                    const legLines = Config.language === 'es'
-                        ? ["¡A la pierna!", "¡Bájalo!", "¡Que no avance!"]
-                        : ["Slow it down!", "Going for the legs!", "It won't run!"];
-                    return legLines[Math.floor(Math.random() * legLines.length)];
-                } else if (limbTarget === 'torso') {
-                    const torsoLines = Config.language === 'es'
-                        ? ["¡Al torso!", "¡Ahora al cuerpo!", "¡Remátalo al centro!"]
-                        : ["Go for the torso!", "Center mass!", "Finish it through the body!"];
-                    return torsoLines[Math.floor(Math.random() * torsoLines.length)];
-                }
-
-                return generalLines[Math.floor(Math.random() * generalLines.length)];
-            } else if (actionLower === 'defend' || actionLower === 'guard') {
-                const defendLines = Config.language === 'es'
-                    ? ["¡Aguanto!", "¡Me cubro!", "¡Un momento!", "¡Defensa!"]
-                    : ["Holding position!", "Bracing myself!", "I need a moment!", "Staying defensive!"];
-                return defendLines[Math.floor(Math.random() * defendLines.length)];
-            }
-            return null; // No dialog for unknown actions
-        }
-
         static _validateDecision(decision, battleState) {
             if (!decision) return false;
             if (!decision.action) return false;
@@ -6211,13 +5938,12 @@ Respond ONLY with this JSON:
         }
 
         static _getFallbackDecision() {
-            const es = Config.language === 'es';
             return {
                 action: 'Defenderse',
                 target: null,
                 limb: null,
                 reasoning: 'Fallback: no AI decision available, taking a defensive action.',
-                dialog: es ? 'No puedo pensar claro. Me cubro.' : "Can't think clearly. Guarding."
+                dialog: null
             };
         }
 
@@ -6235,7 +5961,7 @@ Respond ONLY with this JSON:
                     target: 'self',
                     limb: null,
                     reasoning: 'Low HP, defensive play',
-                    dialog: 'I need to be careful...'
+                    dialog: null
                 };
             }
 
@@ -6247,7 +5973,7 @@ Respond ONLY with this JSON:
                         target: enemy.name,
                         limb: 'head',
                         reasoning: 'Going for the kill shot',
-                        dialog: 'The head!'
+                        dialog: null
                     };
                 }
             }
@@ -6260,7 +5986,7 @@ Respond ONLY with this JSON:
                         target: enemy.name,
                         limb: 'right_arm',
                         reasoning: 'Disarm to reduce threat',
-                        dialog: 'Disabling the weapon arm.'
+                        dialog: null
                     };
                 }
                 if (enemy.limbs['right arm'] && enemy.limbs['right arm'].alive) {
@@ -6269,7 +5995,7 @@ Respond ONLY with this JSON:
                         target: enemy.name,
                         limb: 'right arm',
                         reasoning: 'Disarm to reduce threat',
-                        dialog: 'Disabling the weapon arm.'
+                        dialog: null
                     };
                 }
             }
@@ -7166,7 +6892,7 @@ Respond ONLY with this JSON:
         } else if (section === 'debug') {
             const perf = window._AICompanionPerformanceMonitor;
             drawLine(`${es ? 'Debug consola' : 'Debug console'} ${Config.debugMode ? 'ON' : 'OFF'} | ${es ? 'telemetría' : 'telemetry'} ${Config.performanceLogging ? 'ON' : 'OFF'} / ${Config.performanceLogIntervalMs}ms`, 0);
-            drawLine(`${es ? 'Overlay' : 'Overlay'} ${Config.debugOverlay ? 'ON' : 'OFF'} | ${es ? 'fallback ambiental' : 'ambient fallback'} ${Config.ambientFallbackMode}`, 1);
+            drawLine(`${es ? 'Overlay' : 'Overlay'} ${Config.debugOverlay ? 'ON' : 'OFF'}`, 1);
             drawLine(`${es ? 'Cola local' : 'Local queue'}: ${LocalRequestQueue.isBusy() ? 'busy ' + (LocalRequestQueue._activeLabel || '') : 'idle'}`, 2);
             drawLine(`${es ? 'FPS/RAM se registran en ai_companion_logs' : 'FPS/RAM are logged into ai_companion_logs'}`, 3);
         } else if (section === 'autopilot') {
@@ -7217,7 +6943,6 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('togglePerformanceLogging', this.commandTogglePerformanceLogging.bind(this));
         this._commandWindow.setHandler('setPerformanceInterval', this.commandSetPerformanceInterval.bind(this));
         this._commandWindow.setHandler('toggleAsyncCombat', this.commandToggleAsyncCombat.bind(this));
-        this._commandWindow.setHandler('toggleAmbientFallbacks', this.commandToggleAmbientFallbacks.bind(this));
         this._commandWindow.setHandler('setName', this.commandSetName.bind(this));
         this._commandWindow.setHandler('setAppearance', this.commandSetAppearance.bind(this));
         this._commandWindow.setHandler('setPersonality', this.commandSetPersonality.bind(this));
@@ -7371,12 +7096,6 @@ Respond ONLY with this JSON:
         Config.setAsyncCombatEnabled(!Config.asyncCombatEnabled);
         SoundManager.playOk();
         this._refreshConfigScene();
-    };
-
-    Scene_AIConfig.prototype.commandToggleAmbientFallbacks = function () {
-        const next = Config.cycleAmbientFallbackMode();
-        SoundManager.playOk();
-        this._refreshConfigScene(`${Config.language === 'es' ? 'Fallback ambiental' : 'Ambient fallback'}: ${next}`);
     };
 
     Scene_AIConfig.prototype.onInputOk = function () {
@@ -7956,7 +7675,6 @@ Respond ONLY with this JSON:
             addBack();
             this.addCommand(es ? 'Configurar API Key' : 'Set API Key', 'apiKey');
             this.addCommand(mockLabel, 'toggleMock');
-            this.addCommand(`${es ? 'Fallback ambiental legacy' : 'Legacy ambient fallbacks'}: ${Config.ambientFallbackMode}`, 'toggleAmbientFallbacks');
             this.addCommand(`${es ? 'Idioma' : 'Language'}: ${Config.language === 'es' ? 'Español' : 'English'}`, 'setLanguage');
         }
     };
@@ -7981,7 +7699,6 @@ Respond ONLY with this JSON:
             toggleAsyncCombat: es ? 'Combate async evita congelar el juego, pero puede ser menos estable.' : 'Async combat avoids freezing but may be less stable.',
             togglePerformanceLogging: es ? 'Registra FPS, RAM del juego, CPU y latencia local en ai_companion_logs.' : 'Log FPS, game RAM, CPU, and local latency into ai_companion_logs.',
             setPerformanceInterval: es ? 'Frecuencia de registro de telemetría.' : 'Telemetry logging frequency.',
-            toggleAmbientFallbacks: es ? 'Legacy genera frases locales si el LLM no habla; silent evita hardcoded ambient.' : 'Legacy uses local fallback lines if LLM is quiet; silent avoids hardcoded ambient.',
             setName: es ? 'Abre la edición nativa del nombre del compañero.' : 'Open the native companion name editor.',
             setAppearance: es ? 'Cambia el preset visual del compañero.' : 'Cycle the companion appearance preset.',
             setPersonality: es ? 'Cambia la personalidad base del compañero.' : 'Cycle the companion base personality.',
@@ -10149,18 +9866,8 @@ Respond ONLY with this JSON:
             return lines.slice(0, maxLines || 4);
         },
 
-        _fallbackConsentText(target) {
-            const es = Config.language === 'es';
-            const label = target && target.label ? target.label : (es ? 'esto' : 'this');
-            if (target && target.type === 'shop') {
-                return es ? `¿Quieres que hable con ${label}?` : `Should I talk to ${label}?`;
-            }
-            return es ? `Esto puede ser delicado. ¿Sigo?` : `This may be risky. Continue?`;
-        },
-
         async _generateConsentText(target) {
-            const fallback = this._fallbackConsentText(target);
-            if (Config.useMockAI) return fallback;
+            if (Config.useMockAI) return '';
             try {
                 const es = Config.language === 'es';
                 const endpoint = Config.getEndpoint();
@@ -10196,10 +9903,10 @@ Respond ONLY with this JSON:
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
                 const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
-                return cleaned && cleaned.length >= 4 ? cleaned : fallback;
+                return cleaned && cleaned.length >= 4 ? cleaned : '';
             } catch (e) {
                 Debug.warn('[Autonomy] Consent prompt generation failed:', e.message);
-                return fallback;
+                return '';
             }
         },
 
@@ -10217,17 +9924,19 @@ Respond ONLY with this JSON:
             this._clearTask();
 
             const es = Config.language === 'es';
-            const text = await this._generateConsentText(target);
+            const generatedText = await this._generateConsentText(target);
+            const text = generatedText || (es ? 'Confirmar interacción de riesgo' : 'Confirm risky interaction');
             if (!$gameMessage || $gameMessage.isBusy()) {
                 this._state.consentPromptPending = false;
                 return;
             }
             const appearance = CharacterPresets.getCurrentAppearance();
-            $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
+            $gameMessage.setFaceImage(generatedText ? appearance.face : '', generatedText ? appearance.faceIndex : 0);
             $gameMessage.setBackground(0);
             $gameMessage.setPositionType(2);
             const lines = this._wrapLines(text, 36, 4);
-            $gameMessage.add(`\\c[6]${Config.companionName}\\c[0]: ${lines[0] || text}`);
+            const speaker = generatedText ? Config.companionName : (es ? 'Sistema' : 'System');
+            $gameMessage.add(`\\c[6]${speaker}\\c[0]: ${lines[0] || text}`);
             for (let i = 1; i < lines.length; i++) $gameMessage.add(lines[i]);
             if ($gameMessage.setChoiceHelps) $gameMessage.setChoiceHelps(['', '']);
             if ($gameMessage.setChoiceMessages) $gameMessage.setChoiceMessages(['', '']);
@@ -10290,10 +9999,6 @@ Respond ONLY with this JSON:
             this._clearConsentApproval();
             this._clearTask();
             Debug.warn('[Autonomy] Consent required:', reason);
-            if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue && AmbientDialogue._speak) {
-                const es = Config.language === 'es';
-                AmbientDialogue._speak(es ? 'Esto lo decides tú.' : 'This one is your call.', 'autonomy_consent');
-            }
         },
 
         _choiceNeedsConsent(choices, messageText) {
@@ -11433,45 +11138,45 @@ Respond ONLY with this JSON:
             const summary = this._describeBackgroundLootRewards(rewards);
             if (!summary) return;
             const es = Config.language === 'es';
-            let text = es ? `Encontré ${summary}.` : `I found ${summary}.`;
-            if (!Config.useMockAI) {
+            if (Config.useMockAI) return;
+            let text = '';
+            try {
+                const endpoint = Config.getEndpoint();
+                const headers = Config.getHeaders();
+                const model = Config.getChatModel();
+                const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                    `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                    `You just found loot while searching independently.\n` +
+                    `Loot: ${summary}\n` +
+                    `Say ONE short line, under 12 words. Mention what you found.`;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 1400);
+                let resp;
                 try {
-                    const endpoint = Config.getEndpoint();
-                    const headers = Config.getHeaders();
-                    const model = Config.getChatModel();
-                    const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
-                        `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
-                        `You just found loot while searching independently.\n` +
-                        `Loot: ${summary}\n` +
-                        `Say ONE short line, under 12 words. Mention what you found.`;
-                    const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), 1400);
-                    let resp;
-                    try {
-                        resp = await LocalRequestQueue.runOptional('loot_summary', () => fetch(endpoint, {
-                            method: 'POST',
-                            headers,
-                            signal: controller.signal,
-                            body: JSON.stringify({
-                                model,
-                                messages: [{ role: 'system', content: prompt }],
-                                max_tokens: 36,
-                                temperature: 0.8
-                            })
-                        }));
-                    } finally {
-                        clearTimeout(timer);
-                    }
-                    if (resp.ok) {
-                        const data = await resp.json();
-                        const raw = data.choices?.[0]?.message?.content?.trim();
-                        const cleaned = raw ? raw.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
-                        if (cleaned && cleaned.length >= 4) text = cleaned;
-                    }
-                } catch (e) {
-                    // Summary fallback is intentionally quiet; looting should not stall.
+                    resp = await LocalRequestQueue.runOptional('loot_summary', () => fetch(endpoint, {
+                        method: 'POST',
+                        headers,
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            model,
+                            messages: [{ role: 'system', content: prompt }],
+                            max_tokens: 36,
+                            temperature: 0.8
+                        })
+                    }));
+                } finally {
+                    clearTimeout(timer);
                 }
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const raw = data.choices?.[0]?.message?.content?.trim();
+                    const cleaned = raw ? raw.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
+                    if (cleaned && cleaned.length >= 4) text = cleaned;
+                }
+            } catch (e) {
+                // Optional flavor must stay silent when the model is unavailable.
             }
+            if (!text) return;
             if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
                 ActionExecutor._showDialogue(text);
             }
@@ -11950,7 +11655,6 @@ Respond ONLY with this JSON:
         StoryGoalMemory,
         IntentDetector,
         RelationshipTracker,
-        KBFallback,
         KBLookupCache,
         MapContextHelper,
         RiskEvaluator,
@@ -12440,84 +12144,6 @@ Respond ONLY with this JSON:
             return matches;
         },
 
-        _buildVisionFallback(context) {
-            const es = Config.language === 'es';
-            const playerName = context && context.player_name ? context.player_name : 'tú';
-            if (context && context.nearby_objects) {
-                return es
-                    ? `Solo veo esto cerca, ${playerName}: ${context.nearby_objects}.`
-                    : `I only see this nearby, ${playerName}: ${context.nearby_objects}.`;
-            }
-            return es ? `No veo nada destacable ahora mismo, ${playerName}.` : `I do not see anything notable right now, ${playerName}.`;
-        },
-
-        _buildTacticalFallback(context) {
-            const es = Config.language === 'es';
-            const playerName = context && context.player_name ? context.player_name : 'tú';
-            const nearbyEnemies = this._getNearbyEnemyKnowledge(context);
-            if (nearbyEnemies.length === 0) {
-                return es
-                    ? `No veo enemigos cerca, ${playerName}. Mantente alerta por si aparece algo.`
-                    : `I do not see enemies nearby, ${playerName}. Stay alert in case one appears.`;
-            }
-
-            const firstEnemy = nearbyEnemies[0].enemy;
-            const name = es ? (firstEnemy.displayNameEs || firstEnemy.displayName || 'enemigo') : (firstEnemy.displayName || firstEnemy.displayNameEs || 'enemy');
-            if (firstEnemy.coinFlipTurn) {
-                return es
-                    ? `${name} está cerca, ${playerName}. Cuidado con su turno de moneda; hay que matarlo antes de eso.`
-                    : `${name} is nearby, ${playerName}. Watch its coin flip turn; we must kill it before then.`;
-            }
-            return es
-                ? `${name} está cerca, ${playerName}. Parece manejable, pero no bajemos la guardia.`
-                : `${name} is nearby, ${playerName}. It looks manageable, but stay guarded.`;
-        },
-
-        _buildRecentBattleFallback(context) {
-            const es = Config.language === 'es';
-            const playerName = context && context.player_name ? context.player_name : 'tú';
-            if (!context || !context.last_battle || !context.last_battle.enemies || context.last_battle.enemies.length === 0) {
-                return es ? `No recuerdo bien el último combate, ${playerName}.` : `I do not clearly remember the last fight, ${playerName}.`;
-            }
-	            const names = context.last_battle.enemies.map(name => Locale.enemyName(name)).join(', ');
-            if (context.last_battle.victory) {
-                return es ? `Nos fue bien, ${playerName}. Acabamos de vencer a ${names}.` : `We did well, ${playerName}. We just beat ${names}.`;
-            }
-            return es ? `El último combate fue contra ${names}, ${playerName}.` : `The last fight was against ${names}, ${playerName}.`;
-        },
-
-        _buildNpcRecallFallback(context) {
-            const es = Config.language === 'es';
-            const playerName = context && context.player_name ? context.player_name : 'tú';
-            const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
-            if (!entries || entries.length === 0) {
-                return es ? `No estoy seguro de con quién hablamos recién, ${playerName}.` : `I am not sure who we just spoke to, ${playerName}.`;
-            }
-            const latest = entries[entries.length - 1];
-            if (!latest || !latest.speaker) {
-                return es ? `No estoy seguro de con quién hablamos recién, ${playerName}.` : `I am not sure who we just spoke to, ${playerName}.`;
-            }
-            if (latest.text) {
-                return es
-                    ? `Era ${latest.speaker}, ${playerName}. Nos habló de esto: "${latest.text.substring(0, 90)}"`
-                    : `It was ${latest.speaker}, ${playerName}. They said this: "${latest.text.substring(0, 90)}"`;
-            }
-            return es ? `Era ${latest.speaker}, ${playerName}.` : `It was ${latest.speaker}, ${playerName}.`;
-        },
-
-        _buildEmotionalFallback(playerMessage, context) {
-            const es = Config.language === 'es';
-            const playerName = context && context.player_name ? context.player_name : 'tú';
-            const msg = String(playerMessage || '').toLowerCase();
-            if (/lo hice bien|did i do well|did i do good/.test(msg)) {
-                return es ? `Sí. Lo hiciste bien, ${playerName}.` : `Yes. You did well, ${playerName}.`;
-            }
-            if (/como te sientes|cómo te sientes|how do you feel/.test(msg)) {
-                return es ? 'Sigo entero. Un poco tenso, pero bien.' : 'I am still standing. Tense, but fine.';
-            }
-            return es ? `Estoy contigo, ${playerName}. Seguimos adelante.` : `I am with you, ${playerName}. We keep moving.`;
-        },
-
         _validateChatResponse(response, playerMessage, context, intent) {
             const text = String(response || '').trim();
             if (!text) return { text: text, changed: false, reason: null };
@@ -12531,7 +12157,7 @@ Respond ONLY with this JSON:
             if (this._isVisionQuery(playerMessage)) {
                 const invalidEnemyMention = mentionedEnemies.some(name => !allowedNearby[this._normalizeLookupText(name)]);
                 if (invalidEnemyMention) {
-                    return { text: this._buildVisionFallback(context), changed: true, reason: 'vision_ungrounded_enemy' };
+                    return { text: '', changed: true, reason: 'vision_ungrounded_enemy' };
                 }
             }
 
@@ -12541,16 +12167,16 @@ Respond ONLY with this JSON:
                 const mentionsUnknownEnemy = mentionedEnemies.some(name => !allowedNearby[this._normalizeLookupText(name)]);
                 const driftsIntoContainers = /cofre|cofres|abrir|abramos|contenedor|contenedores/i.test(text);
                 if (nearbyEnemies.length === 0 && (hasCoinFlipWarning || mentionedEnemies.length > 0)) {
-                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_no_grounded_enemy' };
+                    return { text: '', changed: true, reason: 'tactical_no_grounded_enemy' };
                 }
                 if (nearbyEnemies.length === 0 && driftsIntoContainers) {
-                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_topic_drift' };
+                    return { text: '', changed: true, reason: 'tactical_topic_drift' };
                 }
                 if (mentionsUnknownEnemy) {
-                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_wrong_enemy' };
+                    return { text: '', changed: true, reason: 'tactical_wrong_enemy' };
                 }
                 if (hasCoinFlipWarning && nearbyEnemies.every(entry => !entry.enemy.coinFlipTurn)) {
-                    return { text: this._buildTacticalFallback(context), changed: true, reason: 'tactical_fake_coin_flip' };
+                    return { text: '', changed: true, reason: 'tactical_fake_coin_flip' };
                 }
             }
 
@@ -12561,7 +12187,7 @@ Respond ONLY with this JSON:
                 const mentionsWrongEnemy = mentionedEnemies.some(name => !allowedBattle[this._normalizeLookupText(name)]);
                 const mentionsExpectedEnemy = lastBattleEnemies.some(name => normalizedText.includes(this._normalizeLookupText(name)));
                 if (lastBattleEnemies.length > 0 && (mentionsWrongEnemy || !mentionsExpectedEnemy)) {
-                    return { text: this._buildRecentBattleFallback(context), changed: true, reason: 'recent_battle_mismatch' };
+                    return { text: '', changed: true, reason: 'recent_battle_mismatch' };
                 }
             }
 
@@ -12569,17 +12195,17 @@ Respond ONLY with this JSON:
                 const entries = context && context.npc_dialogue_entries ? context.npc_dialogue_entries : [];
                 const latest = entries.length > 0 ? entries[entries.length - 1] : null;
                 if (!latest || !latest.speaker) {
-                    return { text: this._buildNpcRecallFallback(context), changed: true, reason: 'npc_recall_no_dialogue' };
+                    return { text: '', changed: true, reason: 'npc_recall_no_dialogue' };
                 }
                 const speakerToken = this._normalizeLookupText(latest.speaker);
                 if (!speakerToken || normalizedText.indexOf(speakerToken) === -1) {
-                    return { text: this._buildNpcRecallFallback(context), changed: true, reason: 'npc_recall_missing_speaker' };
+                    return { text: '', changed: true, reason: 'npc_recall_missing_speaker' };
                 }
             }
 
             if (intent && intent.primary === 'emotional') {
                 if (/a \d+ pasos al|enemig|coin flip|turno de moneda/i.test(text)) {
-                    return { text: this._buildEmotionalFallback(playerMessage, context), changed: true, reason: 'emotional_tactical_drift' };
+                    return { text: '', changed: true, reason: 'emotional_tactical_drift' };
                 }
             }
 
@@ -13011,39 +12637,6 @@ Respond ONLY with this JSON:
                 }
             }
 
-            if (typeof CharacterPresets !== 'undefined' &&
-                CharacterPresets.canCurrentAppearanceSpeak &&
-                !CharacterPresets.canCurrentAppearanceSpeak()) {
-                const response = CharacterPresets.currentNarratorResponse
-                    ? CharacterPresets.currentNarratorResponse()
-                    : (Config.language === 'es' ? 'No hay respuesta.' : 'There is no response.');
-                const intent = { types: ['nonverbal_companion'], primary: 'nonverbal_companion', confidence: 1, entities: [] };
-                this.addToHistory('companion', response, exchangeContext);
-                this.addTranscriptMessage('companion', response, exchangeContext);
-                DialogueMemory.rememberLine(response, 'chat', dialogueMeta);
-                ThesisLogger.log('chat', {
-                    player_message: playerMessage,
-                    intent: intent,
-                    prompt_length: 0,
-                    prompt_sections: null,
-                    response_text: response,
-                    response_source: 'appearance_nonverbal',
-                    latency_ms: 0,
-                    model_used: null,
-                    rag_chunk_ids: null,
-                    grounding_mode: 'structured_confirmed'
-                });
-                DebugState.captureChat({
-                    player_message: playerMessage,
-                    intent: intent,
-                    response_text: response,
-                    response_source: 'appearance_nonverbal',
-                    latency_ms: 0,
-                    model_used: null
-                });
-                return response;
-            }
-
             const context = this.getContext();
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
             this._normalizeIntentForRecruitmentQuery(playerMessage, intent);
@@ -13062,10 +12655,9 @@ Respond ONLY with this JSON:
                 if (ofType.length > 2) {
                     const names = ofType.slice(0, 4).map(e => e.name);
                     const response = Config.language === 'es'
-                        ? `¿Te refieres a ${names.join(', ')}...?`
-                        : `Do you mean ${names.join(', ')}...?`;
-                    this.addToHistory('companion', response, exchangeContext);
-                    this.addTranscriptMessage('companion', response, exchangeContext);
+                        ? `[Sistema] ¿Te refieres a ${names.join(', ')}...?`
+                        : `[System] Do you mean ${names.join(', ')}...?`;
+                    this.addTranscriptMessage('system', response, exchangeContext);
                     return response;
                 }
             }
@@ -13113,12 +12705,10 @@ Respond ONLY with this JSON:
                 const response = await this._sendChatRequest(prompt);
                 const chatLatency = Math.round(performance.now() - chatStartTime);
                 if (!response || response.trim().length === 0) {
-                    // KB fallback — no LLM dependency
-	                    const fallback = KBFallback.respond(intent, context, playerMessage);
-                    this.addToHistory('companion', fallback, exchangeContext);
-                    this.addTranscriptMessage('companion', fallback, exchangeContext);
-                    DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
-                    this._rememberChatFacts(fallback, intent, context);
+                    const fallback = Config.language === 'es'
+                        ? '[Sistema] El modelo no respondió.'
+                        : '[System] The model did not respond.';
+                    this.addTranscriptMessage('system', fallback, exchangeContext);
                     ThesisLogger.log('chat', {
                         player_message: playerMessage,
                         intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -13126,7 +12716,7 @@ Respond ONLY with this JSON:
                         prompt_sections: this._lastPromptSections || null,
                         risk_assessment: context.risk_assessment,
 	                        response_text: fallback,
-	                        response_source: 'kb_fallback',
+	                        response_source: 'system_llm_unavailable',
 	                        latency_ms: chatLatency,
 	                        model_used: null,
 	                        llm_failures: ModelRouter.getRecentFailures(),
@@ -13140,7 +12730,7 @@ Respond ONLY with this JSON:
                         prompt_sections: this._lastPromptSections || null,
                         risk_assessment: context.risk_assessment,
 	                        response_text: fallback,
-	                        response_source: 'kb_fallback',
+	                        response_source: 'system_llm_unavailable',
 	                        latency_ms: chatLatency,
 	                        model_used: null,
 	                        llm_failures: ModelRouter.getRecentFailures()
@@ -13149,6 +12739,21 @@ Respond ONLY with this JSON:
                 }
                 const validation = this._validateChatResponse(response, playerMessage, context, intent);
                 const finalResponse = validation.text;
+                if (!finalResponse) {
+                    const rejected = Config.language === 'es'
+                        ? '[Sistema] Respuesta descartada por falta de contexto verificable.'
+                        : '[System] Response discarded because it was not grounded in verified context.';
+                    this.addTranscriptMessage('system', rejected, exchangeContext);
+                    ThesisLogger.log('chat', {
+                        player_message: playerMessage,
+                        response_text: rejected,
+                        raw_response_text: response,
+                        response_source: 'system_grounding_rejection',
+                        validator_reason: validation.reason,
+                        latency_ms: chatLatency
+                    });
+                    return rejected;
+                }
                 this.addToHistory('companion', finalResponse, exchangeContext);
                 this.addTranscriptMessage('companion', finalResponse, exchangeContext);
                 DialogueMemory.rememberLine(finalResponse, 'chat', dialogueMeta);
@@ -13202,12 +12807,10 @@ Respond ONLY with this JSON:
             } catch (error) {
                 const chatLatency = Math.round(performance.now() - chatStartTime);
                 Debug.error('[Chat] error:', error);
-                // KB fallback on API failure
-	                const fallback = KBFallback.respond(intent, context, playerMessage);
-                this.addToHistory('companion', fallback, exchangeContext);
-                this.addTranscriptMessage('companion', fallback, exchangeContext);
-                DialogueMemory.rememberLine(fallback, 'chat', dialogueMeta);
-                this._rememberChatFacts(fallback, intent, context);
+                const fallback = Config.language === 'es'
+                    ? '[Sistema] Error al consultar el modelo.'
+                    : '[System] Error while requesting the model.';
+                this.addTranscriptMessage('system', fallback, exchangeContext);
                 ThesisLogger.log('chat', {
                     player_message: playerMessage,
                     intent: { types: intent.types, primary: intent.primary, confidence: intent.confidence },
@@ -13215,7 +12818,7 @@ Respond ONLY with this JSON:
                     prompt_sections: this._lastPromptSections || null,
                     risk_assessment: context.risk_assessment,
 	                    response_text: fallback,
-	                    response_source: 'kb_fallback_error',
+	                    response_source: 'system_llm_error',
 	                    latency_ms: chatLatency,
 	                    error: error.message,
 	                    llm_failures: ModelRouter.getRecentFailures(),
@@ -13228,7 +12831,7 @@ Respond ONLY with this JSON:
                     prompt_length: prompt.length,
                     prompt_sections: this._lastPromptSections || null,
 	                    response_text: fallback,
-	                    response_source: 'kb_fallback_error',
+	                    response_source: 'system_llm_error',
 	                    latency_ms: chatLatency,
 	                    error: error.message,
 	                    llm_failures: ModelRouter.getRecentFailures(),
@@ -13882,20 +13485,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
 
             try {
                 if (Config.useMockAI) {
-                    if (!Config.shouldUseAmbientFallbacks()) {
-                        Debug.log('[Ambient] Item comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
-                        return;
-                    }
-                    const fallbacks = isFood && isHungry
-                        ? (es ? ['Comida... la necesito.', 'Tengo tanta hambre...'] : ['Food... I need it.', 'I\'m so hungry...'])
-                        : isWeapon
-                        ? (es ? ['Un arma...', 'Esto podría servir.'] : ['A weapon...', 'This could work.'])
-                        : (es ? ['¿Qué es esto...?', 'Interesante.'] : ['What is this...?', 'Interesting.']);
-                    this._speakWithThought(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'item_pickup', {
-                        itemName: item.name,
-                        source: itemSource,
-                        mock: true
-                    });
+                    Debug.log('[Ambient] Item comment skipped in mock mode.');
                     return;
                 }
 
@@ -14393,25 +13983,18 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             this._lastSupportTime = 0;
         },
 
-        _generateSupportPromptSync(need, es) {
-            if (!need) return '';
-            const fallback = typeof SupportApproval !== 'undefined' && SupportApproval.buildPrompt
-                ? SupportApproval.buildPrompt(need, es)
-                : '';
-            return fallback;
-        },
-
         async _requestAndShowSupportPrompt(need, topic, factKey, es) {
             try {
-                const line = await this._generateSupportPromptAsync(need, es, this._generateSupportPromptSync(need, es));
-                if (!line) return;
-                console.log('[SupportApproval Prompt]', line);
-                DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
+                const line = await this._generateSupportPromptAsync(need, es);
+                if (line) {
+                    console.log('[SupportApproval Prompt]', line);
+                    DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
+                }
                 if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
-                    if (!SupportApproval._showPrompt(line)) {
+                    if (!SupportApproval._showPrompt(line, !line) && line) {
                         this._speak(line, topic);
                     }
-                } else {
+                } else if (line) {
                     this._speak(line, topic);
                 }
             } finally {
@@ -14419,8 +14002,8 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             }
         },
 
-        async _generateSupportPromptAsync(need, es, fallback) {
-            if (Config.useMockAI) return fallback;
+        async _generateSupportPromptAsync(need, es) {
+            if (Config.useMockAI) return '';
             try {
                 const endpoint = Config.getEndpoint();
                 const headers = Config.getHeaders();
@@ -14447,13 +14030,13 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
-                if (!text) return fallback;
+                if (!text) return '';
                 const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').trim();
-                if (!cleaned || cleaned.length < 4) return fallback;
+                if (!cleaned || cleaned.length < 4) return '';
                 return cleaned;
             } catch (e) {
                 Debug.warn('[SupportApproval] Prompt generation failed:', e.message);
-                return fallback;
+                return '';
             }
         },
 
@@ -14487,52 +14070,43 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 // Mark as warned
                 this._warnedPositions.add(posKey);
 
-                // Generate appropriate warning
-                const es = Config.language === 'es';
-                let warning;
-                switch (threat.subtype) {
-                    case 'bear_trap':
-                        warning = es
-                            ? ['¡Cuidado! Trampa de oso adelante.', '¡Para! Hay una trampa en el suelo.', '¡Ojo! Trampa de oso al ${DIR}.']
-                            : ['Watch out! Bear trap ahead.', 'Stop! Trap on the ground.', 'Careful! Bear trap to the ${DIR}.'];
-                        break;
-                    case 'damage_floor':
-                    case 'terrain_hazard':
-                    case 'unsafe_floor':
-                    case 'pit_region':
-                    case 'spike_region':
-                    case 'poison_region':
-                        warning = es
-                            ? ['Pisa con cuidado. El suelo al ${DIR} no me gusta.', 'Para. Hay algo raro en el suelo al ${DIR}.']
-                            : ['Step carefully. The floor to the ${DIR} feels wrong.', 'Stop. Something is wrong with the floor to the ${DIR}.'];
-                        break;
-                    case 'arrow_trap':
-                        warning = es
-                            ? ['¡Cuidado con las flechas!', '¡Trampa de flechas al ${DIR}!']
-                            : ['Watch for arrows!', 'Arrow trap to the ${DIR}!'];
-                        break;
-                    default:
-                        if (threat.type === 'enemy') {
-                            warning = es
-                                ? ['Hay algo al ${DIR}... ten cuidado.', 'Enemigo cerca, al ${DIR}.']
-                                : ['Something to the ${DIR}... be careful.', 'Enemy nearby, to the ${DIR}.'];
-                        } else {
-                            warning = es
-                                ? ['Ten cuidado, hay peligro al ${DIR}.']
-                                : ['Be careful, danger to the ${DIR}.'];
-                        }
-                }
-
-	                const localizedDir = Locale.direction(threat.direction);
-	                const pick = warning[Math.floor(Math.random() * warning.length)]
-	                    .replace('${DIR}', localizedDir)
-	                    .replace(/\bal\s+aqu[ií]\b/gi, 'aquí')
-	                    .replace(/\bto the here\b/gi, 'here')
-	                    .replace(/\bnorteeste\b/gi, 'noreste')
-	                    .replace(/\bnorteoeste\b/gi, 'noroeste');
-	                DialogueMemory.rememberFact(factKey, Locale.nearbyLine(threat.label || 'Peligro', threat.distance || '?', threat.direction, false), 'ambient_warning', { mapId: $gameMap.mapId() });
-                this._speak(pick, 'threat_warning');
+                this._generateThreatWarning(threat, factKey);
                 return; // One warning at a time
+            }
+        },
+
+        async _generateThreatWarning(threat, factKey) {
+            if (!threat || Config.useMockAI) return;
+            const es = Config.language === 'es';
+            const direction = Locale.direction(threat.direction);
+            const prompt = `You are ${Config.companionName}, companion in Fear & Hunger.\n` +
+                `${es ? 'Responde EN ESPAÑOL.' : 'Respond in English.'}\n` +
+                `Warn the player in ONE short line, under 12 words.\n` +
+                `Visible threat: ${threat.label || threat.type || 'danger'}\n` +
+                `Threat type: ${threat.type || 'unknown'}\n` +
+                `Threat subtype: ${threat.subtype || 'unknown'}\n` +
+                `Direction: ${direction}\n` +
+                `Distance: ${threat.distance || '?'} tiles\n` +
+                `Do not invent details. Do not mention game mechanics.`;
+            try {
+                const resp = await LocalRequestQueue.runOptional('threat_warning', () => fetch(Config.getEndpoint(), {
+                    method: 'POST',
+                    headers: Config.getHeaders(),
+                    body: JSON.stringify({
+                        model: Config.getChatModel(),
+                        messages: [{ role: 'system', content: prompt }],
+                        max_tokens: 36,
+                        temperature: 0.8
+                    })
+                }));
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const text = Config.cleanGeneratedText(data.choices?.[0]?.message?.content || '');
+                if (!text) return;
+                DialogueMemory.rememberFact(factKey, Locale.nearbyLine(threat.label || 'Peligro', threat.distance || '?', threat.direction, false), 'ambient_warning', { mapId: $gameMap.mapId() });
+                this._speak(text, 'threat_warning');
+            } catch (e) {
+                Debug.warn('[Ambient] Threat warning generation failed:', e.message);
             }
         },
 
@@ -14555,18 +14129,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your hung
 
             try {
                 if (Config.useMockAI) {
-                    if (!Config.shouldUseAmbientFallbacks()) {
-                        Debug.log('[Ambient] Hunger comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
-                        return;
-                    }
-                    const fallbacks = hasFood
-                        ? (es ? ['Tengo hambre... ¿no teníamos comida?', 'Necesito comer algo...'] : ['I\'m hungry... didn\'t we have food?', 'I need to eat...'])
-                        : (es ? ['El hambre me está matando...', 'Necesitamos comida...'] : ['The hunger is killing me...', 'We need food...']);
-                    this._speakWithThought(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'hunger', {
-                        hungerLevel,
-                        hasFood,
-                        mock: true
-                    });
+                    Debug.log('[Ambient] Hunger comment skipped in mock mode.');
                     return;
                 }
 
@@ -14634,17 +14197,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
 
             try {
                 if (Config.useMockAI) {
-                    if (!Config.shouldUseAmbientFallbacks()) {
-                        Debug.log('[Ambient] Party join comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
-                        return;
-                    }
-                    const fallbacks = es
-                        ? ['Alguien más... no sé si confiar.', 'Más gente... bien, supongo.', '¿Quién eres tú?']
-                        : ['Someone else... I don\'t know if I trust them.', 'More people... good, I guess.', 'Who are you?'];
-                    this._speakWithThought(fallbacks[Math.floor(Math.random() * fallbacks.length)], 'party_join', {
-                        memberName,
-                        mock: true
-                    });
+                    Debug.log('[Ambient] Party join comment skipped in mock mode.');
                     return;
                 }
 
@@ -14682,20 +14235,7 @@ React in one short sentence (max 60 chars). Stay in character. Express your reac
         },
 
 	        onBattleEnd(victory) {
-	            if (!Config.shouldUseAmbientFallbacks()) return;
-	            if (!this.canSpeak() || Math.random() > 0.40) return;
-	            const es = Config.language === 'es';
-	            if (victory) {
-	                const lines = es
-	                    ? ['Terminamos.', 'Sigue con vida...', 'Hay que seguir.', 'No fue fácil.', 'Eso estuvo cerca.']
-	                    : ['It is over.', 'Still alive...', 'We need to keep moving.', 'That was not easy.', 'That was close.'];
-	                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: true });
-	            } else {
-	                const lines = es
-	                    ? ['Hay que huir.', 'No podemos ganar esto.', 'Retírate, ¡ahora!']
-	                    : ['We need to run.', 'We cannot win this.', 'Fall back, now!'];
-	                this._speakWithThought(lines[Math.floor(Math.random() * lines.length)], 'battle_end', { victory: false });
-	            }
+	            return;
 	        },
 
         onRoomEntry(mapName) {
@@ -14772,16 +14312,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 const model = Config.getChatModel();
 
                 if (Config.useMockAI) {
-                    if (!Config.shouldUseAmbientFallbacks()) {
-                        Debug.log('[Ambient] Room comment skipped: mock mode and hardcoded ambient fallbacks disabled.');
-                        return;
-                    }
-                    const fallback = es ? 'Este lugar... no me gusta nada.' : 'This place... I don\'t like it.';
-	                    this._speakWithThought(fallback, 'room_entry', {
-	                        mapName: Locale.text(mapName),
-	                        location: locationName,
-	                        mock: true
-	                    });
+                    Debug.log('[Ambient] Room comment skipped in mock mode.');
                     return;
                 }
 
@@ -15082,9 +14613,6 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 Debug.log('[Ambient] Suppressed message while chat/message scene unavailable:', topic);
                 return;
             }
-            if (typeof CharacterPresets !== 'undefined' && CharacterPresets.narratorAmbientLine) {
-                text = CharacterPresets.narratorAmbientLine(text, topic);
-            }
             text = Config.cleanGeneratedText(text);
             if (!text || !this._passesLanguageQuality(text, Config.language === 'es')) {
                 Debug.log('[Ambient] Suppressed low-quality line:', topic, text);
@@ -15185,39 +14713,23 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return false;
         },
 
-        _showReply(text) {
-            if (!text) return;
-            if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue._speak && !$gameMessage.isBusy()) {
-                AmbientDialogue._speak(text, 'support_approval_reply');
-                return;
-            }
-            if (typeof ActionExecutor !== 'undefined' && ActionExecutor._showDialogue) {
-                ActionExecutor._showDialogue(text);
-            }
-        },
-
-        _queueReply(text) {
-            if (!text) return;
-            setTimeout(() => {
-                this._showReply(text);
-            }, 50);
-        },
-
-        _showPrompt(text) {
-            if (!text || (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage())) return false;
+        _showPrompt(text, systemFallback) {
+            if (typeof ChatSystem !== 'undefined' && !ChatSystem.canQueueGameMessage()) return false;
             const appearance = CharacterPresets.getCurrentAppearance();
             const es = Config.language === 'es';
-            const namePrefix = `\\c[6]${Config.companionName}\\c[0]: `;
+            const promptText = text || (es ? 'Confirmar uso de objeto sugerido' : 'Confirm suggested item use');
+            const speaker = systemFallback ? (es ? 'Sistema' : 'System') : Config.companionName;
+            const namePrefix = `\\c[6]${speaker}\\c[0]: `;
             if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
                 AutonomySystem._state.manualUiHold = true;
                 AutonomySystem._state.lastUiAdvanceAt = Date.now();
             }
-            $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
+            $gameMessage.setFaceImage(systemFallback ? '' : appearance.face, systemFallback ? 0 : appearance.faceIndex);
             $gameMessage.setBackground(0);
             $gameMessage.setPositionType(2);
             const maxChars = 130;
             const maxLineLen = 36;
-            const cleanText = text.length > maxChars ? text.substring(0, maxChars) + '...' : text;
+            const cleanText = promptText.length > maxChars ? promptText.substring(0, maxChars) + '...' : promptText;
             const words = cleanText.split(' ');
             const lines = [];
             let currentLine = '';
@@ -15231,7 +14743,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             }
             if (currentLine) lines.push(currentLine);
             const displayLines = lines.slice(0, 4);
-            $gameMessage.add(namePrefix + displayLines[0]);
+            $gameMessage.add(namePrefix + (displayLines[0] || promptText));
             for (let i = 1; i < displayLines.length; i++) {
                 $gameMessage.add(displayLines[i]);
             }
@@ -15253,33 +14765,18 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     const target = $gameActors && $gameActors.actor ? $gameActors.actor(pending.actorId) : null;
                     if (!item || !target || !this._actorStillNeeds(target, pending.kind)) {
                         this.clear();
-                        this._queueReply(es ? 'Ya no hace falta.' : 'No need anymore.');
                         return;
                     }
                     const result = this._applyItem(item, target);
                     this.clear();
                     if (!result.ok) {
-                        this._queueReply(es ? `No pude usar ${pending.itemName}.` : `I couldn't use ${pending.itemName}.`);
                         return;
                     }
-                    this._queueReply(es ? `Voy. Uso ${pending.itemName}${pending.targetSelf ? '' : ' en ' + pending.actor}.` : `Alright. Using ${pending.itemName}${pending.targetSelf ? '' : ' on ' + pending.actor}.`);
                     return;
                 }
                 this.clear();
-                this._queueReply(es ? 'Entendido. No haré nada.' : "Understood. I won't do it.");
             });
             return true;
-        },
-
-        buildPrompt(need, es) {
-            if (!need) return '';
-            if (need.kind === 'bleed') return need.targetSelf ? (es ? `Estoy sangrando. ¿Uso ${need.itemName}?` : `I'm bleeding. Use ${need.itemName}?`) : (es ? `${need.actor} sangra. ¿Uso ${need.itemName}?` : `${need.actor} is bleeding. Use ${need.itemName}?`);
-            if (need.kind === 'infection') return need.targetSelf ? (es ? `Tengo infección. ¿Uso ${need.itemName}?` : `I'm infected. Use ${need.itemName}?`) : (es ? `${need.actor} tiene infección. ¿Uso ${need.itemName}?` : `${need.actor} is infected. Use ${need.itemName}?`);
-            if (need.kind === 'poison') return need.targetSelf ? (es ? `Estoy envenenado. ¿Uso ${need.itemName}?` : `I'm poisoned. Use ${need.itemName}?`) : (es ? `${need.actor} está envenenado. ¿Uso ${need.itemName}?` : `${need.actor} is poisoned. Use ${need.itemName}?`);
-            if (need.kind === 'healing') return need.targetSelf ? (es ? `Estoy herido. ¿Uso ${need.itemName}?` : `I'm hurt. Use ${need.itemName}?`) : (es ? `${need.actor} necesita curación. ¿Uso ${need.itemName}?` : `${need.actor} needs healing. Use ${need.itemName}?`);
-            if (need.kind === 'mind') return need.targetSelf ? (es ? `Me falla la cabeza. ¿Uso ${need.itemName}?` : `My mind is slipping. Use ${need.itemName}?`) : (es ? `${need.actor} necesita cordura. ¿Uso ${need.itemName}?` : `${need.actor} needs mind restored. Use ${need.itemName}?`);
-            if (need.kind === 'food') return need.targetSelf ? (es ? `Tengo hambre. ¿Como ${need.itemName}?` : `I'm hungry. Eat ${need.itemName}?`) : (es ? `${need.actor} necesita comida. ¿Uso ${need.itemName}?` : `${need.actor} needs food. Use ${need.itemName}?`);
-            return '';
         },
 
         _isAffirmative(message) {
@@ -15333,12 +14830,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         handleChatApproval(message) {
             const pending = this.getPending();
             if (!pending) return null;
-            const es = Config.language === 'es';
             if (this._isNegative(message)) {
                 this.clear();
-                const reply = es ? 'Entendido. No haré nada.' : "Understood. I won't do it.";
-                this._showReply(reply);
-                return reply;
+                return null;
             }
             if (!this._isAffirmative(message)) {
                 return null;
@@ -15347,20 +14841,14 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const target = $gameActors && $gameActors.actor ? $gameActors.actor(pending.actorId) : null;
             if (!item || !target || !this._actorStillNeeds(target, pending.kind)) {
                 this.clear();
-                const reply = es ? 'Ya no hace falta.' : `No need anymore.`;
-                this._showReply(reply);
-                return reply;
+                return null;
             }
             const result = this._applyItem(item, target);
             this.clear();
             if (!result.ok) {
-                const reply = es ? `No pude usar ${pending.itemName}.` : `I couldn't use ${pending.itemName}.`;
-                this._showReply(reply);
-                return reply;
+                return null;
             }
-            const reply = es ? `Voy. Uso ${pending.itemName}${pending.targetSelf ? '' : ' en ' + pending.actor}.` : `Alright. Using ${pending.itemName}${pending.targetSelf ? '' : ' on ' + pending.actor}.`;
-            this._showReply(reply);
-            return reply;
+            return null;
         }
     };
 
@@ -15464,21 +14952,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return lines.slice(0, maxLines || 4);
         },
 
-        _fallbackPromptText(candidate) {
-            const es = Config.language === 'es';
-            const currentName = candidate.current ? candidate.current.name : (es ? 'nada' : 'nothing');
-            const itemName = candidate.item.name;
-            const reason = candidate.current
-                ? (es ? `mejora ${currentName}` : `better than ${currentName}`)
-                : (es ? 'ese espacio está vacío' : 'that slot is empty');
-            return es
-                ? `Encontré ${itemName}; ${reason}. ¿Me lo equipo?`
-                : `Found ${itemName}; ${reason}. Equip it?`;
-        },
-
         async _generatePromptText(candidate) {
-            const fallback = this._fallbackPromptText(candidate);
-            if (Config.useMockAI) return fallback;
+            if (Config.useMockAI) return '';
             try {
                 const es = Config.language === 'es';
                 const endpoint = Config.getEndpoint();
@@ -15516,11 +14991,11 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 const data = await resp.json();
                 const text = data.choices?.[0]?.message?.content?.trim();
                 const cleaned = text ? text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim() : '';
-                if (!cleaned || cleaned.length < 5) return fallback;
+                if (!cleaned || cleaned.length < 5) return '';
                 return cleaned;
             } catch (e) {
                 Debug.warn('[EquipmentApproval] Prompt generation failed:', e.message);
-                return fallback;
+                return '';
             }
         },
 
@@ -15529,16 +15004,18 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             if (typeof SupportApproval !== 'undefined' && SupportApproval.hasPending && SupportApproval.hasPending()) return false;
             const es = Config.language === 'es';
             const appearance = CharacterPresets.getCurrentAppearance();
-            const text = promptText || this._fallbackPromptText(candidate);
+            const generated = !!promptText;
+            const text = promptText || (es ? 'Confirmar cambio de equipo sugerido' : 'Confirm suggested equipment change');
             if (typeof AutonomySystem !== 'undefined' && AutonomySystem._state) {
                 AutonomySystem._state.manualUiHold = true;
                 AutonomySystem._state.lastUiAdvanceAt = Date.now();
             }
-            $gameMessage.setFaceImage(appearance.face, appearance.faceIndex);
+            $gameMessage.setFaceImage(generated ? appearance.face : '', generated ? appearance.faceIndex : 0);
             $gameMessage.setBackground(0);
             $gameMessage.setPositionType(2);
             const lines = this._lineWrap(text, 36, 4);
-            $gameMessage.add(`\\c[6]${Config.companionName}\\c[0]: ${lines[0] || text}`);
+            const speaker = generated ? Config.companionName : (es ? 'Sistema' : 'System');
+            $gameMessage.add(`\\c[6]${speaker}\\c[0]: ${lines[0] || text}`);
             for (let i = 1; i < lines.length; i++) $gameMessage.add(lines[i]);
             if ($gameMessage.setChoiceHelps) $gameMessage.setChoiceHelps(['', '']);
             if ($gameMessage.setChoiceMessages) $gameMessage.setChoiceMessages(['', '']);
@@ -15553,8 +15030,6 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 }
                 if (choice === 0) {
                     this._equip(candidate);
-                } else {
-                    this._reply(es ? 'Lo guardo por ahora.' : 'I will keep it packed for now.');
                 }
             });
             return true;
@@ -15580,19 +15055,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             return shown;
         },
 
-        _reply(text) {
-            setTimeout(() => {
-                if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue._speak && !$gameMessage.isBusy()) {
-                    AmbientDialogue._speak(text, 'equipment_reply');
-                }
-            }, 50);
-        },
-
         _equip(candidate) {
-            const es = Config.language === 'es';
             try {
                 if (!$gameParty || $gameParty.numItems(candidate.item) <= 0) {
-                    this._reply(es ? 'Ya no lo encuentro.' : "I can't find it now.");
                     return false;
                 }
                 candidate.actor.changeEquip(candidate.slotIndex, candidate.item);
@@ -15604,11 +15069,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     item_name: candidate.item.name,
                     replaced_item: candidate.current ? candidate.current.name : null
                 });
-                this._reply(es ? `Me equipo ${candidate.item.name}.` : `Equipping ${candidate.item.name}.`);
                 return true;
             } catch (e) {
                 Debug.warn('[EquipmentApproval] Equip failed:', e.message);
-                this._reply(es ? `No pude equipar ${candidate.item.name}.` : `I could not equip ${candidate.item.name}.`);
                 return false;
             }
         },
@@ -16312,17 +15775,11 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             }).filter(entry => entry && entry.enabled && entry.price <= ($gameParty.gold ? $gameParty.gold() : 0));
         },
 
-        _fallbackCandidate(candidates) {
-            const useful = candidates.find(c => /hierba|herb|vial|cloth|fragment|pan|bread|meat|carne|cheese|queso|food|comida|whiskey|wine|ale|tobacco|opium/i.test(c.name));
-            return useful || candidates[0] || null;
-        },
-
         async _requestRecommendation(scene, candidates) {
-            const fallback = this._fallbackCandidate(candidates);
-            if (!fallback) return null;
+            if (!candidates || candidates.length === 0) return null;
             if (Config.useMockAI) {
-                Debug.log('[MerchantAdvisor] Mock AI enabled; using fallback merchant candidate:', fallback);
-                return Object.assign({}, fallback, { reason: Config.language === 'es' ? 'parece lo más útil ahora' : 'seems most useful now' });
+                Debug.log('[MerchantAdvisor] Mock AI enabled; skipping purchase recommendation.');
+                return null;
             }
             try {
                 const es = Config.language === 'es';
@@ -16366,11 +15823,11 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 Debug.log('[MerchantAdvisor] LLM recommendation:', decision);
                 if (!picked) return null;
                 return Object.assign({}, picked, {
-                    reason: String(decision.reason || '').slice(0, 120) || (es ? 'es una compra razonable' : 'reasonable purchase')
+                    reason: String(decision.reason || '').slice(0, 120)
                 });
             } catch (e) {
                 Debug.warn('[MerchantAdvisor] Recommendation failed:', e.message);
-                return Object.assign({}, fallback, { reason: Config.language === 'es' ? 'falló el análisis, pero parece útil' : 'analysis failed, but it seems useful' });
+                return null;
             }
         },
 
@@ -16379,8 +15836,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             scene._aiMerchantApprovalVisible = true;
             const es = Config.language === 'es';
             const text = es
-                ? `${Config.companionName}: comprar ${candidate.name} por ${candidate.price}? ${candidate.reason || ''}`
-                : `${Config.companionName}: buy ${candidate.name} for ${candidate.price}? ${candidate.reason || ''}`;
+                ? `[Sistema] Confirmar compra: ${candidate.name} por ${candidate.price}. ${candidate.reason || ''}`
+                : `[System] Confirm purchase: ${candidate.name} for ${candidate.price}. ${candidate.reason || ''}`;
             Debug.log('[MerchantAdvisor] Purchase approval:', {
                 item: candidate.name,
                 price: candidate.price,
@@ -16980,16 +16437,6 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                             FearState.recordPressure('limb_loss', 4, `${victimName} lost ${limb}`, 300000);
                         }
 
-                        // Trigger AI reaction if it's the player or a party member
-                        if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue.canSpeak()) {
-                            const es = Config.language === 'es';
-                            const limbEs = limb === 'arm' ? 'brazo' : 'pierna';
-                            const reactions = es
-                                ? [`¡${victimName} perdió un ${limbEs}!`, `¡No! ¡Tu ${limbEs}!`, `Maldición... el ${limbEs}...`]
-                                : [`${victimName} lost an ${limb}!`, `No! Your ${limb}!`, `Damn... the ${limb}...`];
-                            const pick = reactions[Math.floor(Math.random() * reactions.length)];
-                            AmbientDialogue._speak(pick, 'limb_loss');
-                        }
                     }
 
                     if (typeof AmbientDialogue !== 'undefined' && AmbientDialogue.onUrgentStateChange) {
