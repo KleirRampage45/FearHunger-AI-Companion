@@ -9668,17 +9668,19 @@ Respond ONLY with this JSON:
         },
 
         update() {
+            const follower = this.getFollower();
+            // Existing AI-owned interactions must finish even while the map is
+            // temporarily blocked by their message window or event interpreter.
+            if (this._advanceInteractionUi(follower)) {
+                return;
+            }
             if (!this.canRun()) {
                 this._softReset();
                 return;
             }
 
-            const follower = this.getFollower();
             if (follower && follower.setThrough) follower.setThrough(false);
 
-            if (this._advanceInteractionUi(follower)) {
-                return;
-            }
             if (CoinFlipUi.isActive()) {
                 return;
             }
@@ -16691,7 +16693,16 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 	        PerformanceMonitor.tick('Scene_Map');
 
 	        const aiMapReady = typeof GameplayGate === 'undefined' || GameplayGate.canRunMapAi();
-	        if (!aiMapReady) return;
+	        if (!aiMapReady) {
+	            // Let autonomy finish only an interaction it already owns. Its
+	            // internal gate still prevents new heartbeats during intro/events.
+	            if (!Config.autopilotEnabled) {
+	                AutonomySystem.update();
+	            } else if (typeof GameplayGate === 'undefined' || !GameplayGate.isBootOrIntroMap()) {
+	                PlayerAutopilot.update();
+	            }
+	            return;
+	        }
 
 	        // Periodic hunger awareness check
 	        AmbientDialogue.checkHunger();
