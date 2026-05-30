@@ -9657,15 +9657,24 @@ Respond ONLY with this JSON:
             return true;
         },
 
-        canRun() {
+        canRemainActive() {
             if (!Config.autonomyEnabled) return false;
             if (Config.autopilotEnabled) return false;
             if (!$gameParty || !$gameParty.members || !$gameParty.members().some(m => m && m.actorId && m.actorId() === Config.companionActorId)) return false;
             if (!$gameMap || !$gamePlayer || $gameParty.inBattle()) return false;
+            if (typeof GameplayGate !== 'undefined' && GameplayGate.isBootOrIntroMap()) return false;
+            const scene = SceneManager && SceneManager._scene;
+            const sceneName = scene && scene.constructor ? scene.constructor.name : '';
+            if (sceneName !== 'Scene_Map') return false;
+            if (!this.getFollower()) return false;
+            return true;
+        },
+
+        canRun() {
+            if (!this.canRemainActive()) return false;
             if (typeof GameplayGate !== 'undefined' && !GameplayGate.canRunMapAi()) return false;
             if (ChatSystem && ChatSystem.isActive && ChatSystem.isActive()) return false;
             if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
-            if (!this.getFollower()) return false;
             return true;
         },
 
@@ -9676,10 +9685,13 @@ Respond ONLY with this JSON:
             if (this._advanceInteractionUi(follower)) {
                 return;
             }
-            if (!this.canRun()) {
+            if (!this.canRemainActive()) {
                 this._softReset();
                 return;
             }
+            // Events, messages, transfers and short player-control locks are
+            // transient. Keep the current goal so execution resumes afterward.
+            if (!this.canRun()) return;
 
             if (follower && follower.setThrough) follower.setThrough(false);
 
