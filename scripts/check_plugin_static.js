@@ -62,6 +62,8 @@ expectContains(plugin, "Config.language === 'es'", 'language branching');
 expectContains(plugin, '_localizeLabel(label)', 'scanner label localization');
 expectContains(plugin, 'getPersonaPromptBlock()', 'custom persona prompt block');
 expectContains(plugin, 'STORY GOALS AND PROGRESS', 'story goal prompt section');
+expectContains(plugin, 'asyncCombatEnabled: false', 'unsafe async combat disabled by default');
+expectContains(plugin, 'Async combat is disabled because it can expose manual companion turns', 'async combat safety warning');
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');
@@ -77,6 +79,7 @@ expectNotContains(plugin, 'currentNarratorResponse', 'hardcoded nonverbal chat r
 expectNotContains(plugin, 'AmbientDialogue.onAutonomyIntent(action, target);', 'routine autonomy action chatter invocation');
 expectNotContains(plugin, 'AmbientDialogue.checkProactiveChat();', 'routine proactive object chatter invocation');
 expectNotContains(plugin, 'this._showBackgroundLootSummary(rewards);', 'routine background-loot chatter invocation');
+expectNotContains(plugin, "localStorage.getItem('AI_Companion_AsyncCombatEnabled') === 'true'", 'persisted async combat re-enable');
 
 const itemPickupStart = plugin.indexOf('onItemPickup(item, source) {');
 const itemPickupEnd = plugin.indexOf('async _generateItemComment', itemPickupStart);

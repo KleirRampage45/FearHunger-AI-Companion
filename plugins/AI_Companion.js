@@ -121,6 +121,7 @@
     const NON_PLAYABLE_BOOT_MAP_IDS = [10, 72];
     const FAST_AUTONOMY_MODEL_HINTS = [
         'gemma-4-e4b-uncensored-hauhaucs-aggressive',
+        'gemma-4-12b-it',
         'gemma-4',
         'gemma'
     ];
@@ -135,20 +136,20 @@
         customSpeechStyle: localStorage.getItem('AI_Companion_CustomSpeechStyle') || '',
         customGoals: localStorage.getItem('AI_Companion_CustomGoals') || '',
         customBehaviorRules: localStorage.getItem('AI_Companion_CustomBehaviorRules') || '',
-        debugMode: savedDebug !== null ? savedDebug === 'true' : (parameters['debugMode'] === 'true'),
+        debugMode: savedDebug !== null ? savedDebug === 'true' : (parameters['debugMode'] || 'true') === 'true',
         forceMockAI: parameters['useMockAI'] === 'true',
         autoJoinParty: parameters['autoJoinParty'] !== 'false',
         language: localStorage.getItem('AI_Companion_Language') || 'es',
         companionClass: localStorage.getItem('AI_Companion_Class') || 'defensor',
 
         // Provider: 'groq', 'openrouter', or 'local'
-        apiProvider: localStorage.getItem('AI_Companion_Provider') || 'groq',
+        apiProvider: localStorage.getItem('AI_Companion_Provider') || 'local',
 
         // Selected chat model (persisted per provider)
         chatModel: localStorage.getItem('AI_Companion_ChatModel') || '',
 
         // Future autonomy / heartbeat config
-        autonomyEnabled: localStorage.getItem('AI_Companion_AutonomyEnabled') === 'true',
+        autonomyEnabled: (localStorage.getItem('AI_Companion_AutonomyEnabled') || 'true') === 'true',
         autonomyModel: localStorage.getItem('AI_Companion_AutonomyModel') || '',
         autonomyTickSeconds: Number(localStorage.getItem('AI_Companion_AutonomyTickSeconds') || '4'),
         autonomyBehaviorProfile: localStorage.getItem('AI_Companion_AutonomyProfile') || 'cautious',
@@ -162,17 +163,17 @@
         autopilotEnabled: localStorage.getItem('AI_Companion_AutopilotEnabled') === 'true',
         autopilotTickSeconds: Number(localStorage.getItem('AI_Companion_AutopilotTickSeconds') || '3'),
         autopilotMaxRuntimeMinutes: Number(localStorage.getItem('AI_Companion_AutopilotMaxRuntimeMinutes') || '20'),
-        debugOverlay: localStorage.getItem('AI_Companion_DebugOverlay') === 'true',
+        debugOverlay: (localStorage.getItem('AI_Companion_DebugOverlay') || 'true') === 'true',
         performanceLogging: localStorage.getItem('AI_Companion_PerformanceLogging') !== 'false',
         performanceLogIntervalMs: Number(localStorage.getItem('AI_Companion_PerformanceLogIntervalMs') || '5000'),
 
         // Local AI config
         localEndpoint: localStorage.getItem('AI_Companion_LocalEndpoint') || 'http://192.168.100.3:1234/v1/chat/completions',
-        localModel: localStorage.getItem('AI_Companion_LocalModel') || 'qwen3.5-4b-uncensored-hauhaucs-aggressive',
+        localModel: localStorage.getItem('AI_Companion_LocalModel') || 'gemma-4-e4b-uncensored-hauhaucs-aggressive',
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
-        asyncCombatEnabled: localStorage.getItem('AI_Companion_AsyncCombatEnabled') === 'true',
+        asyncCombatEnabled: false,
 
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
@@ -418,8 +419,11 @@
         },
 
         setAsyncCombatEnabled(on) {
-            this.asyncCombatEnabled = !!on;
-            localStorage.setItem('AI_Companion_AsyncCombatEnabled', on ? 'true' : 'false');
+            if (on) {
+                console.warn('[AI_Companion] Async combat is disabled because it can expose manual companion turns while the LLM is still pending.');
+            }
+            this.asyncCombatEnabled = false;
+            localStorage.setItem('AI_Companion_AsyncCombatEnabled', 'false');
         },
 
         cycleChatTopP() {
@@ -6747,6 +6751,9 @@ Respond ONLY with this JSON:
             const battleState = BattleStateExtractor.extract();
             if (battleState) {
                 let decision;
+                if (Config.asyncCombatEnabled) {
+                    Config.setAsyncCombatEnabled(false);
+                }
                 if (Config.useMockAI) {
                     Debug.log('Turn ' + battleState.turn_number + ' (Mock AI)');
                     decision = GeminiAPIHandler._getMockDecision(battleState);
@@ -7615,7 +7622,7 @@ Respond ONLY with this JSON:
             this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
             this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
             this.addCommand(`top_k: ${Config.chatTopK || 'off'} (${es ? 'solo local compatible' : 'local-compatible only'})`, 'setTopK');
-            this.addCommand(`${es ? 'Combate async' : 'Async combat'}: ${Config.asyncCombatEnabled ? 'ON' : 'OFF'}`, 'toggleAsyncCombat');
+            this.addCommand(`${es ? 'Combate async' : 'Async combat'}: OFF (${es ? 'desactivado por estabilidad' : 'disabled for stability'})`, 'toggleAsyncCombat');
             if (Config.apiProvider === 'openrouter') {
                 const freeCount = Config.getFreeModels().length;
                 this.addCommand(`${es ? 'Buscar modelos gratis' : 'Fetch Free Models'} (${freeCount})`, 'fetchModels');
@@ -7696,7 +7703,7 @@ Respond ONLY with this JSON:
             backSection: es ? 'Volver al hub principal.' : 'Return to the main hub.',
             apiKey: es ? 'Pega tu API key. Se usa para chat y funciones cloud.' : 'Paste your API key. Used for chat and cloud features.',
             toggleMock: es ? 'Activa o desactiva el modo de prueba sin llamadas reales.' : 'Toggle mock mode to disable real API calls.',
-            toggleAsyncCombat: es ? 'Combate async evita congelar el juego, pero puede ser menos estable.' : 'Async combat avoids freezing but may be less stable.',
+            toggleAsyncCombat: es ? 'Desactivado: podía abrir turnos manuales del compañero mientras la IA seguía pensando.' : 'Disabled: it could expose manual companion turns while the AI was still thinking.',
             togglePerformanceLogging: es ? 'Registra FPS, RAM del juego, CPU y latencia local en ai_companion_logs.' : 'Log FPS, game RAM, CPU, and local latency into ai_companion_logs.',
             setPerformanceInterval: es ? 'Frecuencia de registro de telemetría.' : 'Telemetry logging frequency.',
             setName: es ? 'Abre la edición nativa del nombre del compañero.' : 'Open the native companion name editor.',
