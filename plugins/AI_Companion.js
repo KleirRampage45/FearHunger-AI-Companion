@@ -5296,9 +5296,12 @@ Reply with ONLY the category name, nothing else.`;
                         const kbKey = (kb.name || enemy.name || '').toLowerCase();
                         if (seenKnowledge[kbKey]) continue;
                         seenKnowledge[kbKey] = true;
-                        const prefix = kb.dangerLevel >= 4 ? 'DANGEROUS: ' : (kb.dangerLevel === 0 ? 'HARMLESS: ' : '');
-                        knowledgeHints += `\n${prefix}${kb.name || enemy.name}:\n`;
-                        if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
+	                        const prefix = kb.dangerLevel >= 4 ? 'DANGEROUS: ' : (kb.dangerLevel === 0 ? 'HARMLESS: ' : '');
+	                        knowledgeHints += `\n${prefix}${kb.name || enemy.name}:\n`;
+	                        if (Config.language === 'es' && kb.gender === 'male') {
+	                            knowledgeHints += `  - Spanish grammar: ${enemy.name} refers to a male guard; use masculine wording.\n`;
+	                        }
+	                        if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
                         knowledgeHints += `  - Priority: ${kb.priority.join(' → ')}\n`;
 	                        if (kb.coinFlipTurn && ActionExecutor._isCoinFlipThreatActive(enemy, kb, battleState.turn_number)) {
 	                            knowledgeHints += `  - ⚠ COIN FLIP THIS TURN (${battleState.turn_number}) — DEFEND NOW.\n`;
@@ -5567,13 +5570,12 @@ Respond ONLY with this JSON:
         static async _sendRequest(prompt, context = 'combat') {
             // Helper: try a single async request
             const _tryFetch = async (endpoint, headers, model, maxTokens, isLocal) => {
-                const messages = isLocal
-                    ? [
-                        { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
-                        { role: 'user', content: prompt },
-                        { role: 'assistant', content: '<think>\n\n</think>\n\n' }
-                      ]
-                    : [{ role: 'user', content: prompt }];
+	                const messages = isLocal
+	                    ? [
+	                        { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
+	                        { role: 'user', content: prompt }
+	                      ]
+	                    : [{ role: 'user', content: prompt }];
                 const requestStart = performance.now();
                 const response = await fetch(endpoint, {
                     method: 'POST',
@@ -5608,13 +5610,13 @@ Respond ONLY with this JSON:
 
             // === Local-first for combat, Groq fallback ===
             if (Config.apiProvider === 'local') {
-                try {
-                    Debug.log('[Combat Async] Trying local AI...');
-                    return await LocalRequestQueue.run('combat_async', () =>
-                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 120, true).then(data => {
-                            data._source = 'local_async';
-                            return data;
-                        })
+	                try {
+	                    Debug.log('[Combat Async] Trying local AI...');
+	                    return await LocalRequestQueue.run('combat_async', () =>
+	                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 96, true).then(data => {
+	                            data._source = 'local_async';
+	                            return data;
+	                        })
                     );
                 } catch (error) {
                     Debug.warn('[Combat Async] Local failed:', error.message);
@@ -5764,13 +5766,12 @@ Respond ONLY with this JSON:
                     const xhr = new XMLHttpRequest();
                     xhr.open('POST', endpoint, false); // synchronous — timeout not allowed
                     for (const key in headers) xhr.setRequestHeader(key, headers[key]);
-                    const messages = isLocal
-                        ? [
-                            { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
-                            { role: 'user', content: prompt },
-                            { role: 'assistant', content: '<think>\n\n</think>\n\n' }
-                          ]
-                        : [{ role: 'user', content: prompt }];
+	                    const messages = isLocal
+	                        ? [
+	                            { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
+	                            { role: 'user', content: prompt }
+	                          ]
+	                        : [{ role: 'user', content: prompt }];
                     Debug.log(`[Combat] Trying ${model} at ${endpoint.substring(0, 50)}...`);
                     const requestStart = performance.now();
                     xhr.send(JSON.stringify(Object.assign({
@@ -5838,9 +5839,9 @@ Respond ONLY with this JSON:
                 if (LocalRequestQueue.enterSync('combat_sync')) {
                     try {
                         Debug.log('[Combat] Trying local AI...');
-                        localResult = _trySyncRequest(
-                            Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 120, true
-                        );
+	                        localResult = _trySyncRequest(
+	                            Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 96, true
+	                        );
                     } finally {
                         LocalRequestQueue.leaveSync();
                     }
@@ -10172,7 +10173,7 @@ Respond ONLY with this JSON:
             };
         },
 
-        _buildSnapshot() {
+	        _buildSnapshot() {
             const follower = this.getFollower();
             const player = $gamePlayer;
             const nearby = EnvironmentScanner.scanAround(follower, Math.max(6, Config.autonomyMaxScoutDistance + 2));
@@ -10231,21 +10232,50 @@ Respond ONLY with this JSON:
                 allowSolo: Config.autonomyAllowSoloEngagement,
                 autoReturn: Config.autonomyAutoReturnOnDanger
             };
-            this._state.lastSnapshot = snapshot;
-            return snapshot;
-        },
+	            this._state.lastSnapshot = snapshot;
+	            return snapshot;
+	        },
 
-        _promptSnapshot(snapshot) {
-            if (!snapshot) return null;
-            return {
-                mapName: snapshot.mapName,
-                leashDistance: snapshot.leashDistance,
-                threatLevel: snapshot.threatLevel,
-                riskLevel: snapshot.riskLevel,
-                riskScore: snapshot.riskScore,
-                survivalChance: snapshot.survivalChance,
-                recommendedAction: snapshot.recommendedAction,
-                situation: snapshot.situation,
+	        _autonomyRiskForPrompt(snapshot) {
+	            if (!snapshot) return { level: 'low', score: 0, note: 'No live snapshot.' };
+	            const nearby = snapshot.nearby || [];
+	            const immediateDanger = nearby.some(item => item && item.distance <= 2 && (
+	                item.type === 'enemy' ||
+	                item.type === 'trap' ||
+	                (item.type === 'hazard' && (!EnvironmentScanner._isWarningThreat || EnvironmentScanner._isWarningThreat(item)))
+	            ));
+	            const safeActionable = nearby.some(item => item &&
+	                item.eventId != null &&
+	                item.danger === 'none' &&
+	                (item.type === 'container' || item.type === 'loot' || item.type === 'door' || item.type === 'npc' || item.type === 'shop') &&
+	                item.distance <= Math.max(4, (snapshot.detourLimit || 2) + 4));
+	            const healthyEnough = !snapshot.hpPct || snapshot.hpPct >= 70;
+	            const quietRoom = snapshot.threatNearby === 0 && (snapshot.situation === 'stable' || snapshot.situation === 'cautious');
+	            if (!immediateDanger && safeActionable && healthyEnough && quietRoom) {
+	                return {
+	                    level: 'low',
+	                    score: 0,
+	                    note: 'No immediate live danger; safe listed tasks may proceed. Do not HOLD only from recent fear, resource shortage, or abstract risk.'
+	                };
+	            }
+	            return {
+	                level: snapshot.riskLevel || 'low',
+	                score: snapshot.riskScore || 0,
+	                note: snapshot.recommendedAction || 'Use caution.'
+	            };
+	        },
+
+	        _promptSnapshot(snapshot) {
+	            if (!snapshot) return null;
+	            const autonomyRisk = this._autonomyRiskForPrompt(snapshot);
+	            return {
+	                mapName: snapshot.mapName,
+	                leashDistance: snapshot.leashDistance,
+	                threatLevel: snapshot.threatLevel,
+	                riskLevel: autonomyRisk.level,
+	                riskScore: autonomyRisk.score,
+	                riskNote: autonomyRisk.note,
+	                situation: snapshot.situation,
                 threatNearby: snapshot.threatNearby,
                 interestingNearby: snapshot.interestingNearby,
                 hpPct: snapshot.hpPct,
@@ -10518,7 +10548,7 @@ Respond ONLY with this JSON:
                 'Shops, merchants, rituals, sacrifices, and risky prompts require player consent; choose INTERACT only if you want to ask first.',
                 'If there is no clear nearby task, choose FOLLOW.',
                 'If threat is high or distance from player is too large, choose RETURN.',
-                'Use riskLevel/recommendedAction to decide caution. High or critical risk means avoid optional detours.',
+	                'Use riskLevel/riskNote only for live caution. Do not HOLD only because of recent fear, old battle memory, missing resources, or abstract risk when threatNearby is 0 and safe listed targets exist.',
                 'Fear/personality bias is advisory: if fear is afraid/panicked, prefer safe nearby actions, RETURN, or HOLD over optional detours.',
                 'FearMemory is recent emotional pressure from events that may still affect caution even after the immediate danger passes.',
                 'Output schema: {"action":"FOLLOW|HOLD|RETURN|LOOT|INTERACT","eventId":number|null,"reason":"short reason"}',

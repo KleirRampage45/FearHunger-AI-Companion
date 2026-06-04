@@ -64,6 +64,8 @@ expectContains(plugin, 'getPersonaPromptBlock()', 'custom persona prompt block')
 expectContains(plugin, 'STORY GOALS AND PROGRESS', 'story goal prompt section');
 expectContains(plugin, 'asyncCombatEnabled: false', 'unsafe async combat disabled by default');
 expectContains(plugin, 'Async combat is disabled because it can expose manual companion turns', 'async combat safety warning');
+expectContains(plugin, '_autonomyRiskForPrompt(snapshot)', 'autonomy risk prompt filter');
+expectContains(plugin, 'Do not HOLD only because of recent fear', 'autonomy hold-loop guardrail');
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');
@@ -80,6 +82,7 @@ expectNotContains(plugin, 'AmbientDialogue.onAutonomyIntent(action, target);', '
 expectNotContains(plugin, 'AmbientDialogue.checkProactiveChat();', 'routine proactive object chatter invocation');
 expectNotContains(plugin, 'this._showBackgroundLootSummary(rewards);', 'routine background-loot chatter invocation');
 expectNotContains(plugin, "localStorage.getItem('AI_Companion_AsyncCombatEnabled') === 'true'", 'persisted async combat re-enable');
+expectNotContains(plugin, "{ role: 'assistant', content: '<think>", 'fake local combat thinking prefill');
 
 const itemPickupStart = plugin.indexOf('onItemPickup(item, source) {');
 const itemPickupEnd = plugin.indexOf('async _generateItemComment', itemPickupStart);
@@ -109,6 +112,10 @@ if (!/['"]Mercader['"]:\s*['"]Merchant['"]/.test(plugin)) fail('Missing Mercader
 
 if (!/displayNameEs|displayName/.test(kb)) {
   warn('KB does not appear to expose bilingual display names.');
+}
+
+if (!/"guard":\s*\{[\s\S]*displayNameEs:\s*"Guardia"[\s\S]*gender:\s*"male"/.test(kb)) {
+  fail('Guard KB entry must preserve Spanish display name and male gender metadata.');
 }
 
 const suspiciousConsole = (plugin.match(/console\.log\(/g) || []).length;

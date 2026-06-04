@@ -22,6 +22,8 @@ FearHungerKB.enemies = {
     // === LEVEL 1-2: EARLY DUNGEON ===
     "guard": {
         displayName: "Guard",
+        displayNameEs: "Guardia",
+        gender: "male",
         danger: 3,
         confidence: 0.9,
         location: ["Entrance", "Inner Hall", "Blood Pit"],
