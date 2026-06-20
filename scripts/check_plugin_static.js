@@ -70,6 +70,10 @@ expectContains(plugin, 'const AINotificationOverlay = {', 'non-blocking AI notif
 expectContains(plugin, 'AINotificationOverlay.pushLoot', 'background loot notification toast');
 expectContains(plugin, 'AINotificationOverlay.update();', 'notification overlay scene tick');
 expectContains(plugin, 'window.AI_Companion.AINotificationOverlay = AINotificationOverlay;', 'notification overlay debug export');
+expectContains(plugin, '_expandBackgroundLootCommands', 'background loot common-event expansion');
+expectContains(plugin, '23: true,  // RANDOM MINOR ITEM', 'minor loot common event background support');
+expectContains(plugin, '58: true,  // RANDOM RARE ITEM', 'rare loot common event background support');
+expectContains(plugin, '149: true, // RANDOM SCROLL ITEM', 'scroll loot common event background support');
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');

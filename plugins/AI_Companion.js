@@ -11209,12 +11209,63 @@ Respond ONLY with this JSON:
             return true;
         },
 
+        _safeBackgroundLootCommonEventIds() {
+            return {
+                23: true,  // RANDOM MINOR ITEM
+                58: true,  // RANDOM RARE ITEM
+                149: true, // RANDOM SCROLL ITEM
+                214: true, // Cloth_fragment_would_be_nice
+                215: true, // White_vial_would_be_nice
+                219: true  // Torch_would_be_nice
+            };
+        },
+
+        _cloneInterpreterCommand(command) {
+            return {
+                code: command.code,
+                indent: command.indent || 0,
+                parameters: Array.isArray(command.parameters) ? command.parameters.slice() : command.parameters
+            };
+        },
+
+        _expandBackgroundLootCommands(list, depth, seen) {
+            if (!Array.isArray(list)) return null;
+            if (depth > 4) return null;
+            const safeCommonEvents = this._safeBackgroundLootCommonEventIds();
+            const expanded = [];
+            const active = seen || {};
+            for (let i = 0; i < list.length; i++) {
+                const command = list[i];
+                if (!command) continue;
+                const code = Number(command.code) || 0;
+                if (code === 117) {
+                    const commonEventId = Number(command.parameters && command.parameters[0]);
+                    const commonEvent = $dataCommonEvents && $dataCommonEvents[commonEventId];
+                    if (!safeCommonEvents[commonEventId] || !commonEvent || !Array.isArray(commonEvent.list) || active[commonEventId]) {
+                        return null;
+                    }
+                    active[commonEventId] = true;
+                    const child = this._expandBackgroundLootCommands(commonEvent.list, depth + 1, active);
+                    delete active[commonEventId];
+                    if (!child) return null;
+                    for (let j = 0; j < child.length; j++) {
+                        if (child[j] && Number(child[j].code) !== 0) expanded.push(child[j]);
+                    }
+                    continue;
+                }
+                expanded.push(this._cloneInterpreterCommand(command));
+            }
+            return expanded;
+        },
+
         _analyzeBackgroundLootEvent(event, snap) {
             if (!event || !snap) return null;
             if (!(snap.type === 'container' || snap.type === 'loot')) return null;
             const page = event.page ? event.page() : null;
             const list = page && Array.isArray(page.list) ? page.list : null;
             if (!list || list.length === 0) return null;
+            const expandedList = this._expandBackgroundLootCommands(list, 0, {});
+            if (!expandedList || expandedList.length === 0) return null;
 
             const allowedCodes = {
                 0: true,
@@ -11229,6 +11280,8 @@ Respond ONLY with this JSON:
                 126: true,
                 127: true,
                 128: true,
+                118: true,
+                119: true,
                 230: true,
                 401: true,
                 402: true,
@@ -11241,8 +11294,8 @@ Respond ONLY with this JSON:
             let hasGain = false;
             let hasChoice = false;
 
-            for (let i = 0; i < list.length; i++) {
-                const command = list[i];
+            for (let i = 0; i < expandedList.length; i++) {
+                const command = expandedList[i];
                 if (!command) continue;
                 const code = Number(command.code) || 0;
                 if (!allowedCodes[code]) return null;
@@ -11266,12 +11319,13 @@ Respond ONLY with this JSON:
             if (!hasGain) return null;
 
             return {
-                list: list,
+                list: expandedList,
                 eventId: snap.eventId != null ? snap.eventId : (event.eventId ? event.eventId() : event._eventId),
                 label: snap.label || 'Objeto',
                 type: snap.type || 'container',
                 subtype: snap.subtype || '',
-                hasChoice: hasChoice
+                hasChoice: hasChoice,
+                expandedCommandCount: expandedList.length
             };
         },
 
