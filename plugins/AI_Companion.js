@@ -11230,7 +11230,7 @@ Respond ONLY with this JSON:
 
         _expandBackgroundLootCommands(list, depth, seen) {
             if (!Array.isArray(list)) return null;
-            if (depth > 4) return null;
+            if (depth > 4) return [];
             const safeCommonEvents = this._safeBackgroundLootCommonEventIds();
             const expanded = [];
             const active = seen || {};
@@ -11241,9 +11241,10 @@ Respond ONLY with this JSON:
                 if (code === 117) {
                     const commonEventId = Number(command.parameters && command.parameters[0]);
                     const commonEvent = $dataCommonEvents && $dataCommonEvents[commonEventId];
-                    if (!safeCommonEvents[commonEventId] || !commonEvent || !Array.isArray(commonEvent.list) || active[commonEventId]) {
+                    if (!safeCommonEvents[commonEventId] || !commonEvent || !Array.isArray(commonEvent.list)) {
                         return null;
                     }
+                    if (active[commonEventId]) continue;
                     active[commonEventId] = true;
                     const child = this._expandBackgroundLootCommands(commonEvent.list, depth + 1, active);
                     delete active[commonEventId];
