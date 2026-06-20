@@ -66,6 +66,10 @@ expectContains(plugin, 'asyncCombatEnabled: false', 'unsafe async combat disable
 expectContains(plugin, 'Async combat is disabled because it can expose manual companion turns', 'async combat safety warning');
 expectContains(plugin, '_autonomyRiskForPrompt(snapshot)', 'autonomy risk prompt filter');
 expectContains(plugin, 'Do not HOLD only because of recent fear', 'autonomy hold-loop guardrail');
+expectContains(plugin, 'const AINotificationOverlay = {', 'non-blocking AI notification overlay');
+expectContains(plugin, 'AINotificationOverlay.pushLoot', 'background loot notification toast');
+expectContains(plugin, 'AINotificationOverlay.update();', 'notification overlay scene tick');
+expectContains(plugin, 'window.AI_Companion.AINotificationOverlay = AINotificationOverlay;', 'notification overlay debug export');
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');

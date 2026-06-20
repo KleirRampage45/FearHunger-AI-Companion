@@ -5170,11 +5170,135 @@ Reply with ONLY the category name, nothing else.`;
             }, 16);
             scene._aiCombatDialogFadeTimer = fadeTimer;
         }
-    }
+	    }
 
-    //=========================================================================
-    // GeminiAPIHandler - Communicates with Gemini 3.0 Flash
-    //=========================================================================
+	    //=========================================================================
+	    // AI Notification Overlay — non-blocking top-screen messages
+	    //=========================================================================
+	    const AINotificationOverlay = {
+	        _queue: [],
+	        _active: [],
+	        _scene: null,
+
+	        push(text, options) {
+	            const clean = Config.cleanGeneratedText(String(text || '').replace(/\s+/g, ' ').trim());
+	            if (!clean) return;
+	            const opts = options || {};
+	            this._queue.push({
+	                text: clean.length > 130 ? clean.slice(0, 130) + '...' : clean,
+	                tone: opts.tone || 'neutral',
+	                ttl: Math.max(1200, Number(opts.ttl || 3200))
+	            });
+	            if (this._queue.length > 8) this._queue.shift();
+	        },
+
+	        pushLoot(actorName, summary) {
+	            if (!summary) return;
+	            const es = Config.language === 'es';
+	            const name = actorName || Config.companionName || (es ? 'Compañero' : 'Companion');
+	            this.push(es ? `${name} encontró ${summary}.` : `${name} found ${summary}.`, {
+	                tone: 'loot',
+	                ttl: 3400
+	            });
+	        },
+
+	        update() {
+	            const scene = SceneManager && SceneManager._scene;
+	            const sceneName = scene && scene.constructor ? scene.constructor.name : '';
+	            if (!scene || (sceneName !== 'Scene_Map' && sceneName !== 'Scene_Battle')) {
+	                this._clearSprites();
+	                return;
+	            }
+	            if (this._scene !== scene) {
+	                this._clearSprites();
+	                this._scene = scene;
+	            }
+	            while (this._queue.length > 0 && this._active.length < 3) {
+	                this._spawn(scene, this._queue.shift());
+	            }
+	            const now = Date.now();
+	            for (let i = this._active.length - 1; i >= 0; i--) {
+	                const entry = this._active[i];
+	                const elapsed = now - entry.startedAt;
+	                const yTarget = 10 + i * (entry.height + 6);
+	                if (entry.sprite) entry.sprite.y += (yTarget - entry.sprite.y) * 0.25;
+	                if (elapsed < 180) {
+	                    entry.sprite.opacity = Math.min(255, Math.round(255 * (elapsed / 180)));
+	                } else if (elapsed > entry.ttl - 480) {
+	                    entry.sprite.opacity = Math.max(0, Math.round(255 * ((entry.ttl - elapsed) / 480)));
+	                } else {
+	                    entry.sprite.opacity = 255;
+	                }
+	                if (elapsed >= entry.ttl || entry.sprite.opacity <= 0) {
+	                    this._removeEntry(entry);
+	                    this._active.splice(i, 1);
+	                }
+	            }
+	        },
+
+	        _spawn(scene, entry) {
+	            const lines = this._wrap(entry.text, 58).slice(0, 2);
+	            const bannerWidth = Math.min(Graphics.width - 48, 920);
+	            const bannerHeight = 24 + lines.length * 22;
+	            const sprite = new Sprite(new Bitmap(bannerWidth, bannerHeight));
+	            const bg = entry.tone === 'loot' ? 'rgba(20, 42, 28, 0.78)' : 'rgba(0, 0, 0, 0.72)';
+	            const accent = entry.tone === 'loot' ? '#9fdc9f' : '#ffb74d';
+	            sprite.bitmap.fillRect(0, 0, bannerWidth, bannerHeight, bg);
+	            sprite.bitmap.fillRect(0, 0, 5, bannerHeight, accent);
+	            sprite.bitmap.fontSize = 18;
+	            sprite.bitmap.textColor = '#f2f2f2';
+	            sprite.bitmap.outlineColor = '#000000';
+	            sprite.bitmap.outlineWidth = 3;
+	            for (let i = 0; i < lines.length; i++) {
+	                sprite.bitmap.drawText(lines[i], 18, 8 + i * 22, bannerWidth - 36, 22, 'left');
+	            }
+	            sprite.x = Math.floor((Graphics.width - bannerWidth) / 2);
+	            sprite.y = -bannerHeight;
+	            sprite.opacity = 0;
+	            scene.addChild(sprite);
+	            this._active.unshift({
+	                sprite,
+	                startedAt: Date.now(),
+	                ttl: entry.ttl,
+	                height: bannerHeight
+	            });
+	        },
+
+	        _wrap(text, maxLineLen) {
+	            const words = String(text || '').split(/\s+/);
+	            const lines = [];
+	            let line = '';
+	            for (let i = 0; i < words.length; i++) {
+	                const word = words[i];
+	                if (line && line.length + word.length + 1 > maxLineLen) {
+	                    lines.push(line);
+	                    line = word;
+	                } else {
+	                    line += (line ? ' ' : '') + word;
+	                }
+	            }
+	            if (line) lines.push(line);
+	            return lines.length > 0 ? lines : [''];
+	        },
+
+	        _removeEntry(entry) {
+	            if (!entry || !entry.sprite) return;
+	            try {
+	                if (entry.sprite.parent) entry.sprite.parent.removeChild(entry.sprite);
+	                if (entry.sprite.bitmap) entry.sprite.bitmap = null;
+	            } catch (e) { /* best-effort sprite cleanup */ }
+	        },
+
+	        _clearSprites() {
+	            this._active.forEach(entry => this._removeEntry(entry));
+	            this._active = [];
+	            this._scene = null;
+	        }
+	    };
+
+	    //=========================================================================
+	    // GeminiAPIHandler - Communicates with Gemini 3.0 Flash
+	    //=========================================================================
     class GeminiAPIHandler {
         static async getDecision(battleState, retryContext = null) {
             if (Config.useMockAI) {
@@ -11310,12 +11434,15 @@ Respond ONLY with this JSON:
                 }
 
                 this._rememberInteractionTarget(event, follower);
-                this._setEventCooldown(plan.eventId, 90000);
-                this._markEventSearched(plan.eventId, plan.type, rewards.length > 0 ? 'background_loot' : 'background_loot_empty');
-                this._rememberBackgroundLootResult(plan, rewards);
-                Debug.log('[BackgroundLoot]', {
-                    eventId: plan.eventId,
-                    label: plan.label,
+	                this._setEventCooldown(plan.eventId, 90000);
+	                this._markEventSearched(plan.eventId, plan.type, rewards.length > 0 ? 'background_loot' : 'background_loot_empty');
+	                this._rememberBackgroundLootResult(plan, rewards);
+	                if (rewards.length > 0 && typeof AINotificationOverlay !== 'undefined') {
+	                    AINotificationOverlay.pushLoot(Config.companionName, this._describeBackgroundLootRewards(rewards));
+	                }
+	                Debug.log('[BackgroundLoot]', {
+	                    eventId: plan.eventId,
+	                    label: plan.label,
                     rewards: rewards
                 });
                 return true;
@@ -11689,10 +11816,11 @@ Respond ONLY with this JSON:
         IntentDetector,
         RelationshipTracker,
         KBLookupCache,
-        MapContextHelper,
-        RiskEvaluator,
-        EquipmentHelper
-    };
+	        MapContextHelper,
+	        RiskEvaluator,
+	        AINotificationOverlay,
+	        EquipmentHelper
+	    };
 
     const DebugState = {
         lastChat: null,
@@ -14565,9 +14693,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             }
         },
 
-        _showTopOverlay(text) {
-            const scene = SceneManager && SceneManager._scene;
-            if (!scene || !text) return;
+	        _showTopOverlay(text) {
+	            if (typeof AINotificationOverlay !== 'undefined') {
+	                AINotificationOverlay.push(text, { tone: 'ambient', ttl: 3400 });
+	                return;
+	            }
+	            const scene = SceneManager && SceneManager._scene;
+	            if (!scene || !text) return;
             if (scene._aiAmbientOverlaySprite) {
                 try {
                     if (scene._aiAmbientOverlaySprite.parent) scene.removeChild(scene._aiAmbientOverlaySprite);
@@ -16250,12 +16382,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     //=========================================================================
     // Hook: Keypress T to open chat
 	    //=========================================================================
-	    const _Scene_Map_update = Scene_Map.prototype.update;
-	    Scene_Map.prototype.update = function () {
-	        _Scene_Map_update.call(this);
-	        PerformanceMonitor.tick('Scene_Map');
+		    const _Scene_Map_update = Scene_Map.prototype.update;
+		    Scene_Map.prototype.update = function () {
+		        _Scene_Map_update.call(this);
+		        PerformanceMonitor.tick('Scene_Map');
+		        if (typeof AINotificationOverlay !== 'undefined') AINotificationOverlay.update();
 
-	        const aiMapReady = typeof GameplayGate === 'undefined' || GameplayGate.canRunMapAi();
+		        const aiMapReady = typeof GameplayGate === 'undefined' || GameplayGate.canRunMapAi();
 	        if (!aiMapReady) {
 	            // Let autonomy finish only an interaction it already owns. Its
 	            // internal gate still prevents new heartbeats during intro/events.
@@ -16289,11 +16422,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     };
 
     // Battle Chat Hook
-    const _Scene_Battle_update = Scene_Battle.prototype.update;
-    Scene_Battle.prototype.update = function () {
-        _Scene_Battle_update.call(this);
-        PerformanceMonitor.tick('Scene_Battle');
-        PlayerAutopilot.update();
+	    const _Scene_Battle_update = Scene_Battle.prototype.update;
+	    Scene_Battle.prototype.update = function () {
+	        _Scene_Battle_update.call(this);
+	        PerformanceMonitor.tick('Scene_Battle');
+	        if (typeof AINotificationOverlay !== 'undefined') AINotificationOverlay.update();
+	        PlayerAutopilot.update();
 
         // C key to chat in battle
         if (Input.isTriggered('c')) {
@@ -17886,8 +18020,9 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     window.AI_Companion.NPCIntelligence = NPCIntelligence;
     window.AI_Companion.StoryGoalMemory = StoryGoalMemory;
     window.AI_Companion.AutonomySystem = AutonomySystem;
-    window.AI_Companion.PlayerAutopilot = PlayerAutopilot;
-    window.AI_Companion.DebugState = DebugState;
+	    window.AI_Companion.PlayerAutopilot = PlayerAutopilot;
+	    window.AI_Companion.AINotificationOverlay = AINotificationOverlay;
+	    window.AI_Companion.DebugState = DebugState;
     window.AI_Companion.Config = Config;
     window.AI_Companion.HybridRAG = HybridRAG;
     window.AI_Companion.PerformanceMonitor = PerformanceMonitor;
