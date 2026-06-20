@@ -5391,9 +5391,18 @@ Reply with ONLY the category name, nothing else.`;
             }
         }
 
+        static _combatExecutionSummary(decision) {
+            if (!decision) return '';
+            const action = String(decision.action || '?');
+            const target = String(decision.target || '');
+            const limb = String(decision.limb || '');
+            return `${action}${target ? ' -> ' + target : ''}${limb ? ' [' + limb + ']' : ''}`;
+        }
+
         static _logCombatDecision(battleState, prompt, decision, modelUsed, source, startTime, failureChain) {
             const latency = Math.round(performance.now() - startTime);
             const llmUsage = decision && decision._llmUsage ? decision._llmUsage : null;
+            const executionSummary = this._combatExecutionSummary(decision);
             const snapshot = {
                 battle_turn: battleState.turn_number,
                 enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
@@ -5403,8 +5412,13 @@ Reply with ONLY the category name, nothing else.`;
                 decision_action: decision ? decision.action : null,
                 decision_target: decision ? decision.target : null,
                 decision_limb: decision ? decision.limb : null,
-                decision_reasoning: decision ? decision.reasoning : null,
+                decision_reasoning: executionSummary,
+                decision_reasoning_raw: decision ? decision.reasoning : null,
                 decision_dialog: decision ? decision.dialog : null,
+                action: decision ? decision.action : null,
+                target: decision ? decision.target : null,
+                limb: decision ? decision.limb : null,
+                reason: executionSummary,
                 response_source: source,
                 model_used: modelUsed,
                 latency_ms: latency,
@@ -5440,8 +5454,13 @@ Reply with ONLY the category name, nothing else.`;
 	                        if (Config.language === 'es' && kb.gender === 'male') {
 	                            knowledgeHints += `  - Spanish grammar: ${enemy.name} refers to a male guard; use masculine wording.\n`;
 	                        }
-	                        if (kb.tactics) knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
-                        knowledgeHints += `  - Priority: ${kb.priority.join(' → ')}\n`;
+	                        const priorityState = this._getEnemyPriorityState(enemy, kb);
+	                        if (kb.tactics && priorityState.destroyed.length === 0) {
+	                            knowledgeHints += `  - TACTICS: ${kb.tactics}\n`;
+	                        } else if (priorityState.destroyed.length > 0) {
+	                            knowledgeHints += `  - LIVE UPDATE: already destroyed ${priorityState.destroyed.join(', ')}. Ignore old instructions about those limbs.\n`;
+	                        }
+                        knowledgeHints += `  - Current alive priority: ${priorityState.alive.length > 0 ? priorityState.alive.join(' → ') : 'none'}\n`;
 	                        if (kb.coinFlipTurn && ActionExecutor._isCoinFlipThreatActive(enemy, kb, battleState.turn_number)) {
 	                            knowledgeHints += `  - ⚠ COIN FLIP THIS TURN (${battleState.turn_number}) — DEFEND NOW.\n`;
 	                        } else if (kb.coinFlipTurn && ActionExecutor._isCoinFlipStillLive(enemy, kb)) {
@@ -5598,6 +5617,7 @@ Please correct your response. Use EXACT names from the lists above.`;
 
 Targeting:
 - Use ONLY alive limbs from Enemies.
+- Your reasoning MUST describe the exact limb selected in the JSON. Never mention a destroyed or different limb.
 - If head is destroyed, choose torso/arms/legs.
 - Prefer attacking; do not spam defend.
 - Damage skills/items can be valid attacks; use exact action name from AVAILABLE OFFENSIVE SKILL/ITEM OPTIONS.
@@ -5704,6 +5724,17 @@ Respond ONLY with this JSON:
             }
 
             return true;
+        }
+
+        static _getEnemyPriorityState(enemy, kb) {
+            const priority = kb && Array.isArray(kb.priority) ? kb.priority : [];
+            const alive = [];
+            const destroyed = [];
+            priority.forEach(limb => {
+                if (ActionExecutor._isLimbAlive(enemy, limb)) alive.push(limb);
+                else destroyed.push(limb);
+            });
+            return { alive: alive, destroyed: destroyed };
         }
 
         static async _sendRequest(prompt, context = 'combat') {
@@ -5876,6 +5907,7 @@ Respond ONLY with this JSON:
             const _logCombatDecision = (decision, modelUsed, source) => {
                 const latency = Math.round(performance.now() - startTime);
                 const llmUsage = decision && decision._llmUsage ? decision._llmUsage : null;
+                const executionSummary = this._combatExecutionSummary(decision);
                 const snapshot = {
                     battle_turn: battleState.turn_number,
                     enemies: battleState.enemies.filter(e => e.alive).map(e => ({ name: e.name, hp: e.hp, max_hp: e.max_hp })),
@@ -5885,8 +5917,13 @@ Respond ONLY with this JSON:
                     decision_action: decision ? decision.action : null,
                     decision_target: decision ? decision.target : null,
                     decision_limb: decision ? decision.limb : null,
-                    decision_reasoning: decision ? decision.reasoning : null,
+                    decision_reasoning: executionSummary,
+                    decision_reasoning_raw: decision ? decision.reasoning : null,
                     decision_dialog: decision ? decision.dialog : null,
+                    action: decision ? decision.action : null,
+                    target: decision ? decision.target : null,
+                    limb: decision ? decision.limb : null,
+                    reason: executionSummary,
                     response_source: source,
                     model_used: modelUsed,
                     latency_ms: latency,

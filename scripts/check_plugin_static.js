@@ -76,6 +76,10 @@ expectContains(plugin, '52: true,  // RANDOM FOOD ITEM', 'food loot common event
 expectContains(plugin, '58: true,  // RANDOM RARE ITEM', 'rare loot common event background support');
 expectContains(plugin, '149: true, // RANDOM SCROLL ITEM', 'scroll loot common event background support');
 expectContains(plugin, "event: 'ai_toast_spawned'", 'toast spawn thesis log');
+expectContains(plugin, '_combatExecutionSummary(decision)', 'authoritative combat execution telemetry');
+expectContains(plugin, 'decision_reasoning_raw:', 'raw combat reasoning retained separately');
+expectContains(plugin, 'LIVE UPDATE: already destroyed', 'live destroyed-limb combat prompt update');
+expectContains(plugin, 'Your reasoning MUST describe the exact limb selected', 'combat reasoning limb consistency rule');
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');
