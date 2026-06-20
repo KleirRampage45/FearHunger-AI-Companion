@@ -72,8 +72,10 @@ expectContains(plugin, 'AINotificationOverlay.update();', 'notification overlay 
 expectContains(plugin, 'window.AI_Companion.AINotificationOverlay = AINotificationOverlay;', 'notification overlay debug export');
 expectContains(plugin, '_expandBackgroundLootCommands', 'background loot common-event expansion');
 expectContains(plugin, '23: true,  // RANDOM MINOR ITEM', 'minor loot common event background support');
+expectContains(plugin, '52: true,  // RANDOM FOOD ITEM', 'food loot common event background support');
 expectContains(plugin, '58: true,  // RANDOM RARE ITEM', 'rare loot common event background support');
 expectContains(plugin, '149: true, // RANDOM SCROLL ITEM', 'scroll loot common event background support');
+expectContains(plugin, "event: 'ai_toast_spawned'", 'toast spawn thesis log');
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');

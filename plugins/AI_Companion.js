@@ -5190,6 +5190,13 @@ Reply with ONLY the category name, nothing else.`;
 	                ttl: Math.max(1200, Number(opts.ttl || 3200))
 	            });
 	            if (this._queue.length > 8) this._queue.shift();
+	            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                ThesisLogger.log('game_event', {
+	                    event: 'ai_toast_queued',
+	                    tone: opts.tone || 'neutral',
+	                    text: clean.length > 130 ? clean.slice(0, 130) + '...' : clean
+	                });
+	            }
 	        },
 
 	        pushLoot(actorName, summary) {
@@ -5241,6 +5248,7 @@ Reply with ONLY the category name, nothing else.`;
 	            const bannerWidth = Math.min(Graphics.width - 48, 920);
 	            const bannerHeight = 24 + lines.length * 22;
 	            const sprite = new Sprite(new Bitmap(bannerWidth, bannerHeight));
+	            sprite.z = 9999;
 	            const bg = entry.tone === 'loot' ? 'rgba(20, 42, 28, 0.78)' : 'rgba(0, 0, 0, 0.72)';
 	            const accent = entry.tone === 'loot' ? '#9fdc9f' : '#ffb74d';
 	            sprite.bitmap.fillRect(0, 0, bannerWidth, bannerHeight, bg);
@@ -5256,6 +5264,13 @@ Reply with ONLY the category name, nothing else.`;
 	            sprite.y = -bannerHeight;
 	            sprite.opacity = 0;
 	            scene.addChild(sprite);
+	            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                ThesisLogger.log('game_event', {
+	                    event: 'ai_toast_spawned',
+	                    tone: entry.tone,
+	                    text: entry.text
+	                });
+	            }
 	            this._active.unshift({
 	                sprite,
 	                startedAt: Date.now(),
@@ -11200,7 +11215,7 @@ Respond ONLY with this JSON:
             if (!params || !Array.isArray(params[0])) return false;
             const choices = params[0].map(choice => String(choice || '').toLowerCase().trim());
             if (choices.length < 2 || choices.length > 3) return false;
-            const positive = /^(abrir|buscar|agarrar|tomar|revisar|usar|open|search|take|grab|check|inspect|yes|sí|si)\b/i;
+            const positive = /^(abrir|buscar|agarrar|tomar|revisar|usar|llenar|open|search|take|grab|check|inspect|use|fill|yes|sí|si)\b/i;
             const negative = /^(dejar|irse|ignorar|cancelar|no|leave|ignore|cancel|go away)\b/i;
             if (!positive.test(choices[0])) return false;
             for (let i = 1; i < choices.length; i++) {
@@ -11212,6 +11227,7 @@ Respond ONLY with this JSON:
         _safeBackgroundLootCommonEventIds() {
             return {
                 23: true,  // RANDOM MINOR ITEM
+                52: true,  // RANDOM FOOD ITEM
                 58: true,  // RANDOM RARE ITEM
                 149: true, // RANDOM SCROLL ITEM
                 214: true, // Cloth_fragment_would_be_nice
@@ -11274,6 +11290,7 @@ Respond ONLY with this JSON:
                 102: true,
                 108: true,
                 111: true,
+                113: true,
                 121: true,
                 122: true,
                 123: true,
@@ -11443,6 +11460,10 @@ Respond ONLY with this JSON:
                 };
                 interpreter.command102 = function() {
                     this.setupChoices(this._params);
+                    return true;
+                };
+                interpreter.command113 = function() {
+                    this.skipBranch();
                     return true;
                 };
                 interpreter.setupChoices = function() {
