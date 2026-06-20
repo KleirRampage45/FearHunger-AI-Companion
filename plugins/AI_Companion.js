@@ -11291,7 +11291,6 @@ Respond ONLY with this JSON:
                 412: true
             };
 
-            let hasGain = false;
             let hasChoice = false;
 
             for (let i = 0; i < expandedList.length; i++) {
@@ -11311,12 +11310,7 @@ Respond ONLY with this JSON:
                     const operandType = Number(command.parameters && command.parameters[3]);
                     if (operandType === 4) return null;
                 }
-                if (code >= 125 && code <= 128) {
-                    hasGain = true;
-                }
             }
-
-            if (!hasGain) return null;
 
             return {
                 list: expandedList,
@@ -11494,6 +11488,16 @@ Respond ONLY with this JSON:
 	                if (rewards.length > 0 && typeof AINotificationOverlay !== 'undefined') {
 	                    AINotificationOverlay.pushLoot(Config.companionName, this._describeBackgroundLootRewards(rewards));
 	                }
+	                if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                    ThesisLogger.log('game_event', {
+	                        event: 'background_loot',
+	                        event_id: plan.eventId,
+	                        label: plan.label,
+	                        result: rewards.length > 0 ? 'rewards' : 'empty',
+	                        rewards: rewards,
+	                        expanded_command_count: plan.expandedCommandCount || 0
+	                    });
+	                }
 	                Debug.log('[BackgroundLoot]', {
 	                    eventId: plan.eventId,
 	                    label: plan.label,
@@ -11501,7 +11505,15 @@ Respond ONLY with this JSON:
                 });
                 return true;
             } catch (error) {
-                Debug.warn('[BackgroundLoot] Failed, falling back to normal event:', error.message);
+                if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                    ThesisLogger.log('game_event', {
+                        event: 'background_loot_failed',
+                        event_id: plan.eventId,
+                        label: plan.label,
+                        error: error && error.message ? error.message : String(error)
+                    });
+                }
+                Debug.warn('[BackgroundLoot] Failed:', error.message);
                 return false;
             } finally {
                 $gameParty.gainGold = originalGainGold;
@@ -11528,6 +11540,19 @@ Respond ONLY with this JSON:
                     if (backgroundHandled) {
                         return this._finalizeInteractionStart(event, follower, 'background-loot', snap);
                     }
+                    const skippedEventId = snap.eventId != null ? snap.eventId : (event.eventId ? event.eventId() : event._eventId);
+                    this._setEventCooldown(skippedEventId, 30000);
+                    if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                        ThesisLogger.log('game_event', {
+                            event: 'background_loot_unsupported',
+                            event_id: skippedEventId,
+                            label: snap.label || '',
+                            subtype: snap.subtype || '',
+                            reason: 'container_or_loot_not_safe_for_background_interpreter'
+                        });
+                    }
+                    Debug.warn('[BackgroundLoot] Unsupported safe loot event; skipping blocking fallback:', skippedEventId, snap.label);
+                    return this._finalizeInteractionStart(event, follower, 'background-loot-unsupported', snap);
                 }
                 if (snap && snap.type === 'door' && event.start) {
                     event.start();
