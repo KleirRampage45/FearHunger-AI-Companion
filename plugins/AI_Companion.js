@@ -11331,7 +11331,7 @@ Respond ONLY with this JSON:
             }
 
             return {
-                list: expandedList,
+                list: list,
                 eventId: snap.eventId != null ? snap.eventId : (event.eventId ? event.eventId() : event._eventId),
                 label: snap.label || 'Objeto',
                 type: snap.type || 'container',
@@ -11425,6 +11425,20 @@ Respond ONLY with this JSON:
             const rewards = [];
             const originalGainGold = $gameParty.gainGold.bind($gameParty);
             const originalGainItem = $gameParty.gainItem.bind($gameParty);
+            const interpreterPrototype = Game_Interpreter.prototype;
+            const originalInterpreterCommands = {
+                command101: interpreterPrototype.command101,
+                command102: interpreterPrototype.command102,
+                command117: interpreterPrototype.command117,
+                command230: interpreterPrototype.command230,
+                command401: interpreterPrototype.command401,
+                command402: interpreterPrototype.command402,
+                command404: interpreterPrototype.command404,
+                command411: interpreterPrototype.command411,
+                command412: interpreterPrototype.command412
+            };
+            const originalSetupChoices = interpreterPrototype.setupChoices;
+            const safeCommonEvents = this._safeBackgroundLootCommonEventIds();
             if ($gameTemp) $gameTemp._aiCompanionLootSource = Config.companionName || 'Companion';
 
             $gameParty.gainGold = function(amount) {
@@ -11448,7 +11462,7 @@ Respond ONLY with this JSON:
                 interpreter._mapId = $gameMap.mapId();
                 interpreter._eventId = plan.eventId;
 
-                interpreter.command101 = function() {
+                interpreterPrototype.command101 = function() {
                     while (this.nextEventCode() === 401) {
                         this._index++;
                     }
@@ -11458,47 +11472,54 @@ Respond ONLY with this JSON:
                     }
                     return true;
                 };
-                interpreter.command102 = function() {
+                interpreterPrototype.command102 = function() {
                     this.setupChoices(this._params);
                     return true;
                 };
-                interpreter.command113 = function() {
-                    this.skipBranch();
+                interpreterPrototype.command117 = function() {
+                    const commonEventId = Number(this._params && this._params[0]);
+                    const commonEvent = $dataCommonEvents && $dataCommonEvents[commonEventId];
+                    if (!safeCommonEvents[commonEventId] || !commonEvent || !Array.isArray(commonEvent.list)) {
+                        throw new Error('unsafe background common event ' + commonEventId);
+                    }
+                    if (this._depth >= 12) return true;
+                    const eventId = this.isOnCurrentMap && this.isOnCurrentMap() ? this._eventId : 0;
+                    this.setupChild(commonEvent.list, eventId);
                     return true;
                 };
-                interpreter.setupChoices = function() {
+                interpreterPrototype.setupChoices = function() {
                     this._branch[this._indent] = 0;
                 };
-                interpreter.command230 = function() {
+                interpreterPrototype.command230 = function() {
                     return true;
                 };
-                interpreter.command401 = function() {
+                interpreterPrototype.command401 = function() {
                     return true;
                 };
-                interpreter.command402 = function() {
+                interpreterPrototype.command402 = function() {
                     if (this._branch[this._indent] !== this._params[0]) {
                         this.skipBranch();
                     }
                     return true;
                 };
-                interpreter.command404 = function() {
+                interpreterPrototype.command404 = function() {
                     return true;
                 };
-                interpreter.command411 = function() {
+                interpreterPrototype.command411 = function() {
                     if (this._branch[this._indent] !== false) {
                         this.skipBranch();
                     }
                     return true;
                 };
-                interpreter.command412 = function() {
+                interpreterPrototype.command412 = function() {
                     return true;
                 };
 
                 let guard = 0;
                 while (interpreter.isRunning && interpreter.isRunning()) {
-                    if (!interpreter.executeCommand()) break;
+                    interpreter.update();
                     guard++;
-                    if (guard > 5000) {
+                    if (guard > 500) {
                         throw new Error('background loot interpreter exceeded guard limit');
                     }
                 }
@@ -11538,6 +11559,10 @@ Respond ONLY with this JSON:
                 Debug.warn('[BackgroundLoot] Failed:', error.message);
                 return false;
             } finally {
+                for (const key in originalInterpreterCommands) {
+                    interpreterPrototype[key] = originalInterpreterCommands[key];
+                }
+                interpreterPrototype.setupChoices = originalSetupChoices;
                 $gameParty.gainGold = originalGainGold;
                 $gameParty.gainItem = originalGainItem;
                 if ($gameTemp) $gameTemp._aiCompanionLootSource = null;
