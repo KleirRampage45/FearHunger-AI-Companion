@@ -14,7 +14,7 @@ This document is a current high-level map of the mod internals. It is not a bran
 - `StoryGoalMemory`: save-tied story progress and inferred goals.
 - `NPCIntelligence`: tracks recent NPC dialogue/contact and injects it into chat context.
 - `RiskEvaluator`: estimates combat/world risk and recommends caution, attack, regrouping, or avoidance.
-- `GeminiAPIHandler`: legacy name for model request/response handling across Groq, OpenRouter, and local OpenAI-compatible servers.
+- `LLMAPIHandler`: model request/response handling across cloud providers and local OpenAI-compatible servers.
 - `ActionExecutor`: validates and applies combat decisions.
 - `ChatSystem` and `Scene_AIChat`: in-game chat UI and transcript.
 - `AutonomySystem`: optional local-model heartbeat controller for overworld companion actions.
@@ -41,7 +41,7 @@ Hybrid RAG is background knowledge. It must not be treated as proof that an NPC,
 - `OpenRouter`: configurable cloud model provider.
 - `Local`: LM Studio/Ollama/OpenAI-compatible endpoint, mainly for autonomy/private testing and optionally chat.
 
-When provider is `local`, cloud fallback must use cloud-safe model names. Local model names such as `gemma-...`, `qwen...`, or custom LM Studio IDs must not be sent to Groq.
+When provider is `local`, cloud fallback must use cloud-safe model names. Local model names such as `gemma-...`, `qwen...`, or custom LM Studio IDs must not be sent to a cloud provider.
 
 ## Persistent Files
 

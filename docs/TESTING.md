@@ -50,7 +50,7 @@ Expected:
 
 - A `combat_decision` entry appears.
 - No `TypeError` is thrown.
-- Groq fallback does not send local model names such as `gemma-...` to Groq.
+- Cloud fallback does not send local model names such as `gemma-...` to a cloud provider.
 - Coin-flip defense only happens when a live coin-flip threat is actually present.
 - During map coin-flip prompts, autonomy/autopilot stops moving and logs `COIN_FLIP_CHOICE`; autopilot choices should include `source: "local_llm"` because the local model must choose the face and Lucky Coin use.
 

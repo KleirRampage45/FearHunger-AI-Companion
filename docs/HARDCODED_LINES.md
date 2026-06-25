@@ -1,16 +1,10 @@
 # Hardcoded Line Policy
 
-The companion should feel AI-driven, not like a traditional scripted follower. This branch changes non-critical ambient fallbacks to silent by default.
+The companion should feel AI-driven, not like a traditional scripted follower. Non-critical ambient fallbacks stay silent when no model response is available.
 
 ## Default Behavior
 
-`Config.ambientFallbackMode` defaults to:
-
-```text
-silent
-```
-
-This means these non-critical systems do not speak fixed fallback flavor lines when the LLM is unavailable or mock mode is enabled:
+These non-critical systems must not speak fixed fallback flavor lines when the LLM is unavailable or mock mode is enabled:
 
 - item pickup flavor
 - hunger flavor
@@ -32,22 +26,6 @@ Some text is UI/state-control, not roleplay flavor. These lines are kept because
 - fallback chat answers when all model calls fail and a knowledge-base answer exists
 
 These should eventually become more customizable, but removing them entirely would make UI flows unclear.
-
-## Temporary Legacy Mode
-
-For regression testing only, hardcoded ambient fallbacks can be re-enabled from the console:
-
-```javascript
-AI_Companion.Config.ambientFallbackMode = 'legacy';
-localStorage.setItem('AI_Companion_AmbientFallbackMode', 'legacy');
-```
-
-Return to AI-first behavior:
-
-```javascript
-AI_Companion.Config.ambientFallbackMode = 'silent';
-localStorage.setItem('AI_Companion_AmbientFallbackMode', 'silent');
-```
 
 ## Test Plan
 

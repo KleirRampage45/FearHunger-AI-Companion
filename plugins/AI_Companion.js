@@ -9,7 +9,7 @@
  * 
  * This plugin adds an AI-controlled companion that:
  * - Follows the player on the map (via HIME_GuestFollowers)
- * - Acts autonomously in combat using Gemini 3.0 Flash API
+ * - Acts autonomously in combat using an OpenAI-compatible LLM provider
  * - Understands and exploits Fear & Hunger's limb-based combat
  * - Maintains persistent memory across battles and save files
  * 
@@ -29,8 +29,8 @@
  * ============================================================================
  * 
  * @param apiKey
- * @text Gemini API Key
- * @desc Your Google AI Studio API key for Gemini 3.0 Flash
+ * @text Cloud API Key
+ * @desc API key for the selected cloud provider. Leave empty when using only a local server.
  * @type string
  * @default 
  * 
@@ -70,11 +70,6 @@
  * @type boolean
  * @default true
  * 
- * @param apiEndpoint
- * @text API Endpoint
- * @desc Gemini API endpoint URL
- * @type string
- * @default https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
  */
 
 (() => {
@@ -94,7 +89,7 @@
         groq: {
             name: 'Groq',
             endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-            modelsEndpoint: null, // Groq models are hardcoded
+            modelsEndpoint: null, // Static fallback list; use provider UI when dynamic listing is added.
             defaultModels: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
             needsKey: true,
             extraHeaders: { 'HTTP-Referer': 'https://fear-and-hunger-mod.local', 'X-Title': 'Fear & Hunger AI Companion' }
@@ -119,12 +114,7 @@
 
     const _providerOrder = ['groq', 'openrouter', 'local'];
     const NON_PLAYABLE_BOOT_MAP_IDS = [10, 72];
-    const FAST_AUTONOMY_MODEL_HINTS = [
-        'gemma-4-e4b-uncensored-hauhaucs-aggressive',
-        'gemma-4-12b-it',
-        'gemma-4',
-        'gemma'
-    ];
+    const FAST_AUTONOMY_MODEL_HINTS = [];
 
 	    const Config = {
         apiKey: savedApiKey || String(parameters['apiKey'] || ''),
@@ -153,8 +143,8 @@
         autonomyModel: localStorage.getItem('AI_Companion_AutonomyModel') || '',
         autonomyTickSeconds: Number(localStorage.getItem('AI_Companion_AutonomyTickSeconds') || '4'),
         autonomyBehaviorProfile: localStorage.getItem('AI_Companion_AutonomyProfile') || 'cautious',
-        autonomyMaxScoutDistance: Number(localStorage.getItem('AI_Companion_AutonomyScoutDistance') || '6'),
-        autonomyMaxDetourDistance: Number(localStorage.getItem('AI_Companion_AutonomyDetourDistance') || '3'),
+        autonomyMaxScoutDistance: Number(localStorage.getItem('AI_Companion_AutonomyScoutDistance') || '8'),
+        autonomyMaxDetourDistance: Number(localStorage.getItem('AI_Companion_AutonomyDetourDistance') || '5'),
         autonomyLootRadius: Number(localStorage.getItem('AI_Companion_AutonomyLootRadius') || '2'),
         autonomyAllowNpcInteraction: localStorage.getItem('AI_Companion_AutonomyNpcInteraction') !== 'false',
         autonomyAllowDoorTesting: localStorage.getItem('AI_Companion_AutonomyDoorTesting') !== 'false',
@@ -164,12 +154,12 @@
         autopilotTickSeconds: Number(localStorage.getItem('AI_Companion_AutopilotTickSeconds') || '3'),
         autopilotMaxRuntimeMinutes: Number(localStorage.getItem('AI_Companion_AutopilotMaxRuntimeMinutes') || '20'),
         debugOverlay: (localStorage.getItem('AI_Companion_DebugOverlay') || 'true') === 'true',
-        performanceLogging: localStorage.getItem('AI_Companion_PerformanceLogging') !== 'false',
+        performanceLogging: localStorage.getItem('AI_Companion_PerformanceLogging') === 'true',
         performanceLogIntervalMs: Number(localStorage.getItem('AI_Companion_PerformanceLogIntervalMs') || '5000'),
 
         // Local AI config
-        localEndpoint: localStorage.getItem('AI_Companion_LocalEndpoint') || 'http://192.168.100.3:1234/v1/chat/completions',
-        localModel: localStorage.getItem('AI_Companion_LocalModel') || 'gemma-4-e4b-uncensored-hauhaucs-aggressive',
+        localEndpoint: localStorage.getItem('AI_Companion_LocalEndpoint') || 'http://127.0.0.1:1234/v1/chat/completions',
+        localModel: localStorage.getItem('AI_Companion_LocalModel') || '',
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
@@ -178,10 +168,31 @@
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
         _freeModelsFetchedAt: Number(localStorage.getItem('AI_Companion_FreeModelsFetchedAt') || '0'),
+        _cachedLocalModels: JSON.parse(localStorage.getItem('AI_Companion_LocalModels') || '[]'),
+        _localModelsFetchedAt: Number(localStorage.getItem('AI_Companion_LocalModelsFetchedAt') || '0'),
+        cloudFallbackProvider: localStorage.getItem('AI_Companion_CloudFallbackProvider') || 'groq',
 
         // Returns the active provider definition
         getProvider() {
             return PROVIDERS[this.apiProvider] || PROVIDERS.groq;
+        },
+
+        getCloudFallbackProvider() {
+            const key = this.cloudFallbackProvider || 'groq';
+            return (key !== 'local' && PROVIDERS[key]) ? key : 'groq';
+        },
+
+        getCloudFallbackEndpoint() {
+            const provider = PROVIDERS[this.getCloudFallbackProvider()] || PROVIDERS.groq;
+            return provider.endpoint;
+        },
+
+        getCloudFallbackHeaders() {
+            const provider = PROVIDERS[this.getCloudFallbackProvider()] || PROVIDERS.groq;
+            return Object.assign({
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.apiKey}`
+            }, provider.extraHeaders || {});
         },
 
         // Returns the active API endpoint
@@ -198,6 +209,16 @@
             if (/\/v1$/i.test(url)) return url + '/chat/completions';
             if (/\/chat\/completions$/i.test(url)) return url;
             return url + '/v1/chat/completions';
+        },
+
+        getLocalModelsEndpoint() {
+            let url = String(this.localEndpoint || '').trim();
+            if (!url) return '';
+            url = url.replace(/\/+$/, '');
+            url = url.replace(/\/v1\/chat\/completions$/i, '/v1');
+            url = url.replace(/\/chat\/completions$/i, '');
+            if (/\/v1$/i.test(url)) return url + '/models';
+            return url + '/v1/models';
         },
 
         // Returns headers appropriate for the provider
@@ -236,7 +257,7 @@
         },
 
         getCloudModelsForContext(context, providerKey) {
-            providerKey = providerKey || (this.apiProvider === 'local' ? 'groq' : this.apiProvider);
+            providerKey = providerKey || (this.apiProvider === 'local' ? this.getCloudFallbackProvider() : this.apiProvider);
             const provider = PROVIDERS[providerKey] || PROVIDERS.groq;
             const defaults = (provider.defaultModels || []).slice();
             const models = [];
@@ -253,7 +274,7 @@
                     pushUnique('llama-3.3-70b-versatile');
                     pushUnique('llama-3.1-8b-instant');
                 }
-                // Only trust a custom chat model for Groq if it is not a local-only name.
+                // Only trust a custom chat model for cloud providers if it is not a local-only name.
                 if (context === 'chat' && this.chatModel && !this.looksLikeLocalOnlyModel(this.chatModel)) {
                     models.unshift(this.chatModel);
                 }
@@ -279,6 +300,9 @@
             // Reset chatModel to provider default
             this.chatModel = '';
             localStorage.removeItem('AI_Companion_ChatModel');
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'provider', value: provider });
+            }
         },
 
         cycleProvider() {
@@ -298,10 +322,14 @@
             const pushUnique = (value) => {
                 if (value && options.indexOf(value) === -1) options.push(value);
             };
+            if (this.autonomyModel) pushUnique(this.autonomyModel);
+            if (this.localModel) pushUnique(this.localModel);
+            if (this._cachedLocalModels && this._cachedLocalModels.length > 0) {
+                this._cachedLocalModels.forEach(m => pushUnique(m.id || m.name || m));
+            }
             for (let i = 0; i < FAST_AUTONOMY_MODEL_HINTS.length; i++) {
                 pushUnique(FAST_AUTONOMY_MODEL_HINTS[i]);
             }
-            pushUnique(this.localModel);
             pushUnique(this.chatModel);
             const defaults = this.getProvider().defaultModels || [];
             for (let i = 0; i < defaults.length; i++) pushUnique(defaults[i]);
@@ -313,12 +341,15 @@
             if (this.localModel && !/qwen|thinking|reasoning/i.test(this.localModel)) {
                 return this.localModel;
             }
-            return FAST_AUTONOMY_MODEL_HINTS[0] || this.localModel || this.getChatModel();
+            return this.localModel || this.getChatModel();
         },
 
         setAutonomyModel(model) {
-            this.autonomyModel = model || '';
+            this.autonomyModel = String(model || '').trim();
             localStorage.setItem('AI_Companion_AutonomyModel', this.autonomyModel);
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'autonomy_model', value: this.autonomyModel });
+            }
         },
 
         cycleAutonomyModel() {
@@ -333,11 +364,34 @@
         setLocalEndpoint(url) {
             this.localEndpoint = String(url || '').trim();
             localStorage.setItem('AI_Companion_LocalEndpoint', this.localEndpoint);
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'local_endpoint', value: this.localEndpoint });
+            }
         },
 
         setLocalModel(model) {
-            this.localModel = model;
-            localStorage.setItem('AI_Companion_LocalModel', model);
+            this.localModel = String(model || '').trim();
+            localStorage.setItem('AI_Companion_LocalModel', this.localModel);
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'local_model', value: this.localModel });
+            }
+        },
+
+        setLocalModels(models) {
+            const clean = (models || []).map(m => {
+                const id = typeof m === 'string' ? m : (m && (m.id || m.name));
+                if (!id) return null;
+                return { id: String(id), name: String((m && m.name) || id) };
+            }).filter(Boolean);
+            this._cachedLocalModels = clean;
+            this._localModelsFetchedAt = Date.now();
+            localStorage.setItem('AI_Companion_LocalModels', JSON.stringify(clean));
+            localStorage.setItem('AI_Companion_LocalModelsFetchedAt', String(this._localModelsFetchedAt));
+            if (clean.length > 0) {
+                this.setLocalModel(clean[0].id);
+                this.setAutonomyModel(clean[0].id);
+            }
+            return clean;
         },
 
         setCustomPersonaEnabled(on) {
@@ -493,8 +547,15 @@
         },
 
         setApiKey(key) {
-            this.apiKey = key;
-            localStorage.setItem('AI_Companion_ApiKey', key);
+            this.apiKey = String(key || '').trim();
+            localStorage.setItem('AI_Companion_ApiKey', this.apiKey);
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', {
+                    key: 'api_key',
+                    has_value: !!this.apiKey,
+                    length: this.apiKey.length
+                });
+            }
         },
 
         setLanguage(lang) {
@@ -542,7 +603,7 @@
         },
 
         setAutonomyScoutDistance(value) {
-            this.autonomyMaxScoutDistance = Math.max(2, Math.min(12, Number(value) || 6));
+            this.autonomyMaxScoutDistance = Math.max(2, Math.min(12, Number(value) || 8));
             localStorage.setItem('AI_Companion_AutonomyScoutDistance', String(this.autonomyMaxScoutDistance));
         },
 
@@ -554,12 +615,12 @@
         },
 
         setAutonomyDetourDistance(value) {
-            this.autonomyMaxDetourDistance = Math.max(1, Math.min(6, Number(value) || 3));
+            this.autonomyMaxDetourDistance = Math.max(1, Math.min(10, Number(value) || 5));
             localStorage.setItem('AI_Companion_AutonomyDetourDistance', String(this.autonomyMaxDetourDistance));
         },
 
         cycleAutonomyDetourDistance() {
-            const values = [1, 2, 3, 4, 5, 6];
+            const values = [2, 3, 4, 5, 6, 8, 10];
             const idx = values.indexOf(this.autonomyMaxDetourDistance);
             this.setAutonomyDetourDistance(values[(idx + 1 + values.length) % values.length]);
             return this.autonomyMaxDetourDistance;
@@ -633,10 +694,29 @@
             return this._cachedFreeModels;
         },
 
-        // Groq hardcoded endpoint for chat fallback (used by _sendChatRequest, combat fallback)
-        get apiEndpoint() {
-            return PROVIDERS.groq.endpoint;
-	        },
+        async fetchLocalModels() {
+            const endpoint = this.getLocalModelsEndpoint();
+            if (!endpoint) return [];
+            try {
+                const resp = await fetch(endpoint, {
+                    headers: this.getLocalHeaders()
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const models = (data.data || data.models || []).map(m => ({
+                    id: String(m.id || m.name || m.model || ''),
+                    name: String(m.name || m.id || m.model || '')
+                })).filter(m => m.id);
+                return this.setLocalModels(models);
+            } catch (e) {
+                console.warn('[AI_Companion] Failed to fetch local models:', e.message);
+                return this._cachedLocalModels || [];
+            }
+        },
+
+        getLocalModels() {
+            return this._cachedLocalModels || [];
+        },
 
         // ── Hybrid RAG ─────────────────────────────────────────────────
         hybridRagEnabled: localStorage.getItem('AI_Companion_HybridRagEnabled') === 'true',
@@ -1693,14 +1773,42 @@
             if (!$gameMap || !$gamePlayer || !$gameParty) return false;
             if (this.isBootOrIntroMap()) return false;
             if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
-            if ($gameMap.isEventRunning && $gameMap.isEventRunning()) return false;
+            if (!opts.allowEventRunning && $gameMap.isEventRunning && $gameMap.isEventRunning()) return false;
             if (!opts.allowMessage && $gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
-            if ($gamePlayer.canMove && !$gamePlayer.canMove()) return false;
+            if (!opts.allowPlayerLocked && $gamePlayer.canMove && !$gamePlayer.canMove()) return false;
             return true;
         },
 
         canRunMapAi() {
             return this.isMapGameplayReady();
+        },
+
+        canRunBackgroundAutonomy() {
+            if (!this.isMapGameplayReady({
+                allowMessage: true,
+                allowEventRunning: true,
+                allowPlayerLocked: true
+            })) return false;
+            if (!$gameMessage || !$gameMessage.isBusy || !$gameMessage.isBusy()) return false;
+            const choices = $gameMessage.choices ? ($gameMessage.choices() || []) : [];
+            if (choices.length > 0) return false;
+            const scene = SceneManager && SceneManager._scene;
+            const messageWindow = scene && scene._messageWindow;
+            const choiceWindow = messageWindow && messageWindow._choiceWindow ? messageWindow._choiceWindow : (scene && scene._choiceWindow);
+            const numberWindow = messageWindow && messageWindow._numberWindow ? messageWindow._numberWindow : (scene && scene._numberWindow);
+            const itemWindow = messageWindow && messageWindow._itemWindow ? messageWindow._itemWindow : (scene && scene._itemWindow);
+            const isOpenWindow = win => {
+                if (!win) return false;
+                if (win.active) return true;
+                if (!win.visible) return false;
+                if (win.isClosed && win.isClosed()) return false;
+                if (typeof win.openness === 'number') return win.openness > 0;
+                return true;
+            };
+            if (isOpenWindow(choiceWindow)) return false;
+            if (isOpenWindow(numberWindow)) return false;
+            if (isOpenWindow(itemWindow)) return false;
+            return true;
         },
 
         canQueueMapMessage() {
@@ -3988,8 +4096,7 @@ Reply with ONLY the category name, nothing else.`;
             return this._scanAround(origin, radius || this.SCAN_RADIUS);
         },
 
-        getPointsOfInterestAround(origin, radius) {
-            const nearby = origin ? this.scanAround(origin, radius) : this.scan();
+        rankPointsOfInterest(nearby) {
             const priority = {
                 trap: 120,
                 enemy: 100,
@@ -4001,7 +4108,7 @@ Reply with ONLY the category name, nothing else.`;
                 obstruction: 20,
                 corpse: 10
             };
-            return nearby
+            return (nearby || [])
                 .filter(entry => ['trap', 'enemy', 'container', 'save_point', 'door', 'npc', 'hazard', 'obstruction'].includes(entry.type))
                 .sort((a, b) => {
                     const pa = priority[a.type] || 0;
@@ -4010,6 +4117,11 @@ Reply with ONLY the category name, nothing else.`;
                     return a.distance - b.distance;
                 })
                 .slice(0, 8);
+        },
+
+        getPointsOfInterestAround(origin, radius) {
+            const nearby = origin ? this.scanAround(origin, radius) : this.scan();
+            return this.rankPointsOfInterest(nearby);
         },
 
         getPointsOfInterest() {
@@ -4219,43 +4331,6 @@ Reply with ONLY the category name, nothing else.`;
 	                    ? 'Enemigos en esta zona: ' + enemiesHere.join(', ') + '.'
 	                    : 'Enemies in this area: ' + enemiesHere.join(', ') + '.');
 	            }
-
-            // Hardcoded area-specific tips (English + Spanish) as last resort
-            const es = Config.language === 'es';
-            const hardcoded = {
-                'entrance': { en: 'Dogs will chase and attack if you linger.', es: 'Los perros te perseguirán si te quedas.' },
-                'entrada': { en: 'Dogs will chase and attack if you linger.', es: 'Los perros te perseguirán si te quedas.' },
-                'courtyard': { en: 'Open area. Dagger can be found here.', es: 'Área abierta. Se puede encontrar un puñal.' },
-                'patio': { en: 'Open area. Dagger can be found here.', es: 'Área abierta. Se puede encontrar un puñal.' },
-                'innerhall': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
-                'inner hall': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
-                'salainterior': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
-                'pasillointerior': { en: 'Crow Mauler stalks this area. Trortur\'s secret chamber is here.', es: 'El Crow Mauler acecha esta zona. La cámara secreta de Trortur está aquí.' },
-                'bloodpit': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
-                'blood pit': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
-                'pozodesangre': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
-                'pozosangre': { en: 'Human Hydra here can be used for stat farming.', es: 'La Hidra Humana está aquí. Útil para subir estadísticas.' },
-                'prisons': { en: 'Prisoners and Skeletons can be recruited.', es: 'Prisioneros y Esqueletos pueden ser reclutados.' },
-                'prisiones': { en: 'Prisoners and Skeletons can be recruited.', es: 'Prisioneros y Esqueletos pueden ser reclutados.' },
-                'thicket': { en: 'Infection is common. Stock green herbs.', es: 'Las infecciones son comunes. Lleva hierba verde.' },
-                'espesura': { en: 'Infection is common. Stock green herbs.', es: 'Las infecciones son comunes. Lleva hierba verde.' },
-                'catacombs': { en: 'Skin Granny is here. Bring Penance armor or Iron mask.', es: 'La Skin Granny está aquí. Trae armadura de Penitencia o máscara de hierro.' },
-                'catacumbas': { en: 'Skin Granny is here. Bring Penance armor or Iron mask.', es: 'La Skin Granny está aquí. Trae armadura de Penitencia o máscara de hierro.' },
-                'mahabre': { en: 'Ancient city. Yellow Mages and Moonless.', es: 'Ciudad antigua. Magos amarillos y Moonless.' },
-                "ma'habre": { en: 'Ancient city. Yellow Mages and Moonless.', es: 'Ciudad antigua. Magos amarillos y Moonless.' },
-                'escalera': { en: 'Stairway connecting dungeon levels.', es: 'Escalera que conecta los niveles de la mazmorra.' },
-                'sótano': { en: 'Basement corridors. Guards and elite enemies patrol.', es: 'Corredores del sótano. Guardias y enemigos de élite patrullan.' },
-                'sotano': { en: 'Basement corridors. Guards and elite enemies patrol.', es: 'Corredores del sótano. Guardias y enemigos de élite patrullan.' },
-                'cavernas': { en: 'Natural caves. Spiders and Cavedweller merchants.', es: 'Cuevas naturales. Arañas y comerciantes Cavedweller.' },
-                'minas': { en: 'Abandoned mines. Miner spectres and the Altar of Darkness.', es: 'Minas abandonadas. Espectros mineros y el Altar de la Oscuridad.' }
-            };
-            for (const hKey in hardcoded) {
-                if (norm.includes(hKey.replace(/[^a-z0-9áéíóúñü]/g, ''))) {
-                    const tip = hardcoded[hKey];
-                    tips.push(es ? tip.es : tip.en);
-                    break;
-                }
-            }
 
             return tips.length > 0 ? { displayName: Locale.text(mapName), tips } : null;
         },
@@ -5177,18 +5252,21 @@ Reply with ONLY the category name, nothing else.`;
 	    //=========================================================================
 	    const AINotificationOverlay = {
 	        _queue: [],
+	        _iconQueue: [],
 	        _active: [],
 	        _scene: null,
+	        _overlay: null,
 
 	        push(text, options) {
 	            const clean = Config.cleanGeneratedText(String(text || '').replace(/\s+/g, ' ').trim());
 	            if (!clean) return;
 	            const opts = options || {};
-	            this._queue.push({
+	            const entry = {
 	                text: clean.length > 130 ? clean.slice(0, 130) + '...' : clean,
 	                tone: opts.tone || 'neutral',
-	                ttl: Math.max(1200, Number(opts.ttl || 3200))
-	            });
+	                ttl: Math.max(1200, Number(opts.ttl || 3200)),
+	                anchorCharacter: opts.anchorCharacter || opts.character || null
+	            };
 	            if (this._queue.length > 8) this._queue.shift();
 	            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
 	                ThesisLogger.log('game_event', {
@@ -5197,6 +5275,13 @@ Reply with ONLY the category name, nothing else.`;
 	                    text: clean.length > 130 ? clean.slice(0, 130) + '...' : clean
 	                });
 	            }
+	            if (this._tryNativeGab(entry)) return;
+	            this._queue.push(entry);
+	        },
+
+	        pushAt(text, character, options) {
+	            const opts = Object.assign({}, options || {}, { anchorCharacter: character || null });
+	            this.push(text, opts);
 	        },
 
 	        pushLoot(actorName, summary) {
@@ -5207,6 +5292,76 @@ Reply with ONLY the category name, nothing else.`;
 	                tone: 'loot',
 	                ttl: 3400
 	            });
+	        },
+
+	        pushLootAt(actorName, summary, character) {
+	            if (!summary) return;
+	            const es = Config.language === 'es';
+	            const name = actorName || Config.companionName || (es ? 'Compañero' : 'Companion');
+	            this.pushAt(es ? `${name} encontró ${summary}.` : `${name} found ${summary}.`, character, {
+	                tone: 'loot',
+	                ttl: 3400
+	            });
+	        },
+
+	        pushEmptySearch(actorName, label) {
+	            const es = Config.language === 'es';
+	            const name = actorName || Config.companionName || (es ? 'Compañero' : 'Companion');
+	            const objectName = label || (es ? 'algo' : 'something');
+	            this.push(es ? `${name} revisó ${objectName}: nada útil.` : `${name} searched ${objectName}: nothing useful.`, {
+	                tone: 'search',
+	                ttl: 2600
+	            });
+	        },
+
+	        pushEmptySearchAt(actorName, label, character) {
+	            const es = Config.language === 'es';
+	            const name = actorName || Config.companionName || (es ? 'Compañero' : 'Companion');
+	            const objectName = label || (es ? 'algo' : 'something');
+	            this.pushAt(es ? `${name} revisó ${objectName}: nada útil.` : `${name} searched ${objectName}: nothing useful.`, character, {
+	                tone: 'search',
+	                ttl: 2600
+	            });
+	        },
+
+	        pushRewardIconsAt(rewards, character) {
+	            if (!character || !rewards || rewards.length === 0) return;
+	            let queued = 0;
+	            const iconEntries = rewards
+	                .filter(reward => reward && Number.isFinite(Number(reward.iconIndex)) && Number(reward.iconIndex) > 0)
+	                .slice(0, 3);
+	            const useCharacterSprite = character && typeof character === 'object';
+	            iconEntries.forEach((reward, index) => {
+	                if (useCharacterSprite) {
+	                    if (!character._aiCompanionItemIconQueue) character._aiCompanionItemIconQueue = [];
+	                    character._aiCompanionItemIconQueue.push({
+	                        reward,
+	                        delay: 28 + index * 18
+	                    });
+	                    queued++;
+	                } else {
+	                    this._iconQueue.push({
+	                        reward,
+	                        anchorCharacter: character,
+	                        ttl: 3600,
+	                        delay: 420 + index * 280,
+	                        queuedAt: Date.now()
+	                    });
+	                    queued++;
+	                }
+	            });
+	            if (this._iconQueue.length > 8) this._iconQueue.splice(0, this._iconQueue.length - 8);
+	            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                ThesisLogger.log('game_event', {
+	                    event: queued > 0 ? (useCharacterSprite ? 'ai_item_icon_character_queued' : 'ai_item_icon_queued') : 'ai_item_icon_skipped',
+	                    queued,
+	                    rewards: rewards.map(reward => ({
+	                        name: reward && reward.name,
+	                        amount: reward && reward.amount,
+	                        icon_index: reward && reward.iconIndex
+	                    }))
+	                });
+	            }
 	        },
 
 	        update() {
@@ -5220,37 +5375,131 @@ Reply with ONLY the category name, nothing else.`;
 	                this._clearSprites();
 	                this._scene = scene;
 	            }
+	            this._ensureOverlay(scene);
 	            while (this._queue.length > 0 && this._active.length < 3) {
 	                this._spawn(scene, this._queue.shift());
 	            }
 	            const now = Date.now();
+	            while (this._iconQueue.length > 0 && this._active.length < 5) {
+	                const nextIcon = this._iconQueue[0];
+	                if (now - nextIcon.queuedAt < nextIcon.delay) break;
+	                this._iconQueue.shift();
+	                this._spawnIcon(scene, nextIcon);
+	            }
 	            for (let i = this._active.length - 1; i >= 0; i--) {
 	                const entry = this._active[i];
 	                const elapsed = now - entry.startedAt;
-	                const yTarget = 10 + i * (entry.height + 6);
-	                if (entry.sprite) entry.sprite.y += (yTarget - entry.sprite.y) * 0.25;
-	                if (elapsed < 180) {
-	                    entry.sprite.opacity = Math.min(255, Math.round(255 * (elapsed / 180)));
-	                } else if (elapsed > entry.ttl - 480) {
-	                    entry.sprite.opacity = Math.max(0, Math.round(255 * ((entry.ttl - elapsed) / 480)));
+	                if (entry.kind === 'icon') {
+	                    this._positionIconEntry(entry, i);
+	                } else if (entry.anchorCharacter) {
+	                    this._positionAnchoredEntry(entry, i);
 	                } else {
-	                    entry.sprite.opacity = 255;
+	                    const yTarget = 10 + i * (entry.height + 6);
+	                    if (entry.sprite) entry.sprite.y += (yTarget - entry.sprite.y) * 0.25;
 	                }
-	                if (elapsed >= entry.ttl || entry.sprite.opacity <= 0) {
+	                let opacity;
+	                if (elapsed < 180) {
+	                    opacity = Math.min(255, Math.round(255 * (elapsed / 180)));
+	                } else if (elapsed > entry.ttl - 480) {
+	                    opacity = Math.max(0, Math.round(255 * ((entry.ttl - elapsed) / 480)));
+	                } else {
+	                    opacity = 255;
+	                }
+	                this._setOpacity(entry.sprite, opacity);
+	                if (elapsed >= entry.ttl || opacity <= 0) {
 	                    this._removeEntry(entry);
 	                    this._active.splice(i, 1);
 	                }
 	            }
 	        },
 
+	        _spawnIcon(scene, entry) {
+	            const reward = entry && entry.reward;
+	            if (!reward || !entry.anchorCharacter) return;
+	            const iconIndex = Number(reward.iconIndex);
+	            if (!Number.isFinite(iconIndex) || iconIndex <= 0) return;
+	            if (typeof ImageManager === 'undefined' || !ImageManager.loadSystem) return;
+	            const overlay = this._ensureOverlay(scene);
+	            if (!overlay) return;
+	            const iconWidth = (typeof Window_Base !== 'undefined' && Window_Base._iconWidth) ? Window_Base._iconWidth : 32;
+	            const iconHeight = (typeof Window_Base !== 'undefined' && Window_Base._iconHeight) ? Window_Base._iconHeight : 32;
+	            const cols = 16;
+	            const sx = (iconIndex % cols) * iconWidth;
+	            const sy = Math.floor(iconIndex / cols) * iconHeight;
+	            const container = new Sprite();
+	            container.z = 10000;
+	            container.opacity = 0;
+	            const bg = new Sprite(new Bitmap(58, 58));
+	            bg.bitmap.fillRect(0, 0, 58, 58, 'rgba(0, 0, 0, 0.78)');
+	            bg.bitmap.fillRect(2, 2, 54, 54, 'rgba(86, 66, 78, 0.88)');
+	            bg.bitmap.fillRect(6, 6, 46, 46, 'rgba(0, 0, 0, 0.42)');
+	            const icon = new Sprite(ImageManager.loadSystem('IconSet'));
+	            icon.setFrame(sx, sy, iconWidth, iconHeight);
+	            icon.scale.x = 1.35;
+	            icon.scale.y = 1.35;
+	            icon.x = 8;
+	            icon.y = 8;
+	            container.addChild(bg);
+	            container.addChild(icon);
+	            overlay.addChild(container);
+	            const activeEntry = {
+	                kind: 'icon',
+	                sprite: container,
+	                startedAt: Date.now(),
+	                ttl: entry.ttl || 3600,
+	                height: 58,
+	                width: 58,
+	                anchorCharacter: entry.anchorCharacter,
+	                reward
+	            };
+	            this._positionIconEntry(activeEntry, 0);
+	            this._active.unshift(activeEntry);
+	            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                ThesisLogger.log('game_event', {
+	                    event: 'ai_item_icon_popup',
+	                    item: reward.name || null,
+	                    amount: reward.amount || 1,
+	                    icon_index: iconIndex,
+	                    screen_x: activeEntry.sprite.x,
+	                    screen_y: activeEntry.sprite.y
+	                });
+	            }
+	        },
+
+	        _ensureOverlay(scene) {
+	            if (!scene) return null;
+	            if (this._overlay && this._overlay.parent === scene) {
+	                if (scene.setChildIndex) scene.setChildIndex(this._overlay, scene.children.length - 1);
+	                return this._overlay;
+	            }
+	            try {
+	                const overlay = new Sprite();
+	                overlay.z = 20000;
+	                overlay.x = 0;
+	                overlay.y = 0;
+	                scene.addChild(overlay);
+	                if (scene.setChildIndex) scene.setChildIndex(overlay, scene.children.length - 1);
+	                this._overlay = overlay;
+	                ImageManager.loadSystem('IconSet');
+	                return overlay;
+	            } catch (e) {
+	                this._overlay = null;
+	                return null;
+	            }
+	        },
+
 	        _spawn(scene, entry) {
-	            const lines = this._wrap(entry.text, 58).slice(0, 2);
-	            const bannerWidth = Math.min(Graphics.width - 48, 920);
-	            const bannerHeight = 24 + lines.length * 22;
+	            if (this._tryNativeGab(entry)) return;
+	            const anchored = !!(entry.anchorCharacter && entry.anchorCharacter.screenX && entry.anchorCharacter.screenY);
+	            const lines = this._wrap(entry.text, anchored ? 34 : 58).slice(0, 2);
+	            const screenWidth = Graphics.boxWidth || Graphics.width;
+	            const bannerWidth = anchored ? Math.min(screenWidth - 24, 390) : Math.min(screenWidth - 48, 920);
+	            const bannerHeight = 28 + lines.length * 24;
 	            const sprite = new Sprite(new Bitmap(bannerWidth, bannerHeight));
 	            sprite.z = 9999;
-	            const bg = entry.tone === 'loot' ? 'rgba(20, 42, 28, 0.78)' : 'rgba(0, 0, 0, 0.72)';
-	            const accent = entry.tone === 'loot' ? '#9fdc9f' : '#ffb74d';
+	            sprite.opacity = 0;
+	            const bg = entry.tone === 'loot' ? 'rgba(20, 42, 28, 0.86)' : (entry.tone === 'search' ? 'rgba(28, 34, 43, 0.82)' : 'rgba(0, 0, 0, 0.78)');
+	            const accent = entry.tone === 'loot' ? '#9fdc9f' : (entry.tone === 'search' ? '#9db7dc' : '#ffb74d');
 	            sprite.bitmap.fillRect(0, 0, bannerWidth, bannerHeight, bg);
 	            sprite.bitmap.fillRect(0, 0, 5, bannerHeight, accent);
 	            sprite.bitmap.fontSize = 18;
@@ -5258,25 +5507,110 @@ Reply with ONLY the category name, nothing else.`;
 	            sprite.bitmap.outlineColor = '#000000';
 	            sprite.bitmap.outlineWidth = 3;
 	            for (let i = 0; i < lines.length; i++) {
-	                sprite.bitmap.drawText(lines[i], 18, 8 + i * 22, bannerWidth - 36, 22, 'left');
+	                sprite.bitmap.drawText(lines[i], 18, 5 + i * 24, bannerWidth - 36, 24, 'left');
 	            }
-	            sprite.x = Math.floor((Graphics.width - bannerWidth) / 2);
-	            sprite.y = -bannerHeight;
-	            sprite.opacity = 0;
-	            scene.addChild(sprite);
+	            if (anchored) {
+	                const parent = scene._spriteset || scene;
+	                parent.addChild(sprite);
+	                if (parent.setChildIndex) parent.setChildIndex(sprite, parent.children.length - 1);
+	            } else {
+	                sprite.x = Math.floor((screenWidth - bannerWidth) / 2);
+	                sprite.y = -bannerHeight;
+	                scene.addChild(sprite);
+	                if (scene.setChildIndex) scene.setChildIndex(sprite, scene.children.length - 1);
+	            }
 	            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
 	                ThesisLogger.log('game_event', {
 	                    event: 'ai_toast_spawned',
 	                    tone: entry.tone,
-	                    text: entry.text
+	                    text: entry.text,
+	                    anchored: anchored
 	                });
 	            }
-	            this._active.unshift({
+	            const activeEntry = {
 	                sprite,
 	                startedAt: Date.now(),
 	                ttl: entry.ttl,
-	                height: bannerHeight
-	            });
+	                height: bannerHeight,
+	                width: bannerWidth,
+	                anchorCharacter: anchored ? entry.anchorCharacter : null
+	            };
+	            if (anchored) this._positionAnchoredEntry(activeEntry, this._active.length);
+	            this._active.unshift(activeEntry);
+	        },
+
+	        _tryNativeGab(entry) {
+	            try {
+	                const scene = SceneManager && SceneManager._scene;
+	                const sceneName = scene && scene.constructor ? scene.constructor.name : '';
+	                if (!scene || (sceneName !== 'Scene_Map' && sceneName !== 'Scene_Battle')) return false;
+	                if (!scene._gabWindow || !scene.startGabWindow) return false;
+	                scene.startGabWindow([
+	                    entry.text,
+	                    'none',
+	                    '',
+	                    0,
+	                    '',
+	                    0
+	                ]);
+	                if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                    ThesisLogger.log('game_event', {
+	                        event: 'ai_gab_queued',
+	                        tone: entry.tone,
+	                        text: entry.text
+	                    });
+	                }
+	                return true;
+	            } catch (e) {
+	                if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                    ThesisLogger.log('game_event', {
+	                        event: 'ai_gab_failed',
+	                        error: e && e.message ? e.message : String(e)
+	                    });
+	                }
+	                return false;
+	            }
+	        },
+
+	        _positionAnchoredEntry(entry, stackIndex) {
+	            if (!entry || !entry.sprite || !entry.anchorCharacter) return;
+	            try {
+	                const screenWidth = Graphics.boxWidth || Graphics.width || 816;
+	                const screenHeight = Graphics.boxHeight || Graphics.height || 624;
+	                const rawX = Number(entry.anchorCharacter.screenX ? entry.anchorCharacter.screenX() : 0);
+	                const rawY = Number(entry.anchorCharacter.screenY ? entry.anchorCharacter.screenY() : 0);
+	                const offset = 86 + Math.min(2, Number(stackIndex || 0)) * (entry.height + 4);
+	                const x = Math.max(8, Math.min(screenWidth - entry.width - 8, Math.floor(rawX - entry.width / 2)));
+	                const y = Math.max(8, Math.min(screenHeight - entry.height - 8, Math.floor(rawY - offset)));
+	                entry.sprite.x = x;
+	                entry.sprite.y = y;
+	            } catch (e) {
+	                // If the character disappeared during transfer, let normal expiry clean the label.
+	            }
+	        },
+
+	        _positionIconEntry(entry, stackIndex) {
+	            if (!entry || !entry.sprite || !entry.anchorCharacter) return;
+	            try {
+	                const screenWidth = Graphics.boxWidth || Graphics.width || 816;
+	                const screenHeight = Graphics.boxHeight || Graphics.height || 624;
+	                const rawX = Number(entry.anchorCharacter.screenX ? entry.anchorCharacter.screenX() : 0);
+	                const rawY = Number(entry.anchorCharacter.screenY ? entry.anchorCharacter.screenY() : 0);
+	                const age = Date.now() - entry.startedAt;
+	                const bob = Math.round(Math.sin(age / 120) * 3);
+	                const stack = Math.min(2, Number(stackIndex || 0));
+	                const x = Math.max(4, Math.min(screenWidth - entry.width - 4, Math.floor(rawX - entry.width / 2 + stack * 10)));
+	                const y = Math.max(4, Math.min(screenHeight - entry.height - 4, Math.floor(rawY - 78 - stack * 8 + bob)));
+	                entry.sprite.x = x;
+	                entry.sprite.y = y;
+	            } catch (e) {
+	                // Ignore positioning failures for optional feedback.
+	            }
+	        },
+
+	        _setOpacity(sprite, opacity) {
+	            if (!sprite) return;
+	            sprite.opacity = opacity;
 	        },
 
 	        _wrap(text, maxLineLen) {
@@ -5307,14 +5641,142 @@ Reply with ONLY the category name, nothing else.`;
 	        _clearSprites() {
 	            this._active.forEach(entry => this._removeEntry(entry));
 	            this._active = [];
+	            this._iconQueue = [];
+	            if (this._overlay && this._overlay.parent) {
+	                try {
+	                    this._overlay.parent.removeChild(this._overlay);
+	                } catch (e) { /* ignore overlay cleanup failure */ }
+	            }
+	            this._overlay = null;
 	            this._scene = null;
 	        }
 	    };
 
 	    //=========================================================================
-	    // GeminiAPIHandler - Communicates with Gemini 3.0 Flash
+	    // AI Item Icon Balloon — attaches to Sprite_Character like native balloons
 	    //=========================================================================
-    class GeminiAPIHandler {
+	    function Sprite_AIItemIcon() {
+	        this.initialize.apply(this, arguments);
+	    }
+
+	    Sprite_AIItemIcon.prototype = Object.create(Sprite.prototype);
+	    Sprite_AIItemIcon.prototype.constructor = Sprite_AIItemIcon;
+
+	    Sprite_AIItemIcon.prototype.initialize = function() {
+	        Sprite.prototype.initialize.call(this);
+	        this._duration = 0;
+	        this._reward = null;
+	        this.anchor.x = 0.5;
+	        this.anchor.y = 1;
+	        this.z = 9;
+	    };
+
+	    Sprite_AIItemIcon.prototype.setup = function(reward) {
+	        this._reward = reward || {};
+	        this._duration = 150;
+	        this.removeChildren();
+	        const iconIndex = Number(this._reward.iconIndex);
+	        const iconWidth = (typeof Window_Base !== 'undefined' && Window_Base._iconWidth) ? Window_Base._iconWidth : 32;
+	        const iconHeight = (typeof Window_Base !== 'undefined' && Window_Base._iconHeight) ? Window_Base._iconHeight : 32;
+	        const cols = 16;
+	        const sx = (iconIndex % cols) * iconWidth;
+	        const sy = Math.floor(iconIndex / cols) * iconHeight;
+
+	        const icon = new Sprite(ImageManager.loadSystem('IconSet'));
+	        icon.setFrame(sx, sy, iconWidth, iconHeight);
+	        icon.anchor.x = 0.5;
+	        icon.anchor.y = 1;
+	        icon.scale.x = 1.35;
+	        icon.scale.y = 1.35;
+	        icon.x = 0;
+	        icon.y = -7;
+
+	        this.addChild(icon);
+
+	        const amount = Number(this._reward.amount || 1);
+	        if (amount > 1) {
+	            const qty = new Sprite(new Bitmap(58, 18));
+	            qty.anchor.x = 0.5;
+	            qty.anchor.y = 1;
+	            qty.x = 0;
+	            qty.y = -2;
+	            qty.bitmap.fontSize = 14;
+	            qty.bitmap.textColor = '#ffffff';
+	            qty.bitmap.outlineColor = '#000000';
+	            qty.bitmap.outlineWidth = 4;
+	            qty.bitmap.drawText('x' + amount, 0, 0, 54, 18, 'right');
+	            this.addChild(qty);
+	        }
+	    };
+
+	    Sprite_AIItemIcon.prototype.update = function() {
+	        Sprite.prototype.update.call(this);
+	        if (this._duration > 0) this._duration--;
+	        const elapsed = 150 - this._duration;
+	        const bob = Math.sin(elapsed / 8) * 3;
+	        this.y += bob * 0.08;
+	        if (this._duration > 126) {
+	            this.opacity = Math.min(255, Math.round(255 * ((150 - this._duration) / 24)));
+	        } else if (this._duration < 24) {
+	            this.opacity = Math.max(0, Math.round(255 * (this._duration / 24)));
+	        } else {
+	            this.opacity = 255;
+	        }
+	    };
+
+	    Sprite_AIItemIcon.prototype.isPlaying = function() {
+	        return this._duration > 0;
+	    };
+
+	    if (typeof Sprite_Character !== 'undefined') {
+	        const _AICompanion_SpriteCharacter_update = Sprite_Character.prototype.update;
+	        Sprite_Character.prototype.update = function() {
+	            _AICompanion_SpriteCharacter_update.call(this);
+	            this.updateAICompanionItemIcon();
+	        };
+
+	        Sprite_Character.prototype.updateAICompanionItemIcon = function() {
+	            const character = this._character;
+	            if (!character) return;
+	            if (!this._aiItemIconDelay) this._aiItemIconDelay = 0;
+	            if (this._aiItemIconDelay > 0) this._aiItemIconDelay--;
+	            if (!this._aiItemIconSprite && character._aiCompanionItemIconQueue && character._aiCompanionItemIconQueue.length > 0 && this._aiItemIconDelay <= 0) {
+	                const entry = character._aiCompanionItemIconQueue.shift();
+	                if (entry && entry.delay && entry.delay > 0) {
+	                    entry.delay--;
+	                    character._aiCompanionItemIconQueue.unshift(entry);
+	                } else if (entry && entry.reward) {
+	                    this._aiItemIconSprite = new Sprite_AIItemIcon();
+	                    this._aiItemIconSprite.setup(entry.reward);
+	                    if (this.parent) this.parent.addChild(this._aiItemIconSprite);
+	                    if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+	                        ThesisLogger.log('game_event', {
+	                            event: 'ai_item_icon_character_popup',
+	                            item: entry.reward.name || null,
+	                            amount: entry.reward.amount || 1,
+	                            icon_index: entry.reward.iconIndex,
+	                            screen_x: this.x,
+	                            screen_y: this.y - this.height
+	                        });
+	                    }
+	                    this._aiItemIconDelay = 18;
+	                }
+	            }
+	            if (this._aiItemIconSprite) {
+	                this._aiItemIconSprite.x = this.x;
+	                this._aiItemIconSprite.y = this.y - this.height - 8;
+	                if (!this._aiItemIconSprite.isPlaying()) {
+	                    if (this._aiItemIconSprite.parent) this._aiItemIconSprite.parent.removeChild(this._aiItemIconSprite);
+	                    this._aiItemIconSprite = null;
+	                }
+	            }
+	        };
+	    }
+
+	    //=========================================================================
+	    // LLMAPIHandler - Communicates with OpenAI-compatible LLM
+	    //=========================================================================
+    class LLMAPIHandler {
         static async getDecision(battleState, retryContext = null) {
             if (Config.useMockAI) {
                 return this._getMockDecision(battleState);
@@ -5350,7 +5812,7 @@ Reply with ONLY the category name, nothing else.`;
 
                 AIState.retryCount = 0;
                 this._updateCombatStrategy(decision, battleState);
-                this._logCombatDecision(battleState, prompt, decision, this._extractModelName(response), response && response._source ? response._source : (Config.apiProvider === 'local' ? 'local_async' : 'groq_async'), startTime, failureChain);
+                this._logCombatDecision(battleState, prompt, decision, this._extractModelName(response), response && response._source ? response._source : (Config.apiProvider === 'local' ? 'local_async' : 'cloud_async'), startTime, failureChain);
                 return decision;
 
             } catch (error) {
@@ -5778,7 +6240,7 @@ Respond ONLY with this JSON:
                 return data;
             };
 
-            // === Local-first for combat, Groq fallback ===
+            // === Local-first for combat, optional cloud fallback ===
             if (Config.apiProvider === 'local') {
 	                try {
 	                    Debug.log('[Combat Async] Trying local AI...');
@@ -5791,21 +6253,18 @@ Respond ONLY with this JSON:
                 } catch (error) {
                     Debug.warn('[Combat Async] Local failed:', error.message);
                 }
-                // Fall back to Groq
+                // Fall back to configured cloud provider.
                 if (Config.apiKey) {
-                    Debug.warn('[Combat Async] Falling back to Groq...');
-                    const groqHeaders = {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${Config.apiKey}`,
-                        'HTTP-Referer': 'https://fear-and-hunger-mod.local',
-                        'X-Title': 'Fear & Hunger AI Companion'
-                    };
-                    const models = Config.getCloudModelsForContext(context, 'groq');
+                    const fallbackProvider = Config.getCloudFallbackProvider();
+                    Debug.warn('[Combat Async] Falling back to cloud provider:', fallbackProvider);
+                    const cloudHeaders = Config.getCloudFallbackHeaders();
+                    const cloudEndpoint = Config.getCloudFallbackEndpoint();
+                    const models = Config.getCloudModelsForContext(context, fallbackProvider);
                     for (const model of models) {
                         try {
-                            const data = await _tryFetch(Config.apiEndpoint, groqHeaders, model, 220, false);
-                            data._source = 'groq_fallback_async';
-                            Debug.log('[Combat Async] Groq succeeded:', model);
+                            const data = await _tryFetch(cloudEndpoint, cloudHeaders, model, 220, false);
+                            data._source = fallbackProvider + '_fallback_async';
+                            Debug.log('[Combat Async] Cloud fallback succeeded:', fallbackProvider, model);
                             return data;
                         } catch (error) {
                             Debug.warn(`[Combat Async] ${model} failed:`, error.message);
@@ -5813,16 +6272,16 @@ Respond ONLY with this JSON:
                         }
                     }
                 }
-                throw new Error('All models failed (local + Groq)');
+                throw new Error('All models failed (local + cloud fallback)');
             }
 
-            // === Standard Groq/Cloud path ===
+            // === Standard cloud path ===
             const models = ModelRouter.getModelsForContext(context);
             for (const model of models) {
                 try {
                     Debug.log(`Trying model: ${model}`);
                     const data = await _tryFetch(Config.getEndpoint(), Config.getHeaders(), model, 220, false);
-                    data._source = 'groq_async';
+                    data._source = Config.apiProvider + '_async';
                     Debug.log(`Model ${model} succeeded`);
                     return data;
                 } catch (error) {
@@ -6009,7 +6468,7 @@ Respond ONLY with this JSON:
                 }
             };
 
-            // === STRATEGY: Local first, then Groq fallback ===
+            // === STRATEGY: Local first, then optional cloud fallback ===
             if (Config.apiProvider === 'local') {
                 let localResult = null;
                 if (LocalRequestQueue.enterSync('combat_sync')) {
@@ -6031,37 +6490,34 @@ Respond ONLY with this JSON:
                     return localResult;
                 }
 
-                // Local failed — fall back to Groq
+                // Local failed — fall back to configured cloud provider.
                 if (Config.apiKey) {
-                    Debug.warn('[Combat] Local failed — falling back to Groq...');
-                    const groqHeaders = {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${Config.apiKey}`,
-                        'HTTP-Referer': 'https://fear-and-hunger-mod.local',
-                        'X-Title': 'Fear & Hunger AI Companion'
-                    };
-                    const models = Config.getCloudModelsForContext('combat', 'groq');
+                    const fallbackProvider = Config.getCloudFallbackProvider();
+                    Debug.warn('[Combat] Local failed — falling back to cloud provider:', fallbackProvider);
+                    const cloudHeaders = Config.getCloudFallbackHeaders();
+                    const cloudEndpoint = Config.getCloudFallbackEndpoint();
+                    const models = Config.getCloudModelsForContext('combat', fallbackProvider);
                     for (const model of models) {
-                        const groqResult = _trySyncRequest(
-                            Config.apiEndpoint, groqHeaders, model, 220, false
+                        const cloudResult = _trySyncRequest(
+                            cloudEndpoint, cloudHeaders, model, 220, false
                         );
-                        if (groqResult && groqResult._failure) failureChain.push(groqResult._failure);
-                        if (groqResult && !groqResult._validationFailed && !groqResult._parseFailed && !groqResult._requestFailed) {
-                            Debug.log('[Combat] Groq fallback succeeded:', model);
-                            _logCombatDecision(groqResult, model, 'groq_fallback');
-                            return groqResult;
+                        if (cloudResult && cloudResult._failure) failureChain.push(cloudResult._failure);
+                        if (cloudResult && !cloudResult._validationFailed && !cloudResult._parseFailed && !cloudResult._requestFailed) {
+                            Debug.log('[Combat] Cloud fallback succeeded:', fallbackProvider, model);
+                            _logCombatDecision(cloudResult, model, fallbackProvider + '_fallback');
+                            return cloudResult;
                         }
                     }
                 }
             } else {
-                // === Standard Groq/Cloud path ===
+                // === Standard cloud path ===
                 const models = ModelRouter.getModelsForContext('combat');
                 for (const model of models) {
                     const result = _trySyncRequest(
                         Config.getEndpoint(), Config.getHeaders(), model, 220, false
                     );
                     if (result && result._failure) failureChain.push(result._failure);
-                    if (result && !result._validationFailed && !result._parseFailed && !result._requestFailed) { _logCombatDecision(result, model, 'groq'); return result; }
+                    if (result && !result._validationFailed && !result._parseFailed && !result._requestFailed) { _logCombatDecision(result, model, Config.apiProvider); return result; }
                 }
             }
 
@@ -6933,7 +7389,7 @@ Respond ONLY with this JSON:
                 }
                 if (Config.useMockAI) {
                     Debug.log('Turn ' + battleState.turn_number + ' (Mock AI)');
-                    decision = GeminiAPIHandler._getMockDecision(battleState);
+                    decision = LLMAPIHandler._getMockDecision(battleState);
                 } else if (Config.asyncCombatEnabled) {
                     this._aiCompanionPendingDecision = true;
                     this._aiCompanionPendingActorId = actor.actorId();
@@ -6943,7 +7399,7 @@ Respond ONLY with this JSON:
                         scene._actorCommandWindow.deactivate();
                         scene._actorCommandWindow.close();
                     }
-                    GeminiAPIHandler.getDecision(battleState).then(asyncDecision => {
+                    LLMAPIHandler.getDecision(battleState).then(asyncDecision => {
                         try {
                             const currentActor = BattleManager.actor();
                             if (currentActor && currentActor.actorId() === this._aiCompanionPendingActorId) {
@@ -6963,7 +7419,7 @@ Respond ONLY with this JSON:
                     });
                     return;
                 } else {
-                    decision = GeminiAPIHandler.getDecisionSync(battleState);
+                    decision = LLMAPIHandler.getDecisionSync(battleState);
                 }
 
                 if (Config.debugMode) Debug.log('[Combat] Executing AI turn for', Config.companionName, 'decision:', decision.action, decision.target);
@@ -7024,8 +7480,8 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.createHelpWindow = function () {
         this._helpWindow = new Window_Help(3);
         this._helpWindow.setText(Config.language === 'es'
-            ? 'Compañero IA\nElige una categoría. Registro IA vive aquí junto a la configuración.'
-            : 'AI Companion\nChoose a category. AI Log now lives here with configuration.');
+            ? 'Compañero IA\nEmpieza por "Configurar API Key" si es tu primera vez.'
+            : 'AI Companion\nStart with "Set API Key" if this is your first time.');
         this.addWindow(this._helpWindow);
     };
 
@@ -7110,7 +7566,6 @@ Respond ONLY with this JSON:
         const wh = Math.max(160, Graphics.boxHeight - wy);
         this._commandWindow = new Window_AIConfigCommand(0, wy, wh);
         this._commandWindow.setHelpWindow(this._helpWindow);
-        this._commandWindow.setHandler('sectionStatus', this.commandSectionStatus.bind(this));
         this._commandWindow.setHandler('sectionCharacter', this.commandSectionCharacter.bind(this));
         this._commandWindow.setHandler('sectionChat', this.commandSectionChat.bind(this));
         this._commandWindow.setHandler('sectionAutonomy', this.commandSectionAutonomy.bind(this));
@@ -7198,7 +7653,6 @@ Respond ONLY with this JSON:
         this._restoreSectionCursor();
     };
 
-    Scene_AIConfig.prototype.commandSectionStatus = function () { this._setSection('status'); };
     Scene_AIConfig.prototype.commandSectionCharacter = function () { this._setSection('character'); };
     Scene_AIConfig.prototype.commandSectionChat = function () { this._setSection('chat'); };
     Scene_AIConfig.prototype.commandSectionAutonomy = function () { this._setSection('autonomy'); };
@@ -7220,6 +7674,26 @@ Respond ONLY with this JSON:
         SceneManager.push(Scene_AIDebugLog);
     };
 
+    Scene_AIConfig.prototype._ensureTextInputWindow = function () {
+        const ww = Graphics.boxWidth - 100;
+        const wh = 130;
+        const wx = Math.floor((Graphics.boxWidth - ww) / 2);
+        const wy = Math.max(this._helpWindow.height + 12, Math.floor((Graphics.boxHeight - wh) / 2));
+        if (!this._inputWindow) {
+            this._inputWindow = new Window_AIKeyInput(wx, wy, ww, wh);
+            this._inputWindow.setHandler('ok', this.onInputOk.bind(this));
+            this._inputWindow.setHandler('cancel', this.onInputCancel.bind(this));
+            this.addWindow(this._inputWindow);
+        } else {
+            // Keep the same Window_Base internals alive; recreating contents after it is
+            // already inside WindowLayer can corrupt PIXI's stencil mask in MV/NW.
+            this._inputWindow.x = wx;
+            this._inputWindow.y = wy;
+            this._inputWindow.show();
+        }
+        return this._inputWindow;
+    };
+
     Scene_AIConfig.prototype.commandApiKey = function () {
         this._helpWindow.setText(Config.language === 'es'
             ? 'Pega tu API key con Ctrl+V\nEnter para guardar, Escape para cancelar'
@@ -7227,19 +7701,7 @@ Respond ONLY with this JSON:
         this._inputMode = true;
         this._textInputPurpose = 'apiKey';
         this._commandWindow.deactivate();
-        // Create input window if it doesn't exist
-        if (!this._inputWindow) {
-            const ww = Graphics.boxWidth - 100;
-            const wh = 80;
-            const wx = (Graphics.boxWidth - ww) / 2;
-            const wy = this._commandWindow.y + this._commandWindow.height + 20;
-            this._inputWindow = new Window_AIKeyInput(wx, wy, ww, wh);
-            this._inputWindow.setHandler('ok', this.onInputOk.bind(this));
-            this._inputWindow.setHandler('cancel', this.onInputCancel.bind(this));
-            this.addWindow(this._inputWindow);
-        } else {
-            this._inputWindow.show();
-        }
+        this._ensureTextInputWindow();
         this._inputWindow.setTextMode('API Key', Config.apiKey || '', true);
         this._inputWindow.activate();
     };
@@ -7353,24 +7815,7 @@ Respond ONLY with this JSON:
         this._inputMode = true;
         this._helpWindow.setText(helpText);
         this._commandWindow.deactivate();
-        if (!this._inputWindow) {
-            const ww = Graphics.boxWidth - 100;
-            const wh = 120;
-            const wx = (Graphics.boxWidth - ww) / 2;
-            const wy = Math.max(this._helpWindow.height + 12, Math.floor((Graphics.boxHeight - wh) / 2));
-            this._inputWindow = new Window_AIKeyInput(wx, wy, ww, wh);
-            this._inputWindow.setHandler('ok', this.onInputOk.bind(this));
-            this._inputWindow.setHandler('cancel', this.onInputCancel.bind(this));
-            this.addWindow(this._inputWindow);
-        } else {
-            const ww = Graphics.boxWidth - 100;
-            const wh = 120;
-            const wx = (Graphics.boxWidth - ww) / 2;
-            const wy = Math.max(this._helpWindow.height + 12, Math.floor((Graphics.boxHeight - wh) / 2));
-            this._inputWindow.move(wx, wy, ww, wh);
-            this._inputWindow.createContents();
-            this._inputWindow.show();
-        }
+        this._ensureTextInputWindow();
         this._inputWindow.setTextMode(title, current || '', false);
         this._inputWindow.activate();
     };
@@ -7483,6 +7928,16 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.commandSetModel = function () {
         const es = Config.language === 'es';
         let models = [];
+        if (Config.apiProvider === 'local') {
+            if (Config.getLocalModels().length > 0) {
+                Scene_AIModelSelect.prepare('chat');
+                SoundManager.playOk();
+                SceneManager.push(Scene_AIModelSelect);
+            } else {
+                this._refreshConfigScene(es ? 'Primero usa "Descubrir modelos locales".' : 'Use "Discover local models" first.');
+            }
+            return;
+        }
         if (Config.apiProvider === 'openrouter') {
             const free = Config.getFreeModels();
             if (free.length > 0) {
@@ -7492,15 +7947,13 @@ Respond ONLY with this JSON:
             }
         } else if (Config.apiProvider === 'groq') {
             models = PROVIDERS.groq.defaultModels;
-        } else {
-            this._refreshConfigScene(es ? 'Modelo local se configura en LM Studio' : 'Local model is set in LM Studio');
-            return;
         }
         if (models.length === 0) {
-            this._refreshConfigScene(es ? 'No hay modelos. Usa "Buscar modelos gratis"' : 'No models. Use "Fetch Free Models"');
+            this._refreshConfigScene(es ? 'No hay modelos. Usa "Descubrir modelos".' : 'No models. Use "Discover models".');
             return;
         }
-        const currentIdx = models.indexOf(Config.chatModel);
+        const currentModel = Config.chatModel;
+        const currentIdx = models.indexOf(currentModel);
         const nextIdx = (currentIdx + 1) % models.length;
         Config.setChatModel(models[nextIdx]);
         SoundManager.playOk();
@@ -7547,6 +8000,12 @@ Respond ONLY with this JSON:
     };
 
     Scene_AIConfig.prototype.commandSetAutonomyModel = function () {
+        if (Config.getLocalModels().length > 0) {
+            Scene_AIModelSelect.prepare('autonomy');
+            SoundManager.playOk();
+            SceneManager.push(Scene_AIModelSelect);
+            return;
+        }
         const next = Config.cycleAutonomyModel();
         SoundManager.playOk();
         this._refreshConfigScene(`${Config.language === 'es' ? 'Modelo de autonomía' : 'Autonomy model'}: ${next}`);
@@ -7674,17 +8133,26 @@ Respond ONLY with this JSON:
         this._refreshConfigScene(`RAG language: ${next}`);
     };
 
-    // Fetch free models from OpenRouter
+    // Fetch provider models. OpenRouter lists free cloud models; Local uses LM Studio /v1/models.
     Scene_AIConfig.prototype.commandFetchModels = async function () {
         const es = Config.language === 'es';
-        this._helpWindow.setText(es ? 'Buscando modelos gratis...' : 'Fetching free models...');
+        this._helpWindow.setText(Config.apiProvider === 'local'
+            ? (es ? 'Buscando modelos locales...' : 'Discovering local models...')
+            : (es ? 'Buscando modelos gratis...' : 'Fetching free models...'));
         this._commandWindow.deactivate();
         try {
-            const models = await Config.fetchFreeModels();
+            const models = Config.apiProvider === 'local'
+                ? await Config.fetchLocalModels()
+                : await Config.fetchFreeModels();
             if (models.length > 0) {
-                this._helpWindow.setText(`${es ? 'Encontrados' : 'Found'} ${models.length} ${es ? 'modelos gratis' : 'free models'}\n${models.slice(0, 3).map(m => m.id.split('/').pop()).join(', ')}...`);
+                const noun = Config.apiProvider === 'local'
+                    ? (es ? 'modelos locales' : 'local models')
+                    : (es ? 'modelos gratis' : 'free models');
+                this._helpWindow.setText(`${es ? 'Encontrados' : 'Found'} ${models.length} ${noun}\n${models.slice(0, 3).map(m => String(m.id).split('/').pop()).join(', ')}...`);
             } else {
-                this._helpWindow.setText(es ? 'No se encontraron modelos gratis.\nConfigura tu API Key primero.' : 'No free models found.\nSet your API Key first.');
+                this._helpWindow.setText(Config.apiProvider === 'local'
+                    ? (es ? 'No se detectaron modelos locales.\nRevisa endpoint y LM Studio server.' : 'No local models detected.\nCheck endpoint and LM Studio server.')
+                    : (es ? 'No se encontraron modelos gratis.\nConfigura tu API Key primero.' : 'No free models found.\nSet your API Key first.'));
             }
         } catch (e) {
             this._helpWindow.setText(`Error: ${e.message}`);
@@ -7753,25 +8221,14 @@ Respond ONLY with this JSON:
         const className = loadout ? (es ? loadout.nameEs : loadout.name) : Config.companionClass;
 
         if (section === 'main') {
-            this.addCommand(es ? 'Estado rápido' : 'Quick status', 'sectionStatus');
+            this.addCommand(es ? 'Configurar API Key' : 'Set API Key', 'apiKey');
             this.addCommand(es ? 'Personaje' : 'Character', 'sectionCharacter');
             this.addCommand(es ? 'Chat / Modelo' : 'Chat / Model', 'sectionChat');
             this.addCommand(es ? 'Autonomía' : 'Autonomy', 'sectionAutonomy');
-            this.addCommand(es ? 'Autopilot / Pruebas' : 'Autopilot / Tests', 'sectionAutopilot');
             this.addCommand(es ? 'Memoria / RAG' : 'Memory / RAG', 'sectionRag');
             this.addCommand(es ? 'Registro IA' : 'AI Log', 'sectionLog');
-            this.addCommand(es ? 'Rendimiento / Debug' : 'Performance / Debug', 'sectionDebug');
+            this.addCommand(es ? 'Depuración' : 'Debug', 'sectionDebug');
             this.addCommand(es ? 'Avanzado' : 'Advanced', 'sectionAdvanced');
-            return;
-        }
-
-        if (section === 'status') {
-            addBack();
-            this.addCommand(es ? 'Abrir Registro IA' : 'Open AI Log', 'sectionLog');
-            this.addCommand(es ? 'Personaje' : 'Character', 'sectionCharacter');
-            this.addCommand(es ? 'Chat / Modelo' : 'Chat / Model', 'sectionChat');
-            this.addCommand(es ? 'Autonomía' : 'Autonomy', 'sectionAutonomy');
-            this.addCommand(es ? 'Memoria / RAG' : 'Memory / RAG', 'sectionRag');
             return;
         }
 
@@ -7786,7 +8243,6 @@ Respond ONLY with this JSON:
             this.addCommand(es ? 'Editar metas' : 'Edit goals', 'editGoals');
             this.addCommand(es ? 'Editar reglas' : 'Edit rules', 'editBehaviorRules');
             this.addCommand(`${es ? 'Clase inicial' : 'Starting class'}: ${className}`, 'setClass');
-            this.addCommand(`${es ? 'Idioma' : 'Language'}: ${Config.language === 'es' ? 'Español' : 'English'}`, 'setLanguage');
             return;
         }
 
@@ -7799,8 +8255,11 @@ Respond ONLY with this JSON:
             this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
             this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
             this.addCommand(`top_k: ${Config.chatTopK || 'off'} (${es ? 'solo local compatible' : 'local-compatible only'})`, 'setTopK');
-            this.addCommand(`${es ? 'Combate async' : 'Async combat'}: OFF (${es ? 'desactivado por estabilidad' : 'disabled for stability'})`, 'toggleAsyncCombat');
-            if (Config.apiProvider === 'openrouter') {
+            this.addCommand(`[${es ? 'Combate async: desactivado' : 'Async combat: disabled'}]`, 'toggleAsyncCombat', false);
+            if (Config.apiProvider === 'local') {
+                const localCount = Config.getLocalModels().length;
+                this.addCommand(`${es ? 'Descubrir modelos locales' : 'Discover local models'} (${localCount})`, 'fetchModels');
+            } else if (Config.apiProvider === 'openrouter') {
                 const freeCount = Config.getFreeModels().length;
                 this.addCommand(`${es ? 'Buscar modelos gratis' : 'Fetch Free Models'} (${freeCount})`, 'fetchModels');
             }
@@ -7811,6 +8270,7 @@ Respond ONLY with this JSON:
             addBack();
             this.addCommand(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'}`, 'toggleAutonomy');
             this.addCommand(`${es ? 'Modelo' : 'Model'}: ${short(String(Config.getAutonomyModel()).split('/').pop(), 30)}`, 'setAutonomyModel');
+            this.addCommand(`${es ? 'Descubrir modelos locales' : 'Discover local models'} (${Config.getLocalModels().length})`, 'fetchModels');
             this.addCommand(`${es ? 'Pulso' : 'Heartbeat'}: ${Config.autonomyTickSeconds}s`, 'setAutonomyTick');
             this.addCommand(`${es ? 'Perfil' : 'Profile'}: ${Config.autonomyBehaviorProfile} (${es ? 'influye prompt' : 'prompt bias'})`, 'setAutonomyProfile');
             this.addCommand(`${es ? 'Exploración máxima' : 'Max scout'}: ${Config.autonomyMaxScoutDistance}`, 'setAutonomyScout');
@@ -7847,17 +8307,16 @@ Respond ONLY with this JSON:
 
         if (section === 'debug') {
             addBack();
-            this.addCommand(es ? 'Abrir Registro IA' : 'Open AI Log', 'sectionLog');
-            this.addCommand(es ? `Consola debug: ${Config.debugMode ? 'SÍ' : 'NO'}` : `Debug console: ${Config.debugMode ? 'ON' : 'OFF'}`, 'toggleDebug');
-            this.addCommand(es ? `Overlay debug EXP: ${Config.debugOverlay ? 'SÍ' : 'NO'}` : `Debug overlay EXP: ${Config.debugOverlay ? 'ON' : 'OFF'}`, 'toggleDebugOverlay');
-            this.addCommand(`${es ? 'Telemetría FPS/RAM/CPU' : 'FPS/RAM/CPU telemetry'}: ${Config.performanceLogging ? 'ON' : 'OFF'}`, 'togglePerformanceLogging');
-            this.addCommand(`${es ? 'Intervalo telemetría' : 'Telemetry interval'}: ${Config.performanceLogIntervalMs}ms`, 'setPerformanceInterval');
+            this.addCommand(es ? `Consola debug: ${Config.debugMode ? 'ON' : 'OFF'}` : `Debug console: ${Config.debugMode ? 'ON' : 'OFF'}`, 'toggleDebug');
+            this.addCommand(es ? `Overlay debug: ${Config.debugOverlay ? 'ON' : 'OFF'}` : `Debug overlay: ${Config.debugOverlay ? 'ON' : 'OFF'}`, 'toggleDebugOverlay');
+            this.addCommand(`${es ? 'Telemetría FPS/RAM' : 'FPS/RAM telemetry'}: ${Config.performanceLogging ? 'ON' : 'OFF'}`, 'togglePerformanceLogging');
+            this.addCommand(`${es ? 'Intervalo' : 'Interval'}: ${Config.performanceLogIntervalMs}ms`, 'setPerformanceInterval');
             return;
         }
 
         if (section === 'advanced') {
             addBack();
-            this.addCommand(es ? 'Configurar API Key' : 'Set API Key', 'apiKey');
+            this.addCommand(es ? 'Autopilot / Pruebas' : 'Autopilot / Tests', 'sectionAutopilot');
             this.addCommand(mockLabel, 'toggleMock');
             this.addCommand(`${es ? 'Idioma' : 'Language'}: ${Config.language === 'es' ? 'Español' : 'English'}`, 'setLanguage');
         }
@@ -7868,15 +8327,14 @@ Respond ONLY with this JSON:
         const es = Config.language === 'es';
         const symbol = this.currentSymbol();
         const help = {
-            sectionStatus: es ? 'Vista general de los sistemas activos.' : 'Overview of active systems.',
             sectionCharacter: es ? 'Nombre, apariencia, personalidad y ficha del compañero.' : 'Name, appearance, personality, and character sheet.',
             sectionChat: es ? 'Proveedor, modelo, endpoint local y muestreo del LLM.' : 'Provider, model, local endpoint, and LLM sampling.',
             sectionAutonomy: es ? 'Autonomía normal del compañero. Requiere modelo local.' : 'Normal companion autonomy. Requires a local model.',
             sectionAutopilot: es ? 'Modo de prueba: el LLM controla al jugador para playtests.' : 'Test mode: LLM controls the player for playtests.',
             sectionRag: es ? 'Recuperación semántica de conocimiento/wiki y memoria de save.' : 'Semantic wiki/knowledge and save-memory retrieval.',
             sectionLog: es ? 'Abre el registro reciente de IA, combate, chat, autonomía y errores.' : 'Open recent AI, combat, chat, autonomy, and error logs.',
-            sectionDebug: es ? 'Telemetría, consola, overlay y depuración.' : 'Telemetry, console, overlay, and debugging.',
-            sectionAdvanced: es ? 'Opciones internas o menos usadas.' : 'Internal or less common options.',
+            sectionDebug: es ? 'Consola, overlay y telemetría.' : 'Console, overlay, and telemetry.',
+            sectionAdvanced: es ? 'Mock mode, autopilot de pruebas, idioma y opciones internas.' : 'Mock mode, test autopilot, language, and internal options.',
             backSection: es ? 'Volver al hub principal.' : 'Return to the main hub.',
             apiKey: es ? 'Pega tu API key. Se usa para chat y funciones cloud.' : 'Paste your API key. Used for chat and cloud features.',
             toggleMock: es ? 'Activa o desactiva el modo de prueba sin llamadas reales.' : 'Toggle mock mode to disable real API calls.',
@@ -7943,21 +8401,24 @@ Respond ONLY with this JSON:
         Window_Base.prototype.initialize.call(this, x, y, width, height);
         this._apiKey = Config.apiKey || '';
         this._title = 'API Key';
-        this._mask = true;
+        this._maskText = true;
         this._handlers = {};
         this.refresh();
         this._setupClipboard();
     };
 
     Window_AIKeyInput.prototype._setupClipboard = function () {
-        // Listen for paste events
-        const self = this;
+        // Register paste listener only once (prototype flag)
+        if (Window_AIKeyInput._pasteListenerRegistered) return;
+        Window_AIKeyInput._pasteListenerRegistered = true;
+        const self = this.constructor.prototype;
         document.addEventListener('paste', function (e) {
-            if (SceneManager._scene && SceneManager._scene.constructor === Scene_AIConfig) {
+            const scene = SceneManager._scene;
+            if (scene && scene._inputWindow && scene._inputWindow.active) {
                 const text = (e.clipboardData || window.clipboardData).getData('text');
                 if (text) {
-                    self._apiKey = text.trim();
-                    self.refresh();
+                    scene._inputWindow._apiKey = text.trim();
+                    scene._inputWindow.refresh();
                     SoundManager.playCursor();
                 }
             }
@@ -7967,18 +8428,29 @@ Respond ONLY with this JSON:
     Window_AIKeyInput.prototype.refresh = function () {
         this.contents.clear();
         const value = String(this._apiKey || '');
-        const visible = this._mask && value
-            ? value.substring(0, 8) + '...' + value.substring(Math.max(0, value.length - 4))
-            : (value || '(empty - paste text)');
-        this.drawText(this._title + ':', 0, 0, 160);
-        this.drawText(visible.substring(0, 90), 170, 0, this.contentsWidth() - 180);
-        this.drawText('Ctrl+V paste | ENTER save | ESC cancel', 0, 40, this.contentsWidth(), 'center');
+        const contentW = this.contentsWidth();
+        let visible;
+        if (!value) {
+            visible = '(empty - Ctrl+V to paste)';
+        } else if (this._maskText) {
+            visible = value.substring(0, 8) + '...' + value.substring(Math.max(0, value.length - 4));
+        } else {
+            // For long text, show first line + char count
+            const firstLine = value.split('\n')[0];
+            const truncated = firstLine.length > 75 ? firstLine.substring(0, 72) + '...' : firstLine;
+            visible = truncated + (value.length > firstLine.length ? ` (${value.length} chars)` : '');
+        }
+        this.contents.fontSize = 22;
+        this.drawText(this._title + ':', 8, 8, contentW - 16, 28, 'left');
+        this.drawText(visible, 8, 40, contentW - 16, 28, 'left');
+        this.contents.fontSize = 16;
+        this.drawText('Ctrl+V paste  |  ENTER save  |  ESC cancel', 8, this.contentsHeight() - 24, contentW - 16, 20, 'center');
     };
 
     Window_AIKeyInput.prototype.setTextMode = function (title, value, mask) {
         this._title = title || 'Text';
         this._apiKey = String(value || '');
-        this._mask = !!mask;
+        this._maskText = !!mask;
         this.refresh();
     };
 
@@ -8012,6 +8484,125 @@ Respond ONLY with this JSON:
 
     Window_AIKeyInput.prototype.activate = function () {
         this.active = true;
+    };
+
+    //=========================================================================
+    // Local Model Select Scene
+    //=========================================================================
+    function Scene_AIModelSelect() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Scene_AIModelSelect._purpose = 'chat';
+
+    Scene_AIModelSelect.prepare = function (purpose) {
+        this._purpose = purpose || 'chat';
+    };
+
+    Scene_AIModelSelect.prototype = Object.create(Scene_MenuBase.prototype);
+    Scene_AIModelSelect.prototype.constructor = Scene_AIModelSelect;
+
+    Scene_AIModelSelect.prototype.initialize = function () {
+        Scene_MenuBase.prototype.initialize.call(this);
+        this._purpose = Scene_AIModelSelect._purpose || 'chat';
+    };
+
+    Scene_AIModelSelect.prototype.create = function () {
+        Scene_MenuBase.prototype.create.call(this);
+        this.createHelpWindow();
+        this.createModelWindow();
+    };
+
+    Scene_AIModelSelect.prototype.createHelpWindow = function () {
+        const es = Config.language === 'es';
+        this._helpWindow = new Window_Help(2);
+        this._helpWindow.setText(this._purpose === 'autonomy'
+            ? (es ? 'Elige modelo local para autonomía\nEnter confirma, Escape vuelve.' : 'Choose local model for autonomy\nEnter confirms, Escape returns.')
+            : (es ? 'Elige modelo local para chat y combate\nEnter confirma, Escape vuelve.' : 'Choose local model for chat and combat\nEnter confirms, Escape returns.'));
+        this.addWindow(this._helpWindow);
+    };
+
+    Scene_AIModelSelect.prototype.createModelWindow = function () {
+        const wy = this._helpWindow.height;
+        this._modelWindow = new Window_AIModelList(0, wy, Graphics.boxWidth, Graphics.boxHeight - wy, this._purpose);
+        this._modelWindow.setHandler('ok', this.commandSelectModel.bind(this));
+        this._modelWindow.setHandler('cancel', this.popScene.bind(this));
+        this.addWindow(this._modelWindow);
+        this._modelWindow.selectCurrent();
+        this._modelWindow.activate();
+    };
+
+    Scene_AIModelSelect.prototype.commandSelectModel = function () {
+        const model = this._modelWindow.currentModelId();
+        if (!model) {
+            SoundManager.playBuzzer();
+            this._modelWindow.activate();
+            return;
+        }
+        if (this._purpose === 'autonomy') {
+            Config.setAutonomyModel(model);
+        } else {
+            Config.setLocalModel(model);
+            if (!Config.autonomyModel || Config.autonomyModel === 'local-current') Config.setAutonomyModel(model);
+        }
+        SoundManager.playOk();
+        this.popScene();
+    };
+
+    function Window_AIModelList() {
+        this.initialize.apply(this, arguments);
+    }
+
+    Window_AIModelList.prototype = Object.create(Window_Selectable.prototype);
+    Window_AIModelList.prototype.constructor = Window_AIModelList;
+
+    Window_AIModelList.prototype.initialize = function (x, y, width, height, purpose) {
+        this._purpose = purpose || 'chat';
+        this._models = Config.getLocalModels();
+        Window_Selectable.prototype.initialize.call(this, x, y, width, height);
+        this.refresh();
+    };
+
+    Window_AIModelList.prototype.maxItems = function () {
+        return this._models ? this._models.length : 0;
+    };
+
+    Window_AIModelList.prototype.itemHeight = function () {
+        return 52;
+    };
+
+    Window_AIModelList.prototype.currentModelId = function () {
+        const model = this._models && this._models[this.index()];
+        return model ? model.id : '';
+    };
+
+    Window_AIModelList.prototype.currentTargetModel = function () {
+        return this._purpose === 'autonomy' ? Config.getAutonomyModel() : Config.localModel;
+    };
+
+    Window_AIModelList.prototype.selectCurrent = function () {
+        const current = this.currentTargetModel();
+        const idx = (this._models || []).findIndex(m => m.id === current);
+        this.select(Math.max(0, idx));
+        if (this.ensureCursorVisible) this.ensureCursorVisible();
+    };
+
+    Window_AIModelList.prototype.refresh = function () {
+        this.contents.clear();
+        this.drawAllItems();
+    };
+
+    Window_AIModelList.prototype.drawItem = function (index) {
+        const model = this._models && this._models[index];
+        if (!model) return;
+        const rect = this.itemRectForText(index);
+        const current = model.id === this.currentTargetModel();
+        const label = model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id;
+        this.changePaintOpacity(true);
+        if (current) this.changeTextColor(this.systemColor());
+        this.drawText((current ? '> ' : '') + label, rect.x, rect.y, rect.width);
+        this.resetTextColor();
+        this.changePaintOpacity(true);
     };
 
     //=========================================================================
@@ -8407,6 +8998,7 @@ Respond ONLY with this JSON:
     window.Scene_AIConfig = Scene_AIConfig;
     window.Scene_AIAppearanceSelect = Scene_AIAppearanceSelect;
     window.Scene_AIClassSelect = Scene_AIClassSelect;
+    window.Scene_AIModelSelect = Scene_AIModelSelect;
 
     //=========================================================================
     // In-game Debug Log Viewer
@@ -9580,7 +10172,9 @@ Respond ONLY with this JSON:
 
         canRun() {
             if (!this.canRemainActive()) return false;
-            if (typeof GameplayGate !== 'undefined' && !GameplayGate.canRunMapAi()) return false;
+            if (typeof GameplayGate !== 'undefined' &&
+                !GameplayGate.canRunMapAi() &&
+                !GameplayGate.canRunBackgroundAutonomy()) return false;
             if (ChatSystem && ChatSystem.isActive && ChatSystem.isActive()) return false;
             if ($gamePlayer.isTransferring && $gamePlayer.isTransferring()) return false;
             return true;
@@ -9898,11 +10492,46 @@ Respond ONLY with this JSON:
             };
         },
 
+        _buildThreatSnapshot() {
+            const follower = this.getFollower();
+            const player = $gamePlayer;
+            if (!follower || !player) return null;
+            const nearby = EnvironmentScanner.scanAround(follower, 4);
+            return {
+                mapName: $gameMap ? ($gameMap.displayName() || ('Map ' + $gameMap.mapId())) : '',
+                player: { x: player.x, y: player.y },
+                companion: { x: follower.x, y: follower.y },
+                leashDistance: this._distance(player, follower),
+                nearby: nearby.map(item => ({
+                    eventId: item.eventId != null ? item.eventId : item.id,
+                    label: item.label,
+                    type: item.type,
+                    subtype: item.subtype,
+                    danger: item.danger,
+                    distance: item.distance,
+                    direction: item.direction,
+                    x: item.x,
+                    y: item.y,
+                    approachX: item.approachX,
+                    approachY: item.approachY,
+                    faceDirection: item.faceDirection
+                })),
+                threatNearby: nearby.filter(item => item && item.danger === 'high').length,
+                interestingNearby: 0,
+                scoutLimit: Config.autonomyMaxScoutDistance,
+                detourLimit: Config.autonomyMaxDetourDistance,
+                allowNpc: Config.autonomyAllowNpcInteraction,
+                allowDoors: Config.autonomyAllowDoorTesting,
+                autoReturn: Config.autonomyAutoReturnOnDanger
+            };
+        },
+
         _applyThreatEvasionIfNeeded(source) {
             const now = Date.now();
-            if (now - (this._state.lastThreatCheckAt || 0) < 450) return false;
+            if (now - (this._state.lastThreatCheckAt || 0) < 1200) return false;
             this._state.lastThreatCheckAt = now;
-            const snapshot = this._buildSnapshot();
+            const snapshot = this._buildThreatSnapshot();
+            if (!snapshot) return false;
             const decision = this._enemyAvoidanceDecision(snapshot);
             if (!decision) return false;
             if (this._state.mode === 'target_point' &&
@@ -9939,11 +10568,11 @@ Respond ONLY with this JSON:
 
             const now = Date.now();
             const ageMs = now - task.startedAt;
-            const maxAgeMs = task.action === 'SCOUT' ? 12000 : 9000;
+            const maxAgeMs = task.action === 'SCOUT' ? 16000 : 14000;
             if (ageMs > maxAgeMs) return false;
 
             if (snapshot.autoReturn && snapshot.threatNearby > 0) return false;
-            if (snapshot.leashDistance > snapshot.scoutLimit + 2) return false;
+            if (snapshot.leashDistance > snapshot.scoutLimit + 5) return false;
 
             let distance = null;
             if ((task.action === 'INTERACT' || task.action === 'LOOT') && task.eventId != null) {
@@ -9962,7 +10591,7 @@ Respond ONLY with this JSON:
                 task.lastProgressAt = now;
             }
 
-            if (now - task.lastProgressAt > 2500) return false;
+            if (now - task.lastProgressAt > 4500) return false;
             return true;
         },
 
@@ -9971,9 +10600,10 @@ Respond ONLY with this JSON:
             if (this._isEventOnCooldown(item.eventId)) return false;
             if (this._isEventSearched(item.eventId)) return false;
             if (this._targetNeedsConsent(item)) return false;
-            if (item.type === 'container' || item.type === 'loot') return item.distance <= Math.max(1, snapshot.detourLimit);
-            if (item.type === 'npc') return !!snapshot.allowNpc && item.distance <= Math.max(1, snapshot.detourLimit);
-            if (item.type === 'door') return !!snapshot.allowDoors && !this._isRecentTransfer(4000) && !this._isRecentDoorInteraction(item.eventId, 5000) && item.distance <= Math.max(1, snapshot.detourLimit - 1);
+            const detourLimit = Math.max(5, snapshot.detourLimit || 0);
+            if (item.type === 'container' || item.type === 'loot') return item.distance <= Math.max(1, detourLimit + 2);
+            if (item.type === 'npc') return !!snapshot.allowNpc && item.distance <= Math.max(1, detourLimit + 1);
+            if (item.type === 'door') return !!snapshot.allowDoors && !this._isRecentTransfer(4000) && !this._isRecentDoorInteraction(item.eventId, 5000) && item.distance <= Math.max(1, detourLimit);
             if (item.type === 'shop') return false;
             return false;
         },
@@ -10296,7 +10926,7 @@ Respond ONLY with this JSON:
 
         _actionableTargets(snapshot) {
             const nearby = (snapshot && snapshot.nearby) || [];
-            const maxRange = Math.max(2, (snapshot && snapshot.detourLimit ? snapshot.detourLimit : 2) + 4);
+            const maxRange = Math.max(7, (snapshot && snapshot.detourLimit ? snapshot.detourLimit : 5) + 5);
             return nearby
                 .filter(item => {
                     if (!item || item.eventId == null) return false;
@@ -10304,7 +10934,7 @@ Respond ONLY with this JSON:
                     if (this._isEventSearched(item.eventId)) return false;
                     if (this._targetNeedsConsent(item)) return false;
                     if (item.type === 'container') return item.distance <= maxRange;
-                    if (item.type === 'door') return snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, snapshot.detourLimit);
+                    if (item.type === 'door') return snapshot.allowDoors && !this._isRecentTransfer(4000) && item.distance <= Math.max(1, Math.max(5, snapshot.detourLimit || 0));
                     if (item.type === 'npc') return snapshot.allowNpc && item.distance <= maxRange;
                     return false;
                 })
@@ -10333,7 +10963,7 @@ Respond ONLY with this JSON:
             if (this._isRoomSettling() && snapshot.leashDistance <= 1) {
                 return { action: 'HOLD', reason: 'settling into room', _autonomySource: 'local_purpose' };
             }
-            if (snapshot.leashDistance > snapshot.scoutLimit + 1) {
+            if (snapshot.leashDistance > snapshot.scoutLimit + 4) {
                 return { action: 'RETURN', reason: 'too far from player', _autonomySource: 'local_purpose' };
             }
             return null;
@@ -10352,9 +10982,11 @@ Respond ONLY with this JSON:
 	        _buildSnapshot() {
             const follower = this.getFollower();
             const player = $gamePlayer;
-            const nearby = EnvironmentScanner.scanAround(follower, Math.max(6, Config.autonomyMaxScoutDistance + 2));
-            const pointsOfInterest = EnvironmentScanner.getPointsOfInterestAround(follower, Math.max(6, Config.autonomyMaxScoutDistance + 2));
-            const frontiers = EnvironmentScanner.getFrontierTargets(follower, Config.autonomyMaxScoutDistance);
+            const effectiveScoutLimit = Math.max(8, Config.autonomyMaxScoutDistance || 0);
+            const effectiveDetourLimit = Math.max(5, Config.autonomyMaxDetourDistance || 0);
+            const nearby = EnvironmentScanner.scanAround(follower, Math.max(8, effectiveScoutLimit + 3));
+            const pointsOfInterest = EnvironmentScanner.rankPointsOfInterest(nearby);
+            const frontiers = EnvironmentScanner.getFrontierTargets(follower, effectiveScoutLimit);
             const world = WorldStateEngine.getSnapshot();
             const risk = RiskEvaluator.evaluateMap(follower);
             const threatNearby = nearby.filter(n => n.danger === 'high');
@@ -10400,8 +11032,8 @@ Respond ONLY with this JSON:
                 })),
                 hpPct: world.party.avg_hp_pct,
                 lootRadius: Config.autonomyLootRadius,
-                scoutLimit: Config.autonomyMaxScoutDistance,
-                detourLimit: Config.autonomyMaxDetourDistance,
+                scoutLimit: effectiveScoutLimit,
+                detourLimit: effectiveDetourLimit,
                 profile: Config.autonomyBehaviorProfile,
                 allowNpc: Config.autonomyAllowNpcInteraction,
                 allowDoors: Config.autonomyAllowDoorTesting,
@@ -10491,7 +11123,7 @@ Respond ONLY with this JSON:
                 return { action: 'RETURN', reason: 'high threat nearby' };
             }
 
-            if (snapshot.leashDistance > snapshot.scoutLimit) {
+            if (snapshot.leashDistance > snapshot.scoutLimit + 4) {
                 return { action: 'RETURN', reason: 'too far from player' };
             }
 
@@ -10505,7 +11137,7 @@ Respond ONLY with this JSON:
                 return { action: 'FOLLOW', reason: 'doors require explicit decision' };
             }
 
-            return { action: 'FOLLOW', reason: 'stay with player' };
+            return { action: 'FOLLOW', reason: 'no safe useful target listed' };
         },
 
         _normalizeDecision(snapshot, decision, fallback) {
@@ -10601,6 +11233,8 @@ Respond ONLY with this JSON:
                     source: source,
                     latency_ms: latencyMs,
                     model_used: source === 'local' ? Config.getAutonomyModel() : null,
+                    model_requested: Config.getAutonomyModel(),
+                    local_endpoint: Config.getLocalEndpoint(),
                     reason: decision ? decision.reason : null,
                     action: decision ? decision.action : null,
                     target: decision ? decision.target : null,
@@ -10720,10 +11354,12 @@ Respond ONLY with this JSON:
                 'Never choose enemies as targets. Never start fights.',
                 'Only choose LOOT or INTERACT for nearby containers, bookshelves, doors, NPCs, or shops that are actually listed.',
                 'FOLLOW means stay near the player and must use "eventId":null. If you choose a listed eventId, use LOOT or INTERACT, not FOLLOW.',
-                'If a safe listed target is close enough and useful, prefer LOOT or INTERACT over FOLLOW.',
+                'You are not glued to the player. If safe useful targets are listed within detourLimit, prefer LOOT or INTERACT even if the player keeps walking.',
+                'Do not reject a safe listed target only because it is outside the current leash distance; use detourLimit and live threat instead.',
+                'Only choose FOLLOW when there is no safe useful listed target or you are clearly losing the player.',
                 'Shops, merchants, rituals, sacrifices, and risky prompts require player consent; choose INTERACT only if you want to ask first.',
                 'If there is no clear nearby task, choose FOLLOW.',
-                'If threat is high or distance from player is too large, choose RETURN.',
+                'If live threat is high or distance from player is extremely large, choose RETURN.',
 	                'Use riskLevel/riskNote only for live caution. Do not HOLD only because of recent fear, old battle memory, missing resources, or abstract risk when threatNearby is 0 and safe listed targets exist.',
                 'Fear/personality bias is advisory: if fear is afraid/panicked, prefer safe nearby actions, RETURN, or HOLD over optional detours.',
                 'FearMemory is recent emotional pressure from events that may still affect caution even after the immediate danger passes.',
@@ -10787,7 +11423,7 @@ Respond ONLY with this JSON:
             if (this._state.lastRawLocalContent) {
                 Debug.log('[Autonomy LLM]', this._state.lastRawLocalContent);
             }
-            let decision = GeminiAPIHandler._parseResponse(data);
+            let decision = LLMAPIHandler._parseResponse(data);
             if (!decision || this.ACTIONS.indexOf(String(decision.action || '').toUpperCase()) === -1) {
                 return withSource('llm_parse_fallback', 'local response parse failed');
             }
@@ -10973,6 +11609,16 @@ Respond ONLY with this JSON:
                 const dist = approach ? this._distance(follower, approach) : this._distance(follower, event);
                 if (dist <= 0 || (!approach && this._distance(follower, event) <= 1)) {
                     if (approach && approach.faceDirection && follower.setDirection) follower.setDirection(approach.faceDirection);
+                    const playerMessageOpen = typeof GameplayGate !== 'undefined' &&
+                        GameplayGate.canRunBackgroundAutonomy &&
+                        GameplayGate.canRunBackgroundAutonomy();
+                    if (playerMessageOpen) {
+                        const pendingSnap = EnvironmentScanner && EnvironmentScanner._eventSnapshot ? EnvironmentScanner._eventSnapshot(event, follower) : null;
+                        const safeBackgroundType = pendingSnap && (pendingSnap.type === 'container' || pendingSnap.type === 'loot');
+                        if (!safeBackgroundType) {
+                            return;
+                        }
+                    }
                     const interactionStarted = this._interactWithEvent(follower, event);
                     if (interactionStarted) {
                         const postDoorPoint = this._state.postDoorPoint;
@@ -11012,7 +11658,7 @@ Respond ONLY with this JSON:
                 return;
             }
 
-            const leashLimit = Math.max(1, this._state.mode === 'return' ? 0 : Config.autonomyMaxDetourDistance);
+            const leashLimit = Math.max(1, this._state.mode === 'return' ? 0 : Math.max(5, Config.autonomyMaxDetourDistance || 0));
             const distToPlayer = this._distance(follower, player);
             if (this._state.mode === 'follow') {
                 if (this._isRoomSettling() && distToPlayer <= 1) return;
@@ -11203,12 +11849,13 @@ Respond ONLY with this JSON:
             const eventId = event && (event.eventId ? event.eventId() : event._eventId);
             const interactionSnap = snap || this._rememberInteractionTarget(event, follower);
             const interactionType = interactionSnap && interactionSnap.type ? interactionSnap.type : this._state.lastInteractionType;
-            this._state.interactionUiOwned = true;
+            const ownsMessageUi = channel !== 'background-loot' && channel !== 'background-loot-unsupported';
+            this._state.interactionUiOwned = ownsMessageUi;
             this._setEventCooldown(eventId, interactionType === 'door' ? 90000 : 15000);
             if (interactionSnap && (interactionType === 'container' || interactionType === 'loot' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
                 this._markEventSearched(interactionSnap.id || eventId, interactionType, 'interaction_started');
             }
-            this._state.allowPlayerMoveWhileUi = channel !== 'background-loot' &&
+            this._state.allowPlayerMoveWhileUi = ownsMessageUi &&
                 !this._state.lastInteractionNeedsConsent &&
                 interactionType !== 'shop';
             if (interactionType === 'door') {
@@ -11455,6 +12102,34 @@ Respond ONLY with this JSON:
             }
         },
 
+        _showBackgroundLootFeedback(plan, rewards, follower, event) {
+            if (typeof AINotificationOverlay !== 'undefined') {
+                const summary = this._describeBackgroundLootRewards(rewards);
+                if (summary) {
+                    AINotificationOverlay.pushLootAt(Config.companionName, summary, follower);
+                    AINotificationOverlay.pushRewardIconsAt(rewards, event || follower);
+                } else {
+                    AINotificationOverlay.pushEmptySearchAt(Config.companionName, plan && plan.label, follower);
+                }
+            }
+            try {
+                if (follower && follower.requestBalloon) {
+                    const balloonId = rewards && rewards.length > 0 ? 1 : 2;
+                    follower.requestBalloon(balloonId);
+                    if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                        ThesisLogger.log('game_event', {
+                            event: 'ai_balloon_requested',
+                            balloon_id: balloonId,
+                            result: rewards && rewards.length > 0 ? 'loot' : 'empty',
+                            label: plan && plan.label ? plan.label : null
+                        });
+                    }
+                }
+            } catch (e) {
+                // Visual feedback should never block the loot executor.
+            }
+        },
+
         _executeBackgroundLoot(event, follower, snap) {
             const plan = this._analyzeBackgroundLootEvent(event, snap);
             if (!plan || typeof Game_Interpreter === 'undefined') return false;
@@ -11486,8 +12161,10 @@ Respond ONLY with this JSON:
                 if (item && amount > 0) {
                     rewards.push({
                         kind: DataManager.isWeapon(item) ? 'weapon' : (DataManager.isArmor(item) ? 'armor' : 'item'),
+                        id: item.id,
                         name: item.name,
-                        amount: amount
+                        amount: amount,
+                        iconIndex: Number(item.iconIndex || 0)
                     });
                 }
                 return originalGainItem(item, amount, includeEquip);
@@ -11565,9 +12242,7 @@ Respond ONLY with this JSON:
 	                this._setEventCooldown(plan.eventId, 90000);
 	                this._markEventSearched(plan.eventId, plan.type, rewards.length > 0 ? 'background_loot' : 'background_loot_empty');
 	                this._rememberBackgroundLootResult(plan, rewards);
-	                if (rewards.length > 0 && typeof AINotificationOverlay !== 'undefined') {
-	                    AINotificationOverlay.pushLoot(Config.companionName, this._describeBackgroundLootRewards(rewards));
-	                }
+                    this._showBackgroundLootFeedback(plan, rewards, follower, event);
 	                if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
 	                    ThesisLogger.log('game_event', {
 	                        event: 'background_loot',
@@ -11970,7 +12645,7 @@ Respond ONLY with this JSON:
         AIState,
         BattleStateExtractor,
         ActionExecutor,
-        GeminiAPIHandler,
+        LLMAPIHandler,
         MemoryManager,
         ModelRouter,
         CharacterPresets,
@@ -13592,25 +14267,21 @@ CRITICAL GAME RULES (NEVER violate these):
                 if (!Config.apiKey) return '';
             }
 
-            const groqHeaders = Config.apiProvider === 'local'
-                ? {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${Config.apiKey}`,
-                    'HTTP-Referer': 'https://fear-and-hunger-mod.local',
-                    'X-Title': 'Fear & Hunger AI Companion'
-                  }
+            const fallbackProvider = Config.getCloudFallbackProvider();
+            const cloudHeaders = Config.apiProvider === 'local'
+                ? Config.getCloudFallbackHeaders()
                 : Config.getHeaders();
-            const groqEndpoint = Config.apiProvider === 'local' ? Config.apiEndpoint : Config.getEndpoint();
+            const cloudEndpoint = Config.apiProvider === 'local' ? Config.getCloudFallbackEndpoint() : Config.getEndpoint();
             const models = Config.apiProvider === 'local'
-                ? Config.getCloudModelsForContext('chat', 'groq')
+                ? Config.getCloudModelsForContext('chat', fallbackProvider)
                 : ModelRouter.getModelsForContext('chat');
             for (const model of models) {
                 const text = await _tryRequest(
-                    groqEndpoint, groqHeaders, model, 150, 8000,
-                    { messages: [{ role: 'user', content: prompt }], providerLabel: Config.apiProvider === 'local' ? 'groq_fallback' : Config.apiProvider }
+                    cloudEndpoint, cloudHeaders, model, 150, 8000,
+                    { messages: [{ role: 'user', content: prompt }], providerLabel: Config.apiProvider === 'local' ? fallbackProvider + '_fallback' : Config.apiProvider }
                 );
                 if (text.length > 0) {
-                    Debug.log('[Chat] Groq responded:', model, text.length, 'chars');
+                    Debug.log('[Chat] Cloud responded:', Config.apiProvider === 'local' ? fallbackProvider : Config.apiProvider, model, text.length, 'chars');
                     this._lastModelUsed = model;
                     return Config.cleanGeneratedText(text);
                 }
@@ -15296,7 +15967,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                     `If suggest is true, line must ask permission in under 16 words.\n` +
                     `Do not claim you already equipped it. Do not mention stats unless natural.`;
                 const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 1800);
+                const timer = setTimeout(() => controller.abort(), 6500);
                 let resp;
                 try {
                     resp = await LocalRequestQueue.runOptional('equipment_prompt', () => fetch(endpoint, {
@@ -15371,7 +16042,16 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
             const refreshed = this._candidate(candidate.actor, candidate.item);
             if (!refreshed) return false;
             candidate = refreshed;
-            if (!recommendation || !recommendation.suggest) {
+            if (!recommendation) {
+                ThesisLogger.log('game_event', {
+                    event: 'equipment_suggestion_unavailable',
+                    actor_name: candidate.actor.name(),
+                    item_name: candidate.item.name,
+                    source: source || null
+                });
+                return this._queue(candidate, source || 'equipment_retry');
+            }
+            if (!recommendation.suggest) {
                 ThesisLogger.log('game_event', {
                     event: 'equipment_suggestion_skipped',
                     actor_name: candidate.actor.name(),
@@ -15613,8 +16293,8 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         this._inputWindow.activate();
 
         // Show help text below input
-        const helpY = Graphics.boxHeight - 76;
-        this._helpHint = new Window_Base(20, helpY, Graphics.boxWidth - 40, 48);
+        const helpY = Graphics.boxHeight - 70;
+        this._helpHint = new Window_Base(20, helpY, Graphics.boxWidth - 40, 60);
         this._helpHint.backOpacity = 100;
         this._helpHint.contents.fontSize = 14;
         this._helpHint.contents.textColor = '#888888';
@@ -16169,7 +16849,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                 }
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
-                const decision = GeminiAPIHandler._parseResponse(data);
+                const decision = LLMAPIHandler._parseResponse(data);
                 const picked = decision && decision.index != null
                     ? candidates.find(c => c.index === Number(decision.index))
                     : null;
@@ -17380,7 +18060,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                             : ''
                     );
                     if (this._state.lastRawLocalContent) Debug.log('[Autopilot LLM]', this._state.lastRawLocalContent);
-                    const parsed = GeminiAPIHandler._parseResponse(data);
+                    const parsed = LLMAPIHandler._parseResponse(data);
                     const decision = this._normalizeLlmDecision(snap, parsed);
                     this._applyDecision(decision);
                     this._log('decision', decision, decision.reason || '');
@@ -17764,7 +18444,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                             : ''
                     );
                     if (this._state.lastRawLocalContent) Debug.log('[Autopilot UI LLM]', this._state.lastRawLocalContent);
-                    const parsed = GeminiAPIHandler._parseResponse(data);
+                    const parsed = LLMAPIHandler._parseResponse(data);
                     this._applyUiDecision(kind, ui, parsed);
                 });
             }).catch(error => {
@@ -18063,7 +18743,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         : ''
                 );
                 if (this._state.lastRawLocalContent) Debug.log('[Autopilot Battle LLM]', this._state.lastRawLocalContent);
-                const parsed = GeminiAPIHandler._parseResponse(data);
+                const parsed = LLMAPIHandler._parseResponse(data);
                 if (!parsed || !parsed.action) return hold('Local battle model returned no valid action.', 'llm_parse_fallback');
                 let normalized = ActionExecutor.normalizeDecisionForBattle(parsed, battleState);
                 if (!normalized || !normalized.action) return hold('Normalized battle decision was invalid.', 'llm_invalid_action');
@@ -18228,27 +18908,22 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
         _syncRequest(prompt) {
             if (Config.useMockAI) return "It's something from the dungeon. Use it wisely.";
 
-            // Sync inspect ALWAYS uses Groq for RP quality
-            const groqHeaders = (Config.apiProvider === 'local' && Config.apiKey)
-                ? {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${Config.apiKey}`,
-                    'HTTP-Referer': 'https://fear-and-hunger-mod.local',
-                    'X-Title': 'Fear & Hunger AI Companion'
-                  }
+            // Sync inspect uses the active cloud route when local mode needs fallback.
+            const cloudHeaders = (Config.apiProvider === 'local' && Config.apiKey)
+                ? Config.getCloudFallbackHeaders()
                 : Config.getHeaders();
-            const groqEndpoint = (Config.apiProvider === 'local' && Config.apiKey)
-                ? Config.apiEndpoint
+            const cloudEndpoint = (Config.apiProvider === 'local' && Config.apiKey)
+                ? Config.getCloudFallbackEndpoint()
                 : Config.getEndpoint();
 
             const models = (Config.apiProvider === 'local' && Config.apiKey)
-                ? Config.getCloudModelsForContext('chat', 'groq')
+                ? Config.getCloudModelsForContext('chat', Config.getCloudFallbackProvider())
                 : ModelRouter.getModelsForContext('chat');
             for (const model of models) {
                 try {
                     const xhr = new XMLHttpRequest();
-                    xhr.open('POST', groqEndpoint, false);
-                    for (var key in groqHeaders) xhr.setRequestHeader(key, groqHeaders[key]);
+                    xhr.open('POST', cloudEndpoint, false);
+                    for (var key in cloudHeaders) xhr.setRequestHeader(key, cloudHeaders[key]);
                     xhr.send(JSON.stringify({
                         model: model,
                         messages: [{ role: 'user', content: prompt }],

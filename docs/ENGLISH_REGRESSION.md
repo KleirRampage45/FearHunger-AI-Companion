@@ -100,9 +100,8 @@ Pass:
 
 ## Hardcoded Line Regression
 
-1. Set `AI_Companion.Config.ambientFallbackMode = 'silent'` in console.
-2. Disable/unload model or enable mock mode.
-3. Pick up an item, enter a room, or win a battle.
+1. Disable/unload model or enable mock mode.
+2. Pick up an item, enter a room, or win a battle.
 
 Pass:
 

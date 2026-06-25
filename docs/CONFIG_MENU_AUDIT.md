@@ -26,7 +26,10 @@ This file records whether each exposed config option changes runtime behavior.
 
 - `Solo engage`: currently disabled in the menu because the autonomy prompt forbids starting fights and there is no safe LLM action for deliberate enemy engagement yet.
 - `Debug overlay`: exposed as experimental. It persists a flag, but most debug information is still available through console/log viewer rather than a full on-screen renderer.
-- `Ambient fallback mode`: `silent` avoids hardcoded ambient lines; `legacy` allows older local fallback lines if the LLM does not produce a line.
+
+## Removed / Intentionally Not Exposed
+
+- `Ambient fallback mode`: removed. Non-critical ambient speech stays silent when the LLM does not produce a line; there is no legacy hardcoded chatter mode.
 
 ## Menu Structure
 

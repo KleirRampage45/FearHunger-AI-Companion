@@ -98,10 +98,10 @@ For LM Studio:
 http://127.0.0.1:1234/v1/chat/completions
 ```
 
-or your LAN address:
+or your own LAN address if LM Studio runs on another machine:
 
 ```text
-http://192.168.100.3:1234/v1/chat/completions
+http://<your-lan-ip>:1234/v1/chat/completions
 ```
 
 Recommended local autonomy sampling defaults:

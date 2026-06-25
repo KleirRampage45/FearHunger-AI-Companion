@@ -57,6 +57,8 @@ expectContains(plugin, 'const EnvironmentScanner = {', 'EnvironmentScanner modul
 expectContains(plugin, 'const StoryGoalMemory = {', 'StoryGoalMemory module');
 expectContains(plugin, 'const AutonomySystem = {', 'AutonomySystem module');
 expectContains(plugin, 'const ThesisLogger = {', 'ThesisLogger module');
+expectContains(plugin, 'class LLMAPIHandler', 'provider-neutral LLM handler');
+expectContains(plugin, 'getCloudFallbackEndpoint()', 'centralized cloud fallback endpoint');
 expectContains(plugin, 'window.Scene_AIDebugLog = Scene_AIDebugLog;', 'AI Log scene export');
 expectContains(plugin, "Config.language === 'es'", 'language branching');
 expectContains(plugin, '_localizeLabel(label)', 'scanner label localization');
@@ -83,6 +85,10 @@ expectContains(plugin, 'Your reasoning MUST describe the exact limb selected', '
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');
+expectNotContains(plugin, 'GeminiAPIHandler', 'legacy Gemini handler name');
+expectNotContains(plugin, 'Gemini 3.0 Flash', 'legacy Gemini product reference');
+expectNotContains(plugin, '192.168.100.3', 'personal LAN endpoint default');
+expectNotContains(plugin, 'gemma-4-e4b-uncensored-hauhaucs-aggressive', 'personal local model default');
 expectNotContains(plugin, 'chest_7', 'raw chest event leak');
 expectNotContains(plugin, 'chest_6', 'raw chest event leak');
 expectNotContains(plugin, 'cavegnome1 instead', 'debug note accidentally shipped');
@@ -92,6 +98,7 @@ expectNotContains(plugin, 'No puedo pensar claro. Me cubro.', 'hardcoded combat 
 expectNotContains(plugin, '_generateQuickDialog', 'hardcoded combat quick-dialog generator');
 expectNotContains(plugin, 'narratorAmbientLine', 'hardcoded nonverbal ambient narration');
 expectNotContains(plugin, 'currentNarratorResponse', 'hardcoded nonverbal chat response');
+expectNotContains(plugin, 'Hardcoded area-specific tips', 'area tips must come from KB/RAG, not plugin fallback tables');
 expectNotContains(plugin, 'AmbientDialogue.onAutonomyIntent(action, target);', 'routine autonomy action chatter invocation');
 expectNotContains(plugin, 'AmbientDialogue.checkProactiveChat();', 'routine proactive object chatter invocation');
 expectNotContains(plugin, 'this._showBackgroundLootSummary(rewards);', 'routine background-loot chatter invocation');
