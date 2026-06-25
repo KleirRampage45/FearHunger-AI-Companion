@@ -89,7 +89,7 @@
         groq: {
             name: 'Groq',
             endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-            modelsEndpoint: null, // Static fallback list; use provider UI when dynamic listing is added.
+            modelsEndpoint: null,
             defaultModels: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
             needsKey: true,
             extraHeaders: { 'HTTP-Referer': 'https://fear-and-hunger-mod.local', 'X-Title': 'Fear & Hunger AI Companion' }
@@ -114,9 +114,7 @@
 
     const _providerOrder = ['groq', 'openrouter', 'local'];
     const NON_PLAYABLE_BOOT_MAP_IDS = [10, 72];
-    const FAST_AUTONOMY_MODEL_HINTS = [];
-
-	    const Config = {
+    const Config = {
         apiKey: savedApiKey || String(parameters['apiKey'] || ''),
         companionActorId: Number(parameters['companionActorId'] || 15),
         companionName: String(parameters['companionName'] || 'Wanderer'),
@@ -138,7 +136,7 @@
         // Selected chat model (persisted per provider)
         chatModel: localStorage.getItem('AI_Companion_ChatModel') || '',
 
-        // Future autonomy / heartbeat config
+        // Autonomy / heartbeat config
         autonomyEnabled: (localStorage.getItem('AI_Companion_AutonomyEnabled') || 'true') === 'true',
         autonomyModel: localStorage.getItem('AI_Companion_AutonomyModel') || '',
         autonomyTickSeconds: Number(localStorage.getItem('AI_Companion_AutonomyTickSeconds') || '4'),
@@ -153,7 +151,6 @@
         autopilotEnabled: localStorage.getItem('AI_Companion_AutopilotEnabled') === 'true',
         autopilotTickSeconds: Number(localStorage.getItem('AI_Companion_AutopilotTickSeconds') || '3'),
         autopilotMaxRuntimeMinutes: Number(localStorage.getItem('AI_Companion_AutopilotMaxRuntimeMinutes') || '20'),
-        debugOverlay: (localStorage.getItem('AI_Companion_DebugOverlay') || 'true') === 'true',
         performanceLogging: localStorage.getItem('AI_Companion_PerformanceLogging') === 'true',
         performanceLogIntervalMs: Number(localStorage.getItem('AI_Companion_PerformanceLogIntervalMs') || '5000'),
 
@@ -326,9 +323,6 @@
             if (this.localModel) pushUnique(this.localModel);
             if (this._cachedLocalModels && this._cachedLocalModels.length > 0) {
                 this._cachedLocalModels.forEach(m => pushUnique(m.id || m.name || m));
-            }
-            for (let i = 0; i < FAST_AUTONOMY_MODEL_HINTS.length; i++) {
-                pushUnique(FAST_AUTONOMY_MODEL_HINTS[i]);
             }
             pushUnique(this.chatModel);
             const defaults = this.getProvider().defaultModels || [];
@@ -656,11 +650,6 @@
         setAutonomyAutoReturnOnDanger(on) {
             this.autonomyAutoReturnOnDanger = !!on;
             localStorage.setItem('AI_Companion_AutonomyAutoReturn', on ? 'true' : 'false');
-        },
-
-        setDebugOverlay(on) {
-            this.debugOverlay = !!on;
-            localStorage.setItem('AI_Companion_DebugOverlay', on ? 'true' : 'false');
         },
 
         // ── Fetch free models from OpenRouter ────────────────────────────
@@ -1833,7 +1822,7 @@
         lastCombatDecision: null, // Cached decision when hash matches
         combatActionHistory: [],  // Track AI actions this battle for variety
         playerActionHistory: [],  // Track PLAYER actions this battle for coordination
-        // Branch 3: Multi-turn strategy planning
+        // Multi-turn combat strategy state
         currentStrategy: null,   // { plan: string, turnsRemaining: number, startTurn: number }
     };
 
@@ -2299,7 +2288,7 @@
             location: /(?:donde estamos|where.*we|que lugar|what place|mapa|map|nivel|level|piso|floor|zona|zone|area|salida|exit|como.*salir|how.*leave|camino|path|que ves|qué ves|ves algo|ves un npc|hay un npc cerca|npc cerca|what do you see|what.*around|que hay alrededor|qué hay alrededor)/i
         },
 
-        // Branch 5: Intent classification cache (input hash → result)
+        // Intent classification cache (input hash → result)
         _cache: new Map(),
         _cacheMaxSize: 50,
         _llmFallbackEnabled: true,
@@ -2349,8 +2338,6 @@
 
             // Extract entities
             const entities = this._extractEntities(msg);
-
-            // Branch 5: Improved confidence scoring
             let confidence;
             if (types[0] === 'generic_query') {
                 confidence = 0.3; // No regex match — LLM fallback candidate
@@ -2402,7 +2389,7 @@
         },
 
         /**
-         * Branch 5: Async classification with LLM fallback for low-confidence results.
+         * Async classification with LLM fallback for low-confidence results.
          * Used by ChatSystem.sendMessage() when regex confidence is too low.
          * @param {string} message - player message
          * @returns {Promise<{types: string[], primary: string, entities: Array, confidence: number}>}
@@ -2442,7 +2429,7 @@
         },
 
         /**
-         * Branch 5: Lightweight LLM intent classification.
+         * Lightweight LLM intent classification.
          * Sends a minimal prompt to classify the player's message.
          * @param {string} message - player message
          * @returns {Promise<string|null>} - intent type or null
@@ -5792,7 +5779,6 @@ Reply with ONLY the category name, nothing else.`;
                 if (decision) {
                     const requestLatency = response && response._requestLatencyMs ? response._requestLatencyMs : Math.round(performance.now() - startTime);
                     decision._llmUsage = LLMStats.extract(response, requestLatency);
-                    console.log('[Combat Async Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                     Debug.log('[Combat Async Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                     decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
                 }
@@ -6062,7 +6048,7 @@ ${enemyTactics ? `LEARNED TACTICS:\n${enemyTactics}` : ''}
 ${memoryBeliefs ? `MEMORY AND BELIEFS:\n${memoryBeliefs}\n` : (memory.relationship ? `RELATIONSHIP: ${memory.relationship}` : '')}${coinFlipWarning}${healingAlert}${offenseAffordanceBlock}${supportAffordanceBlock}`;
 
             if (retryContext) {
-                // Branch 3: Include explicit available actions for better retry
+                // Include explicit available actions for better retry.
                 const availableActions = ['Atacar', 'Defenderse'];
                 companion.skills.forEach(s => availableActions.push(s.name));
                 companion.items.forEach(i => availableActions.push(i.name));
@@ -6128,13 +6114,13 @@ Respond ONLY with this JSON:
   "strategy": "optional short plan, max 18 words"
 }`;
 
-            // Branch 3: Inject active multi-turn strategy only while it still matches the live battle state
+            // Inject active multi-turn strategy only while it still matches the live battle state.
             if (AIState.currentStrategy && AIState.currentStrategy.turnsRemaining > 0) {
                 if (!this._isStrategyStillRelevant(battleState, AIState.currentStrategy.plan)) {
                     Debug.log('[Combat] Dropping stale strategy:', AIState.currentStrategy.plan);
                     AIState.currentStrategy = null;
                 } else {
-                prompt += `\n\nCONTINUING STRATEGY (turn ${battleState.turn_number - AIState.currentStrategy.startTurn + 1} of plan): ${AIState.currentStrategy.plan}\nFollow this plan unless the situation has changed dramatically.`;
+                    prompt += `\n\nCONTINUING STRATEGY (turn ${battleState.turn_number - AIState.currentStrategy.startTurn + 1} of plan): ${AIState.currentStrategy.plan}\nFollow this plan unless the situation has changed dramatically.`;
                 }
             }
 
@@ -6234,7 +6220,6 @@ Respond ONLY with this JSON:
                         : ''
                 );
                 if (rawContent) {
-                    console.log('[Combat Async LLM]', rawContent);
                     Debug.log('[Combat Async LLM]', rawContent);
                 }
                 return data;
@@ -6433,13 +6418,11 @@ Respond ONLY with this JSON:
                             : ''
                     );
                     if (rawContent) {
-                        console.log('[Combat LLM]', rawContent);
                         Debug.log('[Combat LLM]', rawContent);
                     }
                     let decision = this._parseResponse(response);
                     if (decision) {
                         decision._llmUsage = LLMStats.extract(response, requestLatency);
-                        console.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                         Debug.log('[Combat Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
                         decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
                     }
@@ -7530,11 +7513,9 @@ Respond ONLY with this JSON:
             drawLine(`${es ? 'Embeddings' : 'Embeddings'}: ${short(Config.hybridRagModel, 54)}`, 2);
             drawLine(`${es ? 'Endpoint' : 'Endpoint'}: ${short(Config.hybridRagEndpoint, 72)}`, 3);
         } else if (section === 'debug') {
-            const perf = window._AICompanionPerformanceMonitor;
             drawLine(`${es ? 'Debug consola' : 'Debug console'} ${Config.debugMode ? 'ON' : 'OFF'} | ${es ? 'telemetría' : 'telemetry'} ${Config.performanceLogging ? 'ON' : 'OFF'} / ${Config.performanceLogIntervalMs}ms`, 0);
-            drawLine(`${es ? 'Overlay' : 'Overlay'} ${Config.debugOverlay ? 'ON' : 'OFF'}`, 1);
-            drawLine(`${es ? 'Cola local' : 'Local queue'}: ${LocalRequestQueue.isBusy() ? 'busy ' + (LocalRequestQueue._activeLabel || '') : 'idle'}`, 2);
-            drawLine(`${es ? 'FPS/RAM se registran en ai_companion_logs' : 'FPS/RAM are logged into ai_companion_logs'}`, 3);
+            drawLine(`${es ? 'Cola local' : 'Local queue'}: ${LocalRequestQueue.isBusy() ? 'busy ' + (LocalRequestQueue._activeLabel || '') : 'idle'}`, 1);
+            drawLine(`${es ? 'FPS/RAM se registran en ai_companion_logs' : 'FPS/RAM are logged into ai_companion_logs'}`, 2);
         } else if (section === 'autopilot') {
             drawLine(`Autopilot: ${Config.autopilotEnabled ? 'ON' : 'OFF'} | tick ${Config.autopilotTickSeconds}s | max ${Config.autopilotMaxRuntimeMinutes}m`, 0);
             drawLine(es ? 'Modo tesis: LLM elige metas, batalla y UI; código valida/ejecuta.' : 'Thesis mode: LLM chooses goals, battle, and UI; code validates/executes.', 1);
@@ -7578,7 +7559,6 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('apiKey', this.commandApiKey.bind(this));
         this._commandWindow.setHandler('toggleMock', this.commandToggleMock.bind(this));
         this._commandWindow.setHandler('toggleDebug', this.commandToggleDebug.bind(this));
-        this._commandWindow.setHandler('toggleDebugOverlay', this.commandToggleDebugOverlay.bind(this));
         this._commandWindow.setHandler('togglePerformanceLogging', this.commandTogglePerformanceLogging.bind(this));
         this._commandWindow.setHandler('setPerformanceInterval', this.commandSetPerformanceInterval.bind(this));
         this._commandWindow.setHandler('toggleAsyncCombat', this.commandToggleAsyncCombat.bind(this));
@@ -7716,12 +7696,6 @@ Respond ONLY with this JSON:
     Scene_AIConfig.prototype.commandToggleDebug = function () {
         Config.setDebugMode(!Config.debugMode);
         if (Config.debugMode) console.log('[AI_Companion] Debug mode ON – verás logs en la consola (F12).');
-        SoundManager.playOk();
-        this._refreshConfigScene();
-    };
-
-    Scene_AIConfig.prototype.commandToggleDebugOverlay = function () {
-        Config.setDebugOverlay(!Config.debugOverlay);
         SoundManager.playOk();
         this._refreshConfigScene();
     };
@@ -8308,7 +8282,6 @@ Respond ONLY with this JSON:
         if (section === 'debug') {
             addBack();
             this.addCommand(es ? `Consola debug: ${Config.debugMode ? 'ON' : 'OFF'}` : `Debug console: ${Config.debugMode ? 'ON' : 'OFF'}`, 'toggleDebug');
-            this.addCommand(es ? `Overlay debug: ${Config.debugOverlay ? 'ON' : 'OFF'}` : `Debug overlay: ${Config.debugOverlay ? 'ON' : 'OFF'}`, 'toggleDebugOverlay');
             this.addCommand(`${es ? 'Telemetría FPS/RAM' : 'FPS/RAM telemetry'}: ${Config.performanceLogging ? 'ON' : 'OFF'}`, 'togglePerformanceLogging');
             this.addCommand(`${es ? 'Intervalo' : 'Interval'}: ${Config.performanceLogIntervalMs}ms`, 'setPerformanceInterval');
             return;
@@ -8381,8 +8354,7 @@ Respond ONLY with this JSON:
             setRagSpoiler: es ? 'Nivel de spoilers permitido en recuperación.' : 'Allowed spoiler level for retrieval.',
             toggleRagSaveMemory: es ? 'Incluye memoria persistente del save junto al RAG.' : 'Include persistent save memory with RAG.',
             setRagLanguage: es ? 'Idioma preferido de recuperación; auto usa idioma del plugin.' : 'Preferred retrieval language; auto follows plugin language.',
-            toggleDebug: es ? 'Activa logs detallados en la consola F12.' : 'Enable detailed logs in the F12 console.',
-            toggleDebugOverlay: es ? 'Experimental: bandera guardada para overlay; no todos los datos tienen renderer visible.' : 'Experimental: saved overlay flag; not every debug state has visible renderer.'
+            toggleDebug: es ? 'Activa logs detallados en la consola F12.' : 'Enable detailed logs in the F12 console.'
         };
         this._helpWindow.setText(help[symbol] || (es ? 'Configuración del compañero IA' : 'AI companion configuration'));
     };
@@ -9295,7 +9267,7 @@ Respond ONLY with this JSON:
     };
 
     //=========================================================================
-    // World State Engine — Aggregated situational awareness (Branch 6)
+    // World State Engine — aggregated situational awareness
     //=========================================================================
     const WorldStateEngine = {
         _lastSnapshot: null,
@@ -9663,7 +9635,7 @@ Respond ONLY with this JSON:
     };
 
     //=========================================================================
-    // Risk Evaluator — deterministic inference over live state and KB (Branch 8)
+    // Risk Evaluator — deterministic inference over live state and KB
     //=========================================================================
     const RiskEvaluator = {
         _level(score) {
@@ -10085,7 +10057,7 @@ Respond ONLY with this JSON:
     };
 
     //=========================================================================
-    // Autonomy System — Local-only overworld heartbeat controller (Branch 9)
+    // Autonomy System — local-only overworld heartbeat controller
     // Conservative beta: follower detours, rejoin logic, nearby interaction
     //=========================================================================
     const AutonomySystem = {
@@ -12375,7 +12347,7 @@ Respond ONLY with this JSON:
     };
 
     //=========================================================================
-    // NPC Intelligence — Track and identify NPCs the player interacts with (Branch 7)
+    // NPC Intelligence — track and identify NPCs the player interacts with
     //=========================================================================
     const NPCIntelligence = {
         // Face sprite → character identity mapping (from Actors.json analysis)
@@ -13569,21 +13541,18 @@ Respond ONLY with this JSON:
                 battle_state: battleStateSummary,
                 last_battle: lastBattle,
                 status_effects_summary: statusEffectsSummary,
-                // NEW: party members list and raw state names
+                // Party members list and raw state names
                 party_members: $gameParty.members().map(m => ({
                     name: m.name(),
                     hp: m.hp, max_hp: m.mhp,
                     states: m.states().map(s => s.name).filter(n => n)
                 })),
-                // NEW: spatial awareness — nearby objects from EnvironmentScanner
+                // Spatial awareness from EnvironmentScanner
                 nearby_objects: EnvironmentScanner.getSummary(),
                 nearby_observation: nearbyObservation,
                 dynamic_hazards: dynamicHazards,
-                // Branch 6: World State Engine — aggregated situational summary
                 world_state: WorldStateEngine.getWorldSummary(),
-                // Branch 8: Risk Evaluator — explicit survival/risk inference
                 risk_assessment: RiskEvaluator.getPromptSummary(riskBattleState),
-                // Branch 7: NPC Intelligence — recent NPC dialogue
                 npc_dialogue: NPCIntelligence.getRecentDialogueSummary(),
                 npc_dialogue_entries: NPCIntelligence.getRecentDialogueEntries(),
                 recently_mentioned_facts: DialogueMemory.getPromptFacts($gameMap ? $gameMap.mapId() : null),
@@ -14737,7 +14706,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 });
                 if (!shouldSpeak) return;
                 DialogueMemory.rememberFact(factKey, clean, 'proactive_chat', { mapId: $gameMap ? $gameMap.mapId() : null });
-                console.log('[Proactive Chat]', clean);
+                Debug.log('[Proactive Chat]', clean);
                 this._speak(clean, 'proactive_chat');
             };
             if (Config.useMockAI) return;
@@ -14956,7 +14925,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
                 const cleaned = text ? Config.cleanGeneratedText(text) : '';
                 const finalText = this._normalizeAutonomyComment(cleaned, target, '', es);
                 if (!finalText) return;
-                console.log('[Autonomy Comment]', finalText);
+                Debug.log('[Autonomy Comment]', finalText);
                 await show(finalText);
             } catch (e) {
                 return;
@@ -14980,7 +14949,7 @@ React in one short sentence (max 60 chars). Stay in character. ${companionOwned 
             try {
                 const line = await this._generateSupportPromptAsync(need, es);
                 if (line) {
-                    console.log('[SupportApproval Prompt]', line);
+                    Debug.log('[SupportApproval Prompt]', line);
                     DialogueMemory.rememberFact(factKey, line, topic, { mapId: $gameMap ? $gameMap.mapId() : null });
                 }
                 if (typeof SupportApproval !== 'undefined' && SupportApproval._showPrompt) {
@@ -15445,7 +15414,7 @@ Say ONE short sentence (max 15 words). React naturally — something you notice,
                 thought: cleanThought,
                 source: source || ''
             }));
-            console.log(`[Ambient Thought] speak=${!!speak} topic=${meta.topic} source=${source || ''} reason=${cleanThought}`);
+            Debug.log(`[Ambient Thought] speak=${!!speak} topic=${meta.topic} source=${source || ''} reason=${cleanThought}`);
         },
 
         async _shouldSpeak(text, topic, context) {
@@ -17754,7 +17723,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         }
     };
 
-    // Branch 7: Hook into Show Text (command101) to track NPC dialogue
+    // Hook into Show Text (command101) to track NPC dialogue
     const _Game_Interpreter_command101 = Game_Interpreter.prototype.command101;
     Game_Interpreter.prototype.command101 = function () {
         // Intercept BEFORE the original fires — capture face and text data
@@ -19105,10 +19074,10 @@ Answer in 1-3 short sentences. Be helpful and in character. RESPOND ONLY IN ${Co
         this._itemWindow.activate();
     };
 
-    console.log(Config.language === 'es'
-        ? '[AI_Companion] Plugin cargado. Para ver logs de depuración: menú título → Compañero IA → Consola debug: SÍ'
-        : '[AI_Companion] Plugin loaded. To view debug logs: title menu → AI Companion → Debug console: ON');
     if (Config.debugMode) {
+        Debug.log(Config.language === 'es'
+            ? 'Plugin cargado. Para ver logs de depuración: menú título → Compañero IA → Consola debug: SÍ'
+            : 'Plugin loaded. To view debug logs: title menu → AI Companion → Debug console: ON');
         Debug.log('AI_Companion plugin loaded');
         Debug.log('Config:', { apiKey: !!Config.apiKey, useMockAI: Config.useMockAI, language: Config.language });
     }

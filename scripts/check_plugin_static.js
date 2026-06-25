@@ -99,6 +99,8 @@ expectNotContains(plugin, '_generateQuickDialog', 'hardcoded combat quick-dialog
 expectNotContains(plugin, 'narratorAmbientLine', 'hardcoded nonverbal ambient narration');
 expectNotContains(plugin, 'currentNarratorResponse', 'hardcoded nonverbal chat response');
 expectNotContains(plugin, 'Hardcoded area-specific tips', 'area tips must come from KB/RAG, not plugin fallback tables');
+expectNotContains(plugin, 'debugOverlay', 'dead debug overlay placeholder setting');
+expectNotContains(plugin, 'AI_Companion_DebugOverlay', 'dead debug overlay localStorage key');
 expectNotContains(plugin, 'AmbientDialogue.onAutonomyIntent(action, target);', 'routine autonomy action chatter invocation');
 expectNotContains(plugin, 'AmbientDialogue.checkProactiveChat();', 'routine proactive object chatter invocation');
 expectNotContains(plugin, 'this._showBackgroundLootSummary(rewards);', 'routine background-loot chatter invocation');
