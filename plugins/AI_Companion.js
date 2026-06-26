@@ -160,8 +160,6 @@
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
-        asyncCombatEnabled: false,
-
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
         _freeModelsFetchedAt: Number(localStorage.getItem('AI_Companion_FreeModelsFetchedAt') || '0'),
@@ -464,14 +462,6 @@
         setChatTopP(value) {
             this.chatTopP = Math.max(0.1, Math.min(1, Number(value) || 0.95));
             localStorage.setItem('AI_Companion_ChatTopP', String(this.chatTopP));
-        },
-
-        setAsyncCombatEnabled(on) {
-            if (on) {
-                console.warn('[AI_Companion] Async combat is disabled because it can expose manual companion turns while the LLM is still pending.');
-            }
-            this.asyncCombatEnabled = false;
-            localStorage.setItem('AI_Companion_AsyncCombatEnabled', 'false');
         },
 
         cycleChatTopP() {
@@ -3187,7 +3177,9 @@ Reply with ONLY the category name, nothing else.`;
         _cacheMapId: -1,
         _cachePlayerPos: '',
         _cacheTick: 0,
-        CACHE_TTL: 60,   // frames between rescans (~1 second at 60fps)
+        _frameCacheId: -1,
+        _frameCache: null,
+        PLAYER_CACHE_SCAN_TTL: 60,
 
         _enemySpriteLabels: {
             guard: 'Guardia',
@@ -4028,13 +4020,28 @@ Reply with ONLY the category name, nothing else.`;
             const py = origin.y;
             if (typeof px !== 'number' || typeof py !== 'number') return [];
 
+            const mapId = $gameMap.mapId();
+            const frameId = (typeof Graphics !== 'undefined' && typeof Graphics.frameCount === 'number')
+                ? Graphics.frameCount
+                : -1;
+            const frameKey = `${mapId}:${px},${py},${radius}`;
+            if (frameId >= 0) {
+                if (this._frameCacheId !== frameId) {
+                    this._frameCacheId = frameId;
+                    this._frameCache = {};
+                } else if (this._frameCache && this._frameCache[frameKey]) {
+                    return this._frameCache[frameKey];
+                }
+            }
+
             this._cacheTick++;
             const posKey = `${px},${py},${radius}`;
             if (origin === $gamePlayer &&
-                this._cacheMapId === $gameMap.mapId() &&
+                this._cacheMapId === mapId &&
                 this._cachePlayerPos === posKey &&
-                this._cacheTick < this.CACHE_TTL &&
+                this._cacheTick < this.PLAYER_CACHE_SCAN_TTL &&
                 this._cache) {
+                if (frameId >= 0 && this._frameCache) this._frameCache[frameKey] = this._cache;
                 return this._cache;
             }
 
@@ -4067,10 +4074,11 @@ Reply with ONLY the category name, nothing else.`;
             const finalResults = results.slice(0, this.MAX_NEARBY_EVENTS);
             if (origin === $gamePlayer) {
                 this._cache = finalResults;
-                this._cacheMapId = $gameMap.mapId();
+                this._cacheMapId = mapId;
                 this._cachePlayerPos = posKey;
                 this._cacheTick = 0;
             }
+            if (frameId >= 0 && this._frameCache) this._frameCache[frameKey] = finalResults;
             return finalResults;
         },
 
@@ -5760,60 +5768,10 @@ Reply with ONLY the category name, nothing else.`;
 	        };
 	    }
 
-	    //=========================================================================
-	    // LLMAPIHandler - Communicates with OpenAI-compatible LLM
-	    //=========================================================================
+    //=========================================================================
+    // LLMAPIHandler - Communicates with OpenAI-compatible LLM
+    //=========================================================================
     class LLMAPIHandler {
-        static async getDecision(battleState, retryContext = null) {
-            if (Config.useMockAI) {
-                return this._getMockDecision(battleState);
-            }
-
-            const startTime = performance.now();
-            const failureChain = [];
-            let prompt = '';
-            try {
-                prompt = this._buildPrompt(battleState, retryContext);
-                const response = await this._sendRequest(prompt, 'combat');
-                let decision = this._parseResponse(response);
-                if (decision) {
-                    const requestLatency = response && response._requestLatencyMs ? response._requestLatencyMs : Math.round(performance.now() - startTime);
-                    decision._llmUsage = LLMStats.extract(response, requestLatency);
-                    Debug.log('[Combat Async Parsed]', 'action=' + String(decision.action || ''), 'target=' + String(decision.target || ''), 'limb=' + String(decision.limb || ''), 'reason=' + String(decision.reasoning || decision.reason || ''));
-                    decision = ActionExecutor.normalizeDecisionForBattle(decision, battleState);
-                }
-
-                if (!this._validateDecision(decision, battleState)) {
-                    if (AIState.retryCount < AIState.maxRetries) {
-                        AIState.retryCount++;
-                        Debug.warn('Invalid decision, retrying:', decision);
-                        return this.getDecision(battleState, {
-                            previous_decision: decision,
-                            error: 'Invalid action or target'
-                        });
-                    }
-                    this._logCombatDecision(battleState, prompt, this._getFallbackDecision(), null, 'async_fallback_invalid', startTime, failureChain);
-                    return this._getFallbackDecision();
-                }
-
-                AIState.retryCount = 0;
-                this._updateCombatStrategy(decision, battleState);
-                this._logCombatDecision(battleState, prompt, decision, this._extractModelName(response), response && response._source ? response._source : (Config.apiProvider === 'local' ? 'local_async' : 'cloud_async'), startTime, failureChain);
-                return decision;
-
-            } catch (error) {
-                Debug.error('API error:', error);
-                const fallback = this._getFallbackDecision();
-                failureChain.push({ type: 'async_exception', message: error.message, name: error.name });
-                this._logCombatDecision(battleState, prompt || '(prompt build failed)', fallback, null, 'async_fallback_error', startTime, failureChain);
-                return fallback;
-            }
-        }
-
-        static _extractModelName(response) {
-            return response && (response.model || (response.system_fingerprint ? response.system_fingerprint : null));
-        }
-
         static _updateCombatStrategy(decision, battleState) {
             if (!decision) return;
             if (decision.strategy && decision.strategy.length > 0) {
@@ -6183,99 +6141,6 @@ Respond ONLY with this JSON:
                 else destroyed.push(limb);
             });
             return { alive: alive, destroyed: destroyed };
-        }
-
-        static async _sendRequest(prompt, context = 'combat') {
-            // Helper: try a single async request
-            const _tryFetch = async (endpoint, headers, model, maxTokens, isLocal) => {
-	                const messages = isLocal
-	                    ? [
-	                        { role: 'system', content: 'Respond with ONLY a valid JSON object. Do NOT think or reason. Do NOT use chain-of-thought. Output raw JSON immediately.' },
-	                        { role: 'user', content: prompt }
-	                      ]
-	                    : [{ role: 'user', content: prompt }];
-                const requestStart = performance.now();
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify(Object.assign({
-                        model: model,
-                        messages: messages,
-                        max_tokens: maxTokens
-                    }, Config.getSamplingOptions(
-                        { temperature: Math.min(Config.chatTemperature, 0.8) },
-                        { includeTopK: isLocal }
-                    ), isLocal ? { enable_thinking: false, stop: ['<turn|>'] } : {}))
-                });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-                data._requestLatencyMs = Math.round(performance.now() - requestStart);
-                const rawContent = String(
-                    data &&
-                    data.choices &&
-                    data.choices[0] &&
-                    data.choices[0].message &&
-                    data.choices[0].message.content
-                        ? data.choices[0].message.content
-                        : ''
-                );
-                if (rawContent) {
-                    Debug.log('[Combat Async LLM]', rawContent);
-                }
-                return data;
-            };
-
-            // === Local-first for combat, optional cloud fallback ===
-            if (Config.apiProvider === 'local') {
-	                try {
-	                    Debug.log('[Combat Async] Trying local AI...');
-	                    return await LocalRequestQueue.run('combat_async', () =>
-	                        _tryFetch(Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 96, true).then(data => {
-	                            data._source = 'local_async';
-	                            return data;
-	                        })
-                    );
-                } catch (error) {
-                    Debug.warn('[Combat Async] Local failed:', error.message);
-                }
-                // Fall back to configured cloud provider.
-                if (Config.apiKey) {
-                    const fallbackProvider = Config.getCloudFallbackProvider();
-                    Debug.warn('[Combat Async] Falling back to cloud provider:', fallbackProvider);
-                    const cloudHeaders = Config.getCloudFallbackHeaders();
-                    const cloudEndpoint = Config.getCloudFallbackEndpoint();
-                    const models = Config.getCloudModelsForContext(context, fallbackProvider);
-                    for (const model of models) {
-                        try {
-                            const data = await _tryFetch(cloudEndpoint, cloudHeaders, model, 220, false);
-                            data._source = fallbackProvider + '_fallback_async';
-                            Debug.log('[Combat Async] Cloud fallback succeeded:', fallbackProvider, model);
-                            return data;
-                        } catch (error) {
-                            Debug.warn(`[Combat Async] ${model} failed:`, error.message);
-                            ModelRouter.markFailed(model);
-                        }
-                    }
-                }
-                throw new Error('All models failed (local + cloud fallback)');
-            }
-
-            // === Standard cloud path ===
-            const models = ModelRouter.getModelsForContext(context);
-            for (const model of models) {
-                try {
-                    Debug.log(`Trying model: ${model}`);
-                    const data = await _tryFetch(Config.getEndpoint(), Config.getHeaders(), model, 220, false);
-                    data._source = Config.apiProvider + '_async';
-                    Debug.log(`Model ${model} succeeded`);
-                    return data;
-                } catch (error) {
-                    Debug.warn(`Model ${model} error:`, error.message);
-                    ModelRouter.markFailed(model);
-                }
-            }
-
-            throw new Error('All models failed');
         }
 
         static _parseResponse(response) {
@@ -7367,40 +7232,9 @@ Respond ONLY with this JSON:
             const battleState = BattleStateExtractor.extract();
             if (battleState) {
                 let decision;
-                if (Config.asyncCombatEnabled) {
-                    Config.setAsyncCombatEnabled(false);
-                }
                 if (Config.useMockAI) {
                     Debug.log('Turn ' + battleState.turn_number + ' (Mock AI)');
                     decision = LLMAPIHandler._getMockDecision(battleState);
-                } else if (Config.asyncCombatEnabled) {
-                    this._aiCompanionPendingDecision = true;
-                    this._aiCompanionPendingActorId = actor.actorId();
-                    if (Config.debugMode) Debug.log('[Combat Async] Waiting for AI decision for', Config.companionName);
-                    const scene = SceneManager._scene;
-                    if (scene && scene._actorCommandWindow) {
-                        scene._actorCommandWindow.deactivate();
-                        scene._actorCommandWindow.close();
-                    }
-                    LLMAPIHandler.getDecision(battleState).then(asyncDecision => {
-                        try {
-                            const currentActor = BattleManager.actor();
-                            if (currentActor && currentActor.actorId() === this._aiCompanionPendingActorId) {
-                                if (Config.debugMode) Debug.log('[Combat Async] Executing AI turn for', Config.companionName, 'decision:', asyncDecision.action, asyncDecision.target);
-                                ActionExecutor.execute(currentActor, asyncDecision);
-                            } else {
-                                Debug.warn('[Combat Async] Actor changed before decision resolved; discarding stale decision');
-                            }
-                        } catch (error) {
-                            Debug.warn('[Combat Async] Failed to execute decision:', error.message);
-                            if (actor && actor.numActions && actor.numActions() > 0) actor.action(0).setGuard();
-                        } finally {
-                            this._aiCompanionPendingDecision = false;
-                            this._aiCompanionPendingActorId = null;
-                            this.selectNextCommand();
-                        }
-                    });
-                    return;
                 } else {
                     decision = LLMAPIHandler.getDecisionSync(battleState);
                 }
@@ -7500,7 +7334,7 @@ Respond ONLY with this JSON:
         if (section === 'chat') {
             drawLine(`Chat: ${(PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider)} / ${chatModel}`, 0);
             drawLine(`${apiStatus} | local: ${short(Config.localModel, 36)}`, 1);
-            drawLine(`temp ${Config.chatTemperature} | top_p ${Config.chatTopP} | top_k ${Config.chatTopK || 'off'} | async combat ${Config.asyncCombatEnabled ? 'ON' : 'OFF'}`, 2);
+            drawLine(`temp ${Config.chatTemperature} | top_p ${Config.chatTopP} | top_k ${Config.chatTopK || 'off'}`, 2);
             drawLine(`${es ? 'Endpoint local' : 'Local endpoint'}: ${short(Config.localEndpoint, 72)}`, 3);
         } else if (section === 'autonomy') {
             drawLine(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'} | ${es ? 'modelo' : 'model'}: ${autonomyModel}`, 0);
@@ -7561,7 +7395,6 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('toggleDebug', this.commandToggleDebug.bind(this));
         this._commandWindow.setHandler('togglePerformanceLogging', this.commandTogglePerformanceLogging.bind(this));
         this._commandWindow.setHandler('setPerformanceInterval', this.commandSetPerformanceInterval.bind(this));
-        this._commandWindow.setHandler('toggleAsyncCombat', this.commandToggleAsyncCombat.bind(this));
         this._commandWindow.setHandler('setName', this.commandSetName.bind(this));
         this._commandWindow.setHandler('setAppearance', this.commandSetAppearance.bind(this));
         this._commandWindow.setHandler('setPersonality', this.commandSetPersonality.bind(this));
@@ -7710,12 +7543,6 @@ Respond ONLY with this JSON:
         const next = Config.cyclePerformanceLogIntervalMs();
         SoundManager.playOk();
         this._refreshConfigScene(`${Config.language === 'es' ? 'Intervalo de telemetría' : 'Telemetry interval'}: ${next}ms`);
-    };
-
-    Scene_AIConfig.prototype.commandToggleAsyncCombat = function () {
-        Config.setAsyncCombatEnabled(!Config.asyncCombatEnabled);
-        SoundManager.playOk();
-        this._refreshConfigScene();
     };
 
     Scene_AIConfig.prototype.onInputOk = function () {
@@ -8229,7 +8056,6 @@ Respond ONLY with this JSON:
             this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
             this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
             this.addCommand(`top_k: ${Config.chatTopK || 'off'} (${es ? 'solo local compatible' : 'local-compatible only'})`, 'setTopK');
-            this.addCommand(`[${es ? 'Combate async: desactivado' : 'Async combat: disabled'}]`, 'toggleAsyncCombat', false);
             if (Config.apiProvider === 'local') {
                 const localCount = Config.getLocalModels().length;
                 this.addCommand(`${es ? 'Descubrir modelos locales' : 'Discover local models'} (${localCount})`, 'fetchModels');
@@ -8311,7 +8137,6 @@ Respond ONLY with this JSON:
             backSection: es ? 'Volver al hub principal.' : 'Return to the main hub.',
             apiKey: es ? 'Pega tu API key. Se usa para chat y funciones cloud.' : 'Paste your API key. Used for chat and cloud features.',
             toggleMock: es ? 'Activa o desactiva el modo de prueba sin llamadas reales.' : 'Toggle mock mode to disable real API calls.',
-            toggleAsyncCombat: es ? 'Desactivado: podía abrir turnos manuales del compañero mientras la IA seguía pensando.' : 'Disabled: it could expose manual companion turns while the AI was still thinking.',
             togglePerformanceLogging: es ? 'Registra FPS, RAM del juego, CPU y latencia local en ai_companion_logs.' : 'Log FPS, game RAM, CPU, and local latency into ai_companion_logs.',
             setPerformanceInterval: es ? 'Frecuencia de registro de telemetría.' : 'Telemetry logging frequency.',
             setName: es ? 'Abre la edición nativa del nombre del compañero.' : 'Open the native companion name editor.',
@@ -17193,17 +17018,17 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
     //=========================================================================
     // Hook: Keypress T to open chat
-	    //=========================================================================
-		    const _Scene_Map_update = Scene_Map.prototype.update;
-		    Scene_Map.prototype.update = function () {
-		        _Scene_Map_update.call(this);
-		        PerformanceMonitor.tick('Scene_Map');
-		        if (typeof AINotificationOverlay !== 'undefined') AINotificationOverlay.update();
+    //=========================================================================
+    const _Scene_Map_update = Scene_Map.prototype.update;
+    Scene_Map.prototype.update = function () {
+        _Scene_Map_update.call(this);
+        PerformanceMonitor.tick('Scene_Map');
+        if (typeof AINotificationOverlay !== 'undefined') AINotificationOverlay.update();
 
-		        const aiMapReady = typeof GameplayGate === 'undefined' || GameplayGate.canRunMapAi();
-	        if (!aiMapReady) {
-	            // Let autonomy finish only an interaction it already owns. Its
-	            // internal gate still prevents new heartbeats during intro/events.
+        const aiMapReady = typeof GameplayGate === 'undefined' || GameplayGate.canRunMapAi();
+        if (!aiMapReady) {
+            // Let autonomy finish only an interaction it already owns. Its
+            // internal gate still prevents new heartbeats during intro/events.
 	            if (!Config.autopilotEnabled) {
 	                AutonomySystem.update();
 	            } else if (typeof GameplayGate === 'undefined' || !GameplayGate.isBootOrIntroMap()) {
@@ -17212,13 +17037,13 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 	            return;
 	        }
 
-	        // Periodic hunger awareness check
-	        AmbientDialogue.checkHunger();
+        // Periodic hunger awareness check
+        AmbientDialogue.checkHunger();
         AmbientDialogue.checkSupportNeeds();
 
         // Proactive trap/threat warning from EnvironmentScanner
         AmbientDialogue.checkNearbyThreats();
-	        EquipmentApproval.update();
+        EquipmentApproval.update();
 
         // Optional local-only companion autonomy heartbeat.
         // Autopilot test mode owns whole-party map progression to avoid two agents fighting over doors/transfers.
@@ -17234,12 +17059,12 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
     };
 
     // Battle Chat Hook
-	    const _Scene_Battle_update = Scene_Battle.prototype.update;
-	    Scene_Battle.prototype.update = function () {
-	        _Scene_Battle_update.call(this);
-	        PerformanceMonitor.tick('Scene_Battle');
-	        if (typeof AINotificationOverlay !== 'undefined') AINotificationOverlay.update();
-	        PlayerAutopilot.update();
+    const _Scene_Battle_update = Scene_Battle.prototype.update;
+    Scene_Battle.prototype.update = function () {
+        _Scene_Battle_update.call(this);
+        PerformanceMonitor.tick('Scene_Battle');
+        if (typeof AINotificationOverlay !== 'undefined') AINotificationOverlay.update();
+        if (Config.autopilotEnabled) PlayerAutopilot.update();
 
         // C key to chat in battle
         if (Input.isTriggered('c')) {

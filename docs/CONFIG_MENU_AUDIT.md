@@ -15,7 +15,6 @@ This file records whether each exposed config option changes runtime behavior.
 - `Hybrid RAG enabled`, endpoint, model, chunks, threshold, spoiler level, language, save-memory inclusion: used by chat retrieval.
 - `Performance logging`, interval: controls FPS/RAM/CPU telemetry in `ai_companion_logs`.
 - `Debug console`: gates verbose console logging.
-- `Async combat`: switches companion combat path to async decision flow.
 - `Mock mode`: disables real cloud calls for cloud providers; for local provider it only forces mock when explicitly enabled.
 
 ## Prompt Biases, Not Hard Controls
@@ -30,6 +29,7 @@ This file records whether each exposed config option changes runtime behavior.
 
 - `Ambient fallback mode`: removed. Non-critical ambient speech stays silent when the LLM does not produce a line; there is no legacy hardcoded chatter mode.
 - `Debug overlay`: removed. It only persisted a flag and did not control a real on-screen renderer. Use debug console, log viewer, and FPS/RAM telemetry instead.
+- `Async combat`: removed. It could expose manual companion turns while the LLM was still pending; combat now uses the verified synchronous command path only.
 
 ## Menu Structure
 

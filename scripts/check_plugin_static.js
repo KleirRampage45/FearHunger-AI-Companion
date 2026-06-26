@@ -64,8 +64,6 @@ expectContains(plugin, "Config.language === 'es'", 'language branching');
 expectContains(plugin, '_localizeLabel(label)', 'scanner label localization');
 expectContains(plugin, 'getPersonaPromptBlock()', 'custom persona prompt block');
 expectContains(plugin, 'STORY GOALS AND PROGRESS', 'story goal prompt section');
-expectContains(plugin, 'asyncCombatEnabled: false', 'unsafe async combat disabled by default');
-expectContains(plugin, 'Async combat is disabled because it can expose manual companion turns', 'async combat safety warning');
 expectContains(plugin, '_autonomyRiskForPrompt(snapshot)', 'autonomy risk prompt filter');
 expectContains(plugin, 'Do not HOLD only because of recent fear', 'autonomy hold-loop guardrail');
 expectContains(plugin, 'const AINotificationOverlay = {', 'non-blocking AI notification overlay');
@@ -101,10 +99,13 @@ expectNotContains(plugin, 'currentNarratorResponse', 'hardcoded nonverbal chat r
 expectNotContains(plugin, 'Hardcoded area-specific tips', 'area tips must come from KB/RAG, not plugin fallback tables');
 expectNotContains(plugin, 'debugOverlay', 'dead debug overlay placeholder setting');
 expectNotContains(plugin, 'AI_Companion_DebugOverlay', 'dead debug overlay localStorage key');
+expectNotContains(plugin, 'asyncCombatEnabled', 'unsafe async combat placeholder setting');
+expectNotContains(plugin, 'AI_Companion_AsyncCombatEnabled', 'unsafe async combat localStorage key');
+expectNotContains(plugin, 'Combat Async', 'removed unsafe async combat path');
+expectNotContains(plugin, 'LLMAPIHandler.getDecision(battleState)', 'removed unsafe async combat path');
 expectNotContains(plugin, 'AmbientDialogue.onAutonomyIntent(action, target);', 'routine autonomy action chatter invocation');
 expectNotContains(plugin, 'AmbientDialogue.checkProactiveChat();', 'routine proactive object chatter invocation');
 expectNotContains(plugin, 'this._showBackgroundLootSummary(rewards);', 'routine background-loot chatter invocation');
-expectNotContains(plugin, "localStorage.getItem('AI_Companion_AsyncCombatEnabled') === 'true'", 'persisted async combat re-enable');
 expectNotContains(plugin, "{ role: 'assistant', content: '<think>", 'fake local combat thinking prefill');
 
 const itemPickupStart = plugin.indexOf('onItemPickup(item, source) {');
