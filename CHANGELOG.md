@@ -2,6 +2,19 @@
 
 All notable changes to the Fear & Hunger AI Companion plugin are tracked here.
 
+## Unreleased
+
+### Added
+
+- English and Spanish README files with current feature, setup, testing, and limitation details.
+- `CONTEXT.md` documenting thesis framing, domain vocabulary, truth priority, runtime modules, and design constraints.
+- `AGENTS.md` documenting agent workflow, static checks, live sync paths, log workflow, and repo rules.
+
+### Changed
+
+- Contribution guide now documents required static checks, runtime smoke testing, branch strategy, and repo hygiene rules.
+- Plugin audit branch removed stale placeholder config paths and the unsafe async combat path.
+
 ## 0.8.0-beta - 2026-05-03
 
 ### Added
