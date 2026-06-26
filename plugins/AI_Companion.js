@@ -1215,10 +1215,14 @@
 
     const VisionContext = {
         _lastGameplayFrame: null,
+        _lastSkipLogByReason: {},
 
         captureGameplayFrame(reason) {
             if (!Config.visionContextEnabled) return null;
-            if (!this._canCaptureGameplayScene()) return null;
+            if (!this._canCaptureGameplayScene()) {
+                this._lastGameplayFrame = null;
+                return null;
+            }
             try {
                 const capture = this._captureCanvas();
                 if (!capture || !capture.canvas || !capture.canvas.toDataURL) return null;
@@ -1241,7 +1245,8 @@
                 };
                 return this._lastGameplayFrame;
             } catch (e) {
-                Debug.warn('[Vision] canvas capture failed:', e.message);
+                this._lastGameplayFrame = null;
+                this._logSkip('capture', `capture_failed_${e.message || 'unknown'}`);
                 return null;
             }
         },
@@ -1291,7 +1296,11 @@
             if (!scene) return false;
             const isMap = typeof Scene_Map !== 'undefined' && scene instanceof Scene_Map;
             const isBattle = typeof Scene_Battle !== 'undefined' && scene instanceof Scene_Battle;
-            if (!isMap && !isBattle) return false;
+            if (isBattle) {
+                this._logSkip('capture', 'battle_vision_disabled');
+                return false;
+            }
+            if (!isMap) return false;
             if ($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
             return true;
         },
@@ -1324,9 +1333,19 @@
 
         async observe(playerMessage, context) {
             if (!Config.visionContextEnabled) return null;
+            if (context && context.in_battle) {
+                this._lastGameplayFrame = null;
+                this._logSkip(playerMessage, 'battle_vision_disabled');
+                return null;
+            }
             const frame = this._lastGameplayFrame;
             if (!frame || !frame.dataUrl) {
                 this._logSkip(playerMessage, 'no_gameplay_frame');
+                return null;
+            }
+            if (frame.inBattle !== !!(context && context.in_battle)) {
+                this._lastGameplayFrame = null;
+                this._logSkip(playerMessage, 'frame_context_changed');
                 return null;
             }
             const ageMs = Date.now() - frame.timestamp;
@@ -1441,13 +1460,18 @@
         },
 
         _logSkip(playerMessage, reason) {
+            const key = String(reason || 'unknown');
+            const now = Date.now();
+            this._lastSkipLogByReason = this._lastSkipLogByReason || {};
+            if (this._lastSkipLogByReason[key] && now - this._lastSkipLogByReason[key] < 10000) return;
+            this._lastSkipLogByReason[key] = now;
             ThesisLogger.log('vision', {
                 query: playerMessage,
                 skipped: true,
-                reason: reason,
+                reason: key,
                 source: 'local_vision'
             });
-            if (Config.debugMode) Debug.log('[Vision] skipped:', reason);
+            if (Config.debugMode) Debug.log('[Vision] skipped:', key);
         }
     };
 
