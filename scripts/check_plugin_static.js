@@ -117,6 +117,7 @@ expectNotContains(plugin, 'AmbientDialogue.onAutonomyIntent(action, target);', '
 expectNotContains(plugin, 'AmbientDialogue.checkProactiveChat();', 'routine proactive object chatter invocation');
 expectNotContains(plugin, 'this._showBackgroundLootSummary(rewards);', 'routine background-loot chatter invocation');
 expectNotContains(plugin, "{ role: 'assistant', content: '<think>", 'fake local combat thinking prefill');
+expectNotContains(plugin, "add(74, [156], 'container', 'light_source'", 'start-map torch/fog visual event must not be actionable light');
 
 const itemPickupStart = plugin.indexOf('onItemPickup(item, source) {');
 const itemPickupEnd = plugin.indexOf('async _generateItemComment', itemPickupStart);

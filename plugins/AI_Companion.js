@@ -1326,7 +1326,12 @@
                     headers: Config.getLocalHeaders(),
                     body: JSON.stringify(payload)
                 }), { skipIfBusy: true, drainMs: 1000 });
-                if (!resp || !resp.ok) throw new Error(resp ? `HTTP ${resp.status}` : 'no response');
+                if (!resp || !resp.ok) {
+                    let body = '';
+                    try { body = resp ? await resp.text() : ''; } catch (readError) { body = ''; }
+                    const detail = body ? `: ${body.replace(/\s+/g, ' ').substring(0, 240)}` : '';
+                    throw new Error(resp ? `HTTP ${resp.status}${detail}` : 'no response');
+                }
                 const data = await resp.json();
                 const content = data && data.choices && data.choices[0] && data.choices[0].message
                     ? String(data.choices[0].message.content || '').trim()
@@ -3584,7 +3589,6 @@ Reply with ONLY the category name, nothing else.`;
             add(74, [47], 'shop', 'merchant', 'Mercader');
             add(74, [102, 113, 114], 'enemy', 'moonless', 'Moonless', { danger: 'high' });
             add(74, [108, 109], 'container', 'hidden_loot', 'Contenedor');
-            add(74, [156], 'container', 'light_source', 'Luz apagada', { tags: ['container', 'light_source'] });
 
             return registry;
         },
@@ -10939,14 +10943,16 @@ Respond ONLY with this JSON:
             return 3;
         },
 
-        _compactHint(text) {
+        _compactHint(text, item) {
             const raw = String(text || '')
                 .replace(/\\c\[\d+\]/g, '')
                 .replace(/\s+/g, ' ')
                 .trim();
             if (!raw) return '';
             const lower = raw.toLowerCase();
-            if (/(yesquero|vela|farol|antorcha|encend|oscur|dark|light|torch|candle|lantern)/i.test(lower)) {
+            const itemText = String((item && (item.label || item.subtype || item.type)) || '').toLowerCase();
+            const targetIsLight = item && (item.subtype === 'light_source' || /luz apagada|unlit light|torch|antorcha|candle|vela|lantern|farol/.test(itemText));
+            if (targetIsLight && /(yesquero|vela|farol|antorcha|encend|oscur|dark|light|torch|candle|lantern)/i.test(lower)) {
                 return 'light-related interaction';
             }
             if (/(book|libro|estante|biblioteca|read|leer)/i.test(lower)) {
@@ -11068,7 +11074,7 @@ Respond ONLY with this JSON:
                     subtype: item.subtype,
                     npcName: item.npcName,
                     speakerName: item.speakerName,
-                    textHints: this._compactHint(item.textHints),
+                    textHints: this._compactHint(item.textHints, item),
                     danger: item.danger,
                     distance: item.distance,
                     direction: item.direction,
