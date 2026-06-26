@@ -1219,14 +1219,22 @@
         captureGameplayFrame(reason) {
             if (!Config.visionContextEnabled) return null;
             if (!this._canCaptureGameplayScene()) return null;
-            const canvas = (typeof Graphics !== 'undefined' && Graphics && Graphics._canvas) ? Graphics._canvas : null;
-            if (!canvas || !canvas.toDataURL) return null;
             try {
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.62);
+                const capture = this._captureCanvas();
+                if (!capture || !capture.canvas || !capture.canvas.toDataURL) return null;
+                const darkness = this._estimateDarkness(capture.canvas);
+                if (darkness >= 0.985) {
+                    this._lastGameplayFrame = null;
+                    this._logSkip('capture', `black_frame_${capture.method}`);
+                    return null;
+                }
+                const dataUrl = capture.canvas.toDataURL('image/jpeg', 0.62);
                 this._lastGameplayFrame = {
                     dataUrl: dataUrl,
                     timestamp: Date.now(),
                     reason: reason || 'gameplay',
+                    method: capture.method,
+                    darkness: darkness,
                     scene: SceneManager && SceneManager._scene && SceneManager._scene.constructor ? SceneManager._scene.constructor.name : 'unknown',
                     mapId: $gameMap ? $gameMap.mapId() : null,
                     inBattle: !!($gameParty && $gameParty.inBattle && $gameParty.inBattle())
@@ -1235,6 +1243,46 @@
             } catch (e) {
                 Debug.warn('[Vision] canvas capture failed:', e.message);
                 return null;
+            }
+        },
+
+        _captureCanvas() {
+            if (typeof Bitmap !== 'undefined' && Bitmap.snap && SceneManager && SceneManager._scene) {
+                const bitmap = Bitmap.snap(SceneManager._scene);
+                if (bitmap && bitmap._canvas) return { canvas: bitmap._canvas, method: 'Bitmap.snap' };
+            }
+            const canvas = (typeof Graphics !== 'undefined' && Graphics && Graphics._canvas) ? Graphics._canvas : null;
+            return canvas ? { canvas: canvas, method: 'Graphics._canvas' } : null;
+        },
+
+        _estimateDarkness(canvas) {
+            try {
+                const context = canvas.getContext && canvas.getContext('2d');
+                if (!context) return 0;
+                const w = canvas.width || 0;
+                const h = canvas.height || 0;
+                if (!w || !h) return 0;
+                const sampleW = Math.min(80, w);
+                const sampleH = Math.min(60, h);
+                const image = context.getImageData(
+                    Math.floor((w - sampleW) / 2),
+                    Math.floor((h - sampleH) / 2),
+                    sampleW,
+                    sampleH
+                );
+                const data = image.data || [];
+                let dark = 0;
+                let total = 0;
+                for (let i = 0; i < data.length; i += 4) {
+                    const alpha = data[i + 3];
+                    if (alpha < 16) continue;
+                    const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+                    if (brightness < 8) dark++;
+                    total++;
+                }
+                return total > 0 ? dark / total : 0;
+            } catch (e) {
+                return 0;
             }
         },
 
@@ -1340,6 +1388,8 @@
                 obs.model = model;
                 obs.latency_ms = Math.round(performance.now() - startedAt);
                 obs.frame_age_ms = ageMs;
+                obs.capture_method = frame.method || null;
+                obs.capture_darkness = frame.darkness;
                 obs.source = 'local_vision';
                 ThesisLogger.log('vision', {
                     query: playerMessage,
@@ -1350,6 +1400,8 @@
                     model_used: model,
                     latency_ms: obs.latency_ms,
                     frame_age_ms: obs.frame_age_ms,
+                    capture_method: obs.capture_method,
+                    capture_darkness: obs.capture_darkness,
                     source: obs.source
                 });
                 if (Config.debugMode) Debug.log('[Vision] Observation:', JSON.stringify(obs));
