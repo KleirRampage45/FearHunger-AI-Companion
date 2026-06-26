@@ -5,6 +5,7 @@ This file records whether each exposed config option changes runtime behavior.
 ## Hard Runtime Controls
 
 - `Provider`, `API key`, `Chat model`, `Local endpoint`, `Local model`: route chat/combat requests.
+- `Vision context`, `Vision model`: when enabled, visual chat questions can send the cached game canvas to a local vision-capable model. Empty vision model falls back to the local model id.
 - `Temperature`, `top_p`: used by chat/combat sampling through `Config.getSamplingOptions()`.
 - `top_k`: used only when local-compatible requests opt into top-k. Autonomy/autopilot currently use fixed local defaults.
 - `Name`, `appearance`, `personality`, `custom persona`, `backstory`, `voice/style`, `goals`, `rules`: injected into persona prompts when applicable.

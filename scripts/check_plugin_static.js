@@ -57,6 +57,7 @@ expectContains(plugin, 'const EnvironmentScanner = {', 'EnvironmentScanner modul
 expectContains(plugin, 'const StoryGoalMemory = {', 'StoryGoalMemory module');
 expectContains(plugin, 'const AutonomySystem = {', 'AutonomySystem module');
 expectContains(plugin, 'const ThesisLogger = {', 'ThesisLogger module');
+expectContains(plugin, 'const VisionContext = {', 'VisionContext module');
 expectContains(plugin, 'class LLMAPIHandler', 'provider-neutral LLM handler');
 expectContains(plugin, 'getCloudFallbackEndpoint()', 'centralized cloud fallback endpoint');
 expectContains(plugin, 'window.Scene_AIDebugLog = Scene_AIDebugLog;', 'AI Log scene export');
@@ -80,6 +81,15 @@ expectContains(plugin, '_combatExecutionSummary(decision)', 'authoritative comba
 expectContains(plugin, 'decision_reasoning_raw:', 'raw combat reasoning retained separately');
 expectContains(plugin, 'LIVE UPDATE: already destroyed', 'live destroyed-limb combat prompt update');
 expectContains(plugin, 'Your reasoning MUST describe the exact limb selected', 'combat reasoning limb consistency rule');
+expectContains(plugin, 'AI_Companion_VisionContextEnabled', 'vision context config persistence');
+expectContains(plugin, 'VISION OBSERVATION', 'vision prompt section');
+expectContains(plugin, 'image_url', 'local vision image payload');
+expectContains(plugin, '[CHAT]', 'AI Log chat label');
+expectContains(plugin, '[COMBAT]', 'AI Log combat label');
+expectContains(plugin, '[AUTONOMY]', 'AI Log autonomy label');
+expectContains(plugin, '[RAG]', 'AI Log RAG label');
+expectContains(plugin, '[VISION]', 'AI Log vision label');
+expectContains(plugin, '[ERROR]', 'AI Log error label');
 
 expectNotContains(plugin, 'David,', 'hardcoded player name David');
 expectNotContains(plugin, 'David.', 'hardcoded player name David');

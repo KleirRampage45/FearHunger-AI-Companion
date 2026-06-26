@@ -41,8 +41,9 @@ No incluye:
 - **Botín seguro en segundo plano**: ciertos eventos seguros pueden ejecutarse sin bloquear al jugador, con mensajes gab/toast y globos de iconos de objetos.
 - **Guardarraíles de consentimiento**: decisiones riesgosas, compras, cambios de equipo, curación/soporte y eventos sensibles pueden pedir aprobación.
 - **Hybrid RAG**: recuperación vectorial opcional sobre chunks curados en `data/rag/` para lore, personajes, finales, ubicaciones y conocimiento general.
+- **Contexto visual local opcional**: en preguntas visuales del chat, el plugin puede enviar el canvas del juego a un modelo local con visión e inyectar `VISION OBSERVATION` bajo el escáner vivo. La visión es evidencia secundaria; el estado vivo del juego tiene prioridad.
 - **Localización**: modo español/inglés para UI, etiquetas del escáner, prompts y contexto de chat.
-- **Visor Registro IA**: visor dentro del juego para eventos recientes de chat, combate, autonomía, errores, telemetría y debug.
+- **Visor Registro IA**: visor dentro del juego con etiquetas claras `[CHAT]`, `[COMBAT]`, `[AUTONOMY]`, `[RAG]`, `[VISION]` y `[ERROR]`.
 - **Logs JSONL persistentes**: logs estructurados en `<juego>/ai_companion_logs/` para depuración y análisis de tesis.
 - **Telemetría**: FPS, RAM del juego, CPU, latencia local, tokens y tokens por segundo.
 - **Modo autopilot de prueba**: harness LLM-only que controla al jugador para experimentos. Sirve para investigación/testing, no como forma normal de jugar.
@@ -70,6 +71,8 @@ top_k = 64
 ```
 
 Si usas Hybrid RAG, también debes correr un modelo de embeddings y configurar `/v1/embeddings`; ver [docs/HYBRID_RAG_SETUP.md](docs/HYBRID_RAG_SETUP.md).
+
+Si usas contexto visual, ejecuta un modelo local compatible con OpenAI y visión. Las llamadas de visión son solo locales y nunca usan Groq/OpenRouter.
 
 ## Instalación
 
@@ -104,7 +107,7 @@ Abre `Compañero IA` desde el menú de título.
 Secciones importantes:
 
 - `Personaje`: nombre, apariencia, clase, personalidad, trasfondo, voz/estilo, metas y reglas.
-- `Chat / Proveedor`: Groq/OpenRouter/local, modelo, endpoint y sampling.
+- `Chat / Proveedor`: Groq/OpenRouter/local, modelo, endpoint, sampling, contexto visual opcional y modelo local de visión.
 - `Autonomía`: heartbeat beta, radio de botín, permisos de puertas/NPCs, regreso por peligro y modelo local.
 - `RAG`: endpoint de recuperación, modelo de embeddings, cantidad de chunks, threshold, spoilers e idioma.
 - `Debug`: consola debug y telemetría FPS/RAM/CPU.

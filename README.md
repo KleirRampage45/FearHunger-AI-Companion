@@ -40,8 +40,9 @@ Not included:
 - **Background safe loot**: supported safe loot events can run without blocking player control, with gab/toast feedback and item-icon balloons.
 - **Consent guardrails**: risky choices, merchant purchases, equipment changes, healing/support item use, and story-sensitive events can require player approval.
 - **Hybrid RAG**: optional vector retrieval over curated `data/rag/` chunks for lore, characters, endings, locations, and broad game knowledge.
+- **Optional local vision context**: for visual chat questions, the plugin can send the cached game canvas to a local vision model and inject a `VISION OBSERVATION` section below live scanner data. Vision is secondary evidence; live game state wins on conflicts.
 - **Localization**: runtime Spanish/English mode for UI labels, scanner labels, prompt language, and chat context.
-- **AI Log viewer**: in-game recent log viewer for chat, combat, autonomy, errors, telemetry, and debug events.
+- **AI Log viewer**: in-game recent log viewer with obvious `[CHAT]`, `[COMBAT]`, `[AUTONOMY]`, `[RAG]`, `[VISION]`, and `[ERROR]` labels.
 - **Persistent JSONL logs**: structured runtime logs under `<game>/ai_companion_logs/` for thesis/debug analysis.
 - **Telemetry**: optional FPS, game memory, CPU, local request latency, token usage, and token-per-second logging.
 - **Autopilot test mode**: LLM-only player-control harness for experiments. It is useful for research/testing, not a polished normal-play feature.
@@ -69,6 +70,8 @@ top_k = 64
 ```
 
 If using Hybrid RAG, also run an embeddings model and configure `/v1/embeddings`; see [docs/HYBRID_RAG_SETUP.md](docs/HYBRID_RAG_SETUP.md).
+
+If using vision context, run a local OpenAI-compatible vision model. Vision calls are local-only and never fall back to Groq/OpenRouter.
 
 ## Installation
 
@@ -103,7 +106,7 @@ Open `AI Companion` from the title menu.
 Important sections:
 
 - `Character`: companion name, appearance, class, persona, custom backstory, voice/style, goals, and behavior rules.
-- `Chat / Provider`: Groq/OpenRouter/local provider, model, endpoint, and sampling settings.
+- `Chat / Provider`: Groq/OpenRouter/local provider, model, endpoint, sampling settings, optional vision context, and optional local vision model id.
 - `Autonomy`: beta companion heartbeat, looting radius, door/NPC permissions, return-on-danger behavior, and local model selection.
 - `RAG`: semantic retrieval endpoint, embeddings model, chunk limit, threshold, spoiler level, and language behavior.
 - `Debug`: debug console and FPS/RAM/CPU telemetry.

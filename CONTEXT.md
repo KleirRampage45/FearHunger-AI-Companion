@@ -19,6 +19,7 @@ The thesis framing matters: when possible, companion speech, goals, risky choice
 - **Risk**: live survival and combat danger summary from `RiskEvaluator`.
 - **Knowledge base**: deterministic curated game data in `FearHungerKB.js`.
 - **Hybrid RAG**: optional vector retrieval over curated chunks under `data/rag/`.
+- **Vision context**: optional local-only canvas vision observation for visual chat questions.
 - **Save-tied memory**: persistent facts, goals, transcript history, and story progress tied to the active save context.
 - **AI Log**: in-game recent-run log viewer.
 - **JSONL logs**: persisted runtime logs in `<game>/ai_companion_logs/session_*.jsonl`.
@@ -29,14 +30,15 @@ When systems disagree, use this order:
 
 1. Live combat state.
 2. Live map/perception state.
-3. Current party, inventory, equipment, statuses, and gold.
-4. Recent NPC dialogue and recent player conversation.
-5. Save-tied story memory.
-6. Curated KB.
-7. Hybrid RAG chunks.
-8. Persona/style instructions.
+3. Optional local vision observation from the game canvas.
+4. Current party, inventory, equipment, statuses, and gold.
+5. Recent NPC dialogue and recent player conversation.
+6. Save-tied story memory.
+7. Curated KB.
+8. Hybrid RAG chunks.
+9. Persona/style instructions.
 
-RAG and KB are background knowledge. They must not claim that something is visible, alive, nearby, equipped, or owned unless live state confirms it.
+Vision can help identify what the canvas appears to show, but it is secondary to live scanner/combat state. RAG and KB are background knowledge. They must not claim that something is visible, alive, nearby, equipped, or owned unless live state or the explicitly marked vision observation confirms it.
 
 ## Runtime Modules
 
@@ -49,6 +51,7 @@ RAG and KB are background knowledge. They must not claim that something is visib
 - `StoryGoalMemory`: save-tied progression and goal memory.
 - `NPCIntelligence`: recent NPC contact/dialogue tracking.
 - `ChatSystem` / `Scene_AIChat`: chat UI, prompt assembly, transcript, and grounded response validation.
+- `VisionContext`: optional cached canvas capture and local vision observation for visual chat questions.
 - `AutonomySystem`: optional local companion autonomy.
 - `PlayerAutopilot`: LLM-only test harness for full-player-control experiments.
 - `AINotificationOverlay`: non-blocking gab/toast/icon feedback for AI actions.

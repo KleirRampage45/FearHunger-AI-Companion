@@ -92,6 +92,23 @@ Expected:
 - English replies should use English labels.
 - Broad navigation questions should use live map/story context, not unrelated RAG chunks.
 
+## Vision Context Smoke Test
+
+1. Start a local OpenAI-compatible vision model.
+2. In `AI Companion > Chat / Model`, enable `Vision context` and set `Vision model` if it differs from the local chat model.
+3. Load a map or battle, press `C`, and ask:
+
+```text
+¿Qué ves alrededor?
+Is there danger on screen?
+```
+
+Expected:
+
+- The prompt includes `VISION OBSERVATION` only when a local vision response succeeds.
+- `AI Log` shows a `[VISION]` row with summary/risk/confidence or a skip/error reason.
+- The final answer treats vision as secondary and does not contradict live scanner/combat state.
+
 ## Automated Harness
 
 The CDP harness lives in `test-automation/`.

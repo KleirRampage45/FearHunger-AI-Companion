@@ -160,6 +160,8 @@
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
+        visionContextEnabled: localStorage.getItem('AI_Companion_VisionContextEnabled') === 'true',
+        visionModel: localStorage.getItem('AI_Companion_VisionModel') || '',
         // Cached free models from OpenRouter
         _cachedFreeModels: JSON.parse(localStorage.getItem('AI_Companion_FreeModels') || '[]'),
         _freeModelsFetchedAt: Number(localStorage.getItem('AI_Companion_FreeModelsFetchedAt') || '0'),
@@ -366,6 +368,26 @@
             localStorage.setItem('AI_Companion_LocalModel', this.localModel);
             if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
                 ThesisLogger.log('config_change', { key: 'local_model', value: this.localModel });
+            }
+        },
+
+        getVisionModel() {
+            return String(this.visionModel || this.localModel || '').trim();
+        },
+
+        setVisionContextEnabled(on) {
+            this.visionContextEnabled = !!on;
+            localStorage.setItem('AI_Companion_VisionContextEnabled', this.visionContextEnabled ? 'true' : 'false');
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'vision_context', value: this.visionContextEnabled ? 'on' : 'off' });
+            }
+        },
+
+        setVisionModel(model) {
+            this.visionModel = String(model || '').trim();
+            localStorage.setItem('AI_Companion_VisionModel', this.visionModel);
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'vision_model', value: this.visionModel });
             }
         },
 
@@ -1191,6 +1213,187 @@
         }
     };
 
+    const VisionContext = {
+        _lastGameplayFrame: null,
+
+        captureGameplayFrame(reason) {
+            if (!Config.visionContextEnabled) return null;
+            if (!this._canCaptureGameplayScene()) return null;
+            const canvas = (typeof Graphics !== 'undefined' && Graphics && Graphics._canvas) ? Graphics._canvas : null;
+            if (!canvas || !canvas.toDataURL) return null;
+            try {
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.62);
+                this._lastGameplayFrame = {
+                    dataUrl: dataUrl,
+                    timestamp: Date.now(),
+                    reason: reason || 'gameplay',
+                    scene: SceneManager && SceneManager._scene && SceneManager._scene.constructor ? SceneManager._scene.constructor.name : 'unknown',
+                    mapId: $gameMap ? $gameMap.mapId() : null,
+                    inBattle: !!($gameParty && $gameParty.inBattle && $gameParty.inBattle())
+                };
+                return this._lastGameplayFrame;
+            } catch (e) {
+                Debug.warn('[Vision] canvas capture failed:', e.message);
+                return null;
+            }
+        },
+
+        _canCaptureGameplayScene() {
+            const scene = SceneManager && SceneManager._scene;
+            if (!scene) return false;
+            const isMap = typeof Scene_Map !== 'undefined' && scene instanceof Scene_Map;
+            const isBattle = typeof Scene_Battle !== 'undefined' && scene instanceof Scene_Battle;
+            if (!isMap && !isBattle) return false;
+            if ($gameMessage && $gameMessage.isBusy && $gameMessage.isBusy()) return false;
+            return true;
+        },
+
+        _visualReferencePrompt(context) {
+            const live = context && context.nearby_observation && context.nearby_observation.pointsOfInterest
+                ? context.nearby_observation.pointsOfInterest.slice(0, 10).map(p => `${p.label || p.type} (${p.type || 'unknown'}, ${p.distance} tiles ${p.direction || ''})`).join('; ')
+                : '';
+            const battle = context && context.battle_state && context.battle_state.enemies
+                ? context.battle_state.enemies.map(e => `${e.name} limbs:${(e.limbs || []).map(l => `${l.name}:${l.alive ? 'up' : 'down'}`).join(',')}`).join('; ')
+                : '';
+            return [
+                'VISUAL REFERENCE DATABASE (short descriptions; use only as identification hints, not proof of presence):',
+                '- D’arce: armored short-haired woman, knight look, pale armor.',
+                '- Cahara: slim mercenary man, long pale or blue-tinted hair, light clothes.',
+                '- Enki: dark priest, hooded or robed occult scholar.',
+                '- Ragnvaldr: large rugged outlander, red/brown hair, fur or hunter look.',
+                '- The Girl: small child, muted clothing, frail posture.',
+                '- Le’garde: blond knight prisoner or noble soldier.',
+                '- Buckman: captive or prisoner NPC, human survivor.',
+                '- Guard: large grey/pale humanoid prison guard, muscular, apron/loincloth, cleaver or stinger.',
+                '- Maneba: fleshy crawling monster, low to the ground.',
+                '- Cave gnome: small hostile cave creature.',
+                '- Crow Mauler: tall crow-headed stalker with weapon.',
+                '- Crate/barrel/chest/bookshelf/door/candle/lever/trap/ritual circle: common interactables; prefer live scanner labels when available.',
+                live ? `LIVE SCANNER CANDIDATES: ${live}` : 'LIVE SCANNER CANDIDATES: none supplied.',
+                battle ? `LIVE BATTLE CANDIDATES: ${battle}` : 'LIVE BATTLE CANDIDATES: none supplied.'
+            ].join('\n');
+        },
+
+        async observe(playerMessage, context) {
+            if (!Config.visionContextEnabled) return null;
+            const frame = this._lastGameplayFrame;
+            if (!frame || !frame.dataUrl) {
+                this._logSkip(playerMessage, 'no_gameplay_frame');
+                return null;
+            }
+            const ageMs = Date.now() - frame.timestamp;
+            if (ageMs > 120000) {
+                this._logSkip(playerMessage, 'stale_gameplay_frame');
+                return null;
+            }
+            const endpoint = Config.getLocalEndpoint();
+            const model = Config.getVisionModel();
+            if (!endpoint || !model) {
+                this._logSkip(playerMessage, 'no_local_vision_model');
+                return null;
+            }
+            const system = [
+                'You are a local vision module for Fear & Hunger.',
+                'Vision is secondary. Trust live game state first.',
+                'Describe only what is visible in the game canvas image.',
+                'Do not infer hidden enemies, lore, motives, or off-screen objects.',
+                'Use the visual reference database only to match visible shapes to likely names.',
+                'Return compact JSON only: {"summary":"...","identified":["..."],"risk":"none|low|medium|high","confidence":"low|medium|high"}.'
+            ].join(' ');
+            const prompt = [
+                `Player visual question: ${String(playerMessage || '').substring(0, 220)}`,
+                this._visualReferencePrompt(context)
+            ].join('\n\n');
+            const payload = Object.assign({
+                model: model,
+                messages: [
+                    { role: 'system', content: system },
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: prompt },
+                            { type: 'image_url', image_url: { url: frame.dataUrl } }
+                        ]
+                    }
+                ],
+                max_tokens: 180,
+                enable_thinking: false
+            }, Config.getSamplingOptions({ temperature: 0.2, top_p: 0.9 }, { includeTopK: false }));
+            const startedAt = performance.now();
+            try {
+                const resp = await LocalRequestQueue.runLocalOptional('vision_context', () => fetch(endpoint, {
+                    method: 'POST',
+                    headers: Config.getLocalHeaders(),
+                    body: JSON.stringify(payload)
+                }), { skipIfBusy: true, drainMs: 1000 });
+                if (!resp || !resp.ok) throw new Error(resp ? `HTTP ${resp.status}` : 'no response');
+                const data = await resp.json();
+                const content = data && data.choices && data.choices[0] && data.choices[0].message
+                    ? String(data.choices[0].message.content || '').trim()
+                    : '';
+                const obs = this._parseObservation(content);
+                obs.model = model;
+                obs.latency_ms = Math.round(performance.now() - startedAt);
+                obs.frame_age_ms = ageMs;
+                obs.source = 'local_vision';
+                ThesisLogger.log('vision', {
+                    query: playerMessage,
+                    summary: obs.summary,
+                    identified: obs.identified,
+                    risk: obs.risk,
+                    confidence: obs.confidence,
+                    model_used: model,
+                    latency_ms: obs.latency_ms,
+                    frame_age_ms: obs.frame_age_ms,
+                    source: obs.source
+                });
+                if (Config.debugMode) Debug.log('[Vision] Observation:', JSON.stringify(obs));
+                return obs;
+            } catch (e) {
+                Debug.warn('[Vision] local request failed:', e.message);
+                ThesisLogger.log('vision', {
+                    query: playerMessage,
+                    error: e.message,
+                    model_used: model,
+                    latency_ms: Math.round(performance.now() - startedAt),
+                    source: 'local_vision'
+                });
+                return null;
+            }
+        },
+
+        _parseObservation(content) {
+            const clean = String(content || '').replace(/```json|```/g, '').trim();
+            let parsed = null;
+            try { parsed = JSON.parse(clean); } catch (e) { parsed = null; }
+            if (!parsed || typeof parsed !== 'object') {
+                return {
+                    summary: clean.substring(0, 240),
+                    identified: [],
+                    risk: 'unknown',
+                    confidence: 'low'
+                };
+            }
+            const identified = Array.isArray(parsed.identified) ? parsed.identified.map(v => String(v)).filter(Boolean).slice(0, 8) : [];
+            return {
+                summary: String(parsed.summary || '').replace(/\s+/g, ' ').trim().substring(0, 240),
+                identified: identified,
+                risk: String(parsed.risk || 'unknown'),
+                confidence: String(parsed.confidence || 'low')
+            };
+        },
+
+        _logSkip(playerMessage, reason) {
+            ThesisLogger.log('vision', {
+                query: playerMessage,
+                skipped: true,
+                reason: reason,
+                source: 'local_vision'
+            });
+            if (Config.debugMode) Debug.log('[Vision] skipped:', reason);
+        }
+    };
+
     //=========================================================================
     // Thesis Logger — Persistent telemetry for research data collection
     //=========================================================================
@@ -1325,7 +1528,10 @@
                 fear_state: true,
                 fear_recovery: true,
                 game_event: true,
-                performance: true
+                performance: true,
+                rag_retrieval: true,
+                vision: true,
+                error: true
             };
             if (!keepTypes[entry._type]) return;
             this._recent.push(entry);
@@ -1338,42 +1544,66 @@
         },
 
         _shortReason(entry) {
-            const value = entry.reason || entry.error || entry.text || entry.candidate_text || entry.event || '';
+            const value = entry.reason || entry.error || entry.summary || entry.text || entry.candidate_text || entry.event || '';
             return String(value || '').replace(/\s+/g, ' ').substring(0, 96);
+        },
+
+        _labelForType(type) {
+            if (type === 'autonomy_tick') return 'AUTONOMY';
+            if (type === 'autopilot_tick') return 'AUTOPILOT';
+            if (type === 'combat_decision') return 'COMBAT';
+            if (type === 'rag_retrieval') return 'RAG';
+            if (type === 'vision') return 'VISION';
+            if (type === 'chat') return 'CHAT';
+            if (type === 'performance') return 'PERF';
+            if (type === 'game_event') return 'EVENT';
+            if (type === 'ambient_thought') return 'AMBIENT';
+            if (type === 'fear_state' || type === 'fear_recovery') return 'FEAR';
+            return String(type || 'LOG').toUpperCase();
         },
 
         formatRecentLine(entry) {
             const t = Math.floor((entry.session_time_ms || 0) / 1000);
+            if (entry.error || entry._type === 'error') {
+                return `[${t}s] [ERROR][${this._labelForType(entry._type)}] ${this._shortReason(entry)}`;
+            }
             if (entry._type === 'autonomy_tick') {
                 const action = entry.action || 'NONE';
                 const id = entry.event_id != null ? ` #${entry.event_id}` : '';
                 const source = entry.source ? ` ${entry.source}` : '';
-                return `[${t}s] AUTO ${action}${id}${source}: ${this._shortReason(entry)}`;
+                return `[${t}s] [AUTONOMY] ${action}${id}${source}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'autopilot_tick') {
                 const action = entry.action || entry.kind || 'NONE';
                 const id = entry.event_id != null ? ` #${entry.event_id}` : '';
-                return `[${t}s] PILOT ${action}${id}: ${this._shortReason(entry)}`;
+                return `[${t}s] [AUTOPILOT] ${action}${id}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'combat_decision') {
-                return `[${t}s] COMBAT ${entry.action || '?'} ${entry.target || ''} ${entry.limb || ''}: ${this._shortReason(entry)}`;
+                return `[${t}s] [COMBAT] ${entry.action || '?'} ${entry.target || ''} ${entry.limb || ''}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'chat') {
-                return `[${t}s] CHAT ${entry.error ? 'ERR' : 'OK'}: ${this._shortReason(entry)}`;
+                return `[${t}s] [CHAT] ${entry.response_source || 'OK'}: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'rag_retrieval') {
+                return `[${t}s] [RAG] ${entry.retrieved_count || 0} chunks: ${this._shortReason(entry)}`;
+            }
+            if (entry._type === 'vision') {
+                const status = entry.skipped ? 'SKIP' : (entry.confidence || 'OK');
+                return `[${t}s] [VISION] ${status}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'ambient_thought') {
-                return `[${t}s] THOUGHT ${entry.speak ? 'speak' : 'skip'}: ${this._shortReason(entry)}`;
+                return `[${t}s] [AMBIENT] ${entry.speak ? 'speak' : 'skip'}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'fear_state' || entry._type === 'fear_recovery') {
-                return `[${t}s] FEAR ${entry.level || entry.recovery || ''}: ${this._shortReason(entry)}`;
+                return `[${t}s] [FEAR] ${entry.level || entry.recovery || ''}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'game_event') {
-                return `[${t}s] EVENT ${entry.event || ''}: ${this._shortReason(entry)}`;
+                return `[${t}s] [EVENT] ${entry.event || ''}: ${this._shortReason(entry)}`;
             }
             if (entry._type === 'performance') {
-                return `[${t}s] PERF ${entry.avg_fps || '?'}fps worst ${entry.max_frame_ms || '?'}ms: ${this._shortReason(entry)}`;
+                return `[${t}s] [PERF] ${entry.avg_fps || '?'}fps worst ${entry.max_frame_ms || '?'}ms: ${this._shortReason(entry)}`;
             }
-            return `[${t}s] ${entry._type}: ${this._shortReason(entry)}`;
+            return `[${t}s] [${this._labelForType(entry._type)}] ${this._shortReason(entry)}`;
         },
 
         /**
@@ -7334,8 +7564,8 @@ Respond ONLY with this JSON:
         if (section === 'chat') {
             drawLine(`Chat: ${(PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider)} / ${chatModel}`, 0);
             drawLine(`${apiStatus} | local: ${short(Config.localModel, 36)}`, 1);
-            drawLine(`temp ${Config.chatTemperature} | top_p ${Config.chatTopP} | top_k ${Config.chatTopK || 'off'}`, 2);
-            drawLine(`${es ? 'Endpoint local' : 'Local endpoint'}: ${short(Config.localEndpoint, 72)}`, 3);
+            drawLine(`temp ${Config.chatTemperature} | top_p ${Config.chatTopP} | top_k ${Config.chatTopK || 'off'} | vision ${Config.visionContextEnabled ? 'ON' : 'OFF'}`, 2);
+            drawLine(`${es ? 'Vision' : 'Vision'}: ${short(Config.getVisionModel() || 'local model', 26)} | ${es ? 'Endpoint local' : 'Local endpoint'}: ${short(Config.localEndpoint, 42)}`, 3);
         } else if (section === 'autonomy') {
             drawLine(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'} | ${es ? 'modelo' : 'model'}: ${autonomyModel}`, 0);
             drawLine(`${es ? 'Pulso' : 'Heartbeat'} ${Config.autonomyTickSeconds}s | ${es ? 'perfil' : 'profile'} ${Config.autonomyBehaviorProfile} | ${es ? 'botín' : 'loot'} ${Config.autonomyLootRadius}`, 1);
@@ -7409,6 +7639,8 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('setModel', this.commandSetModel.bind(this));
         this._commandWindow.setHandler('editLocalEndpoint', this.commandEditLocalEndpoint.bind(this));
         this._commandWindow.setHandler('editLocalModel', this.commandEditLocalModel.bind(this));
+        this._commandWindow.setHandler('toggleVisionContext', this.commandToggleVisionContext.bind(this));
+        this._commandWindow.setHandler('editVisionModel', this.commandEditVisionModel.bind(this));
         this._commandWindow.setHandler('setTemperature', this.commandSetTemperature.bind(this));
         this._commandWindow.setHandler('setTopP', this.commandSetTopP.bind(this));
         this._commandWindow.setHandler('setTopK', this.commandSetTopK.bind(this));
@@ -7569,6 +7801,9 @@ Respond ONLY with this JSON:
                     break;
                 case 'localModel':
                     Config.setLocalModel(text);
+                    break;
+                case 'visionModel':
+                    Config.setVisionModel(text);
                     break;
                 case 'ragEndpoint':
                     Config.setHybridRagEndpoint(text);
@@ -7772,6 +8007,18 @@ Respond ONLY with this JSON:
         const es = Config.language === 'es';
         this._openTextInput('localModel', es ? 'Modelo local' : 'Local model', Config.localModel,
             es ? 'Pega el ID exacto del modelo local cargado.' : 'Paste the exact loaded local model ID.');
+    };
+
+    Scene_AIConfig.prototype.commandToggleVisionContext = function () {
+        Config.setVisionContextEnabled(!Config.visionContextEnabled);
+        SoundManager.playOk();
+        this._refreshConfigScene(`Vision context: ${Config.visionContextEnabled ? 'ON' : 'OFF'}`);
+    };
+
+    Scene_AIConfig.prototype.commandEditVisionModel = function () {
+        const es = Config.language === 'es';
+        this._openTextInput('visionModel', es ? 'Modelo vision' : 'Vision model', Config.visionModel,
+            es ? 'Pega el ID del modelo local con vision. Si queda vacío usa el modelo local de chat.' : 'Paste a local vision-capable model ID. Leave empty to use the local chat model.');
     };
 
     Scene_AIConfig.prototype.commandSetTemperature = function () {
@@ -8053,6 +8300,8 @@ Respond ONLY with this JSON:
             this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
             this.addCommand(es ? 'Editar endpoint local' : 'Edit local endpoint', 'editLocalEndpoint');
             this.addCommand(es ? 'Editar modelo local' : 'Edit local model', 'editLocalModel');
+            this.addCommand(`${es ? 'Contexto visual' : 'Vision context'}: ${Config.visionContextEnabled ? 'ON' : 'OFF'}`, 'toggleVisionContext');
+            this.addCommand(`${es ? 'Modelo vision' : 'Vision model'}: ${short(Config.getVisionModel() || 'local model', 30)}`, 'editVisionModel');
             this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
             this.addCommand(`top_p: ${Config.chatTopP}`, 'setTopP');
             this.addCommand(`top_k: ${Config.chatTopK || 'off'} (${es ? 'solo local compatible' : 'local-compatible only'})`, 'setTopK');
@@ -8153,6 +8402,8 @@ Respond ONLY with this JSON:
             setModel: es ? 'Cambia el modelo usado para chat y rol.' : 'Cycle the model used for chat and roleplay.',
             editLocalEndpoint: es ? 'Configura un endpoint local compatible OpenAI.' : 'Configure an OpenAI-compatible local endpoint.',
             editLocalModel: es ? 'Configura el ID del modelo local cargado.' : 'Configure the loaded local model ID.',
+            toggleVisionContext: es ? 'Activa captura del canvas y consulta a un modelo local de vision para preguntas visuales.' : 'Enable canvas capture and local vision model calls for visual questions.',
+            editVisionModel: es ? 'Modelo local con vision. Si queda vacío usa el modelo local principal.' : 'Local vision-capable model. Empty uses the main local model.',
             setTemperature: es ? 'Controla creatividad del modelo.' : 'Control model creativity.',
             setTopP: es ? 'Controla muestreo nucleus/top_p.' : 'Control nucleus/top_p sampling.',
             setTopK: es ? 'Controla muestreo top_k; 0 lo desactiva.' : 'Control top_k sampling; 0 disables it.',
@@ -8912,12 +9163,22 @@ Respond ONLY with this JSON:
             lines.push(`${key}: ${String(value).replace(/\s+/g, ' ').substring(0, 140)}`);
         };
         push('type', entry._type);
+        if (ThesisLogger && ThesisLogger._labelForType) push('label', ThesisLogger._labelForType(entry._type));
         push('time', Math.floor((entry.session_time_ms || 0) / 1000) + 's');
         push('map', `${entry.map_name || ''} ${entry.map_id != null ? '#' + entry.map_id : ''}`);
         push('action', entry.action);
         push('event_id', entry.event_id);
         push('source', entry.source);
         push('model', entry.model_used);
+        push('latency_ms', entry.latency_ms);
+        push('query', entry.query || entry.player_message);
+        push('summary', entry.summary);
+        push('identified', entry.identified && entry.identified.join ? entry.identified.join(', ') : entry.identified);
+        push('risk', entry.risk);
+        push('confidence', entry.confidence);
+        push('retrieved_count', entry.retrieved_count);
+        push('rag_chunks', entry.chunks && entry.chunks.map ? entry.chunks.map(c => c.title || c.id).slice(0, 5).join(', ') : '');
+        push('skipped', entry.skipped ? 'true' : '');
         push('reason', entry.reason);
         push('error', entry.error);
         push('text', entry.text || entry.candidate_text);
@@ -12951,7 +13212,15 @@ Respond ONLY with this JSON:
             nearbyEnemyLabels.forEach(name => { allowedNearby[this._normalizeLookupText(name)] = true; });
 
             if (this._isVisionQuery(playerMessage)) {
-                const invalidEnemyMention = mentionedEnemies.some(name => !allowedNearby[this._normalizeLookupText(name)]);
+                const vision = context && context.vision_observation;
+                const visionAllowed = {};
+                if (vision && vision.confidence !== 'low' && Array.isArray(vision.identified)) {
+                    vision.identified.forEach(name => { visionAllowed[this._normalizeLookupText(name)] = true; });
+                }
+                const invalidEnemyMention = mentionedEnemies.some(name => {
+                    const key = this._normalizeLookupText(name);
+                    return !allowedNearby[key] && !visionAllowed[key];
+                });
                 if (invalidEnemyMention) {
                     return { text: '', changed: true, reason: 'vision_ungrounded_enemy' };
                 }
@@ -13081,6 +13350,16 @@ Respond ONLY with this JSON:
                 pushSection('RETRIEVED KNOWLEDGE', HybridRAG.formatForPrompt(ragResults));
             }
 
+            if (context.vision_observation && context.vision_observation.summary) {
+                const vision = context.vision_observation;
+                pushSection('VISION OBSERVATION', [
+                    `Secondary local vision result: ${vision.summary}`,
+                    `Identified: ${(vision.identified || []).join(', ') || 'none'}`,
+                    `Risk: ${vision.risk || 'unknown'}; confidence: ${vision.confidence || 'low'}`,
+                    'Vision is secondary. Trust LIVE NEARBY DETECTION, LIVE BATTLE CANDIDATES, and game state first.'
+                ]);
+            }
+
             pushSection('MODE INSTRUCTIONS', this._buildInstructions(intent));
 
             if (context.party_members && context.party_members.length > 0) {
@@ -13124,7 +13403,7 @@ Respond ONLY with this JSON:
 
             let playerSection = `The player says: "${playerMessage}"\n`;
             if (this._isVisionQuery(playerMessage)) {
-                playerSection += `VISION QUERY RULE: Answer ONLY from LIVE NEARBY DETECTION above. If LIVE NEARBY DETECTION is empty, say you do not see anything notable right now. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
+                playerSection += `VISION QUERY RULE: Use LIVE NEARBY DETECTION and LIVE BATTLE CANDIDATES first. If VISION OBSERVATION is present, use it only as secondary visual evidence. If these sources disagree, trust live game state and say the visual evidence is uncertain. Do NOT use STATIC LOCATION KNOWLEDGE, lore, tips, rumors, or past chat to claim a current sighting.\n`;
             }
             if (this._isNpcRecallQuery(playerMessage)) {
                 playerSection += `NPC RECALL RULE: Use RECENT NPC DIALOGUE and RECENT NPC CONTACT to name who just spoke to us. Mention the speaker explicitly by name.\n`;
@@ -13150,6 +13429,10 @@ Respond ONLY with this JSON:
 
         open() {
             if ($gameMessage.isBusy()) return; // Allow in battle now
+
+            if (typeof VisionContext !== 'undefined' && VisionContext.captureGameplayFrame) {
+                VisionContext.captureGameplayFrame('chat_open');
+            }
 
             this._active = true;
             // Disable player movement
@@ -13375,6 +13658,7 @@ Respond ONLY with this JSON:
                 // Spatial awareness from EnvironmentScanner
                 nearby_objects: EnvironmentScanner.getSummary(),
                 nearby_observation: nearbyObservation,
+                vision_observation: null,
                 dynamic_hazards: dynamicHazards,
                 world_state: WorldStateEngine.getWorldSummary(),
                 risk_assessment: RiskEvaluator.getPromptSummary(riskBattleState),
@@ -13434,6 +13718,10 @@ Respond ONLY with this JSON:
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
             this._normalizeIntentForRecruitmentQuery(playerMessage, intent);
             this._normalizeIntentForContainerQuery(playerMessage, context, intent);
+
+            if (this._isVisionQuery(playerMessage)) {
+                context.vision_observation = await VisionContext.observe(playerMessage, context);
+            }
 
             if (Config.debugMode) {
                 Debug.log('[Chat] Intent:', JSON.stringify({ types: intent.types, primary: intent.primary, entities: intent.entities.map(e => e.name + ':' + e.status), confidence: intent.confidence }));
@@ -13653,8 +13941,9 @@ CRITICAL GAME RULES (NEVER violate these):
 - Stats can only be raised via gear, items (Blue vials), or the Human Hydra with Ring of Wraiths.
 - The game saves ONLY at ritual circles. Death is permanent.
 - STATIC LOCATION KNOWLEDGE is background lore/tips about an area. It is NOT proof that something is currently visible right now.
-- LIVE NEARBY DETECTION is the ONLY source for claims like "I can see...", "near us right now", or "what is around us".
-- Never turn area lore, tips, or rumors into a current sighting. If LIVE NEARBY DETECTION does not mention an NPC, enemy, or object, do NOT claim you can currently see it.
+- LIVE NEARBY DETECTION is the strongest source for claims like "I can see...", "near us right now", or "what is around us".
+- VISION OBSERVATION, when present, is secondary local image evidence. If it conflicts with live scanner/game state, trust live game state first.
+- Never turn area lore, tips, or rumors into a current sighting. If neither LIVE NEARBY DETECTION nor VISION OBSERVATION mentions an NPC, enemy, or object, do NOT claim you can currently see it.
 - Never invent visual details such as age, scars, clothing, beard, gender, count, or exact position unless those details are explicitly present in the provided context.
 `;
 

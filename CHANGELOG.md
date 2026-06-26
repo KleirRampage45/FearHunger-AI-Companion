@@ -9,6 +9,8 @@ All notable changes to the Fear & Hunger AI Companion plugin are tracked here.
 - English and Spanish README files with current feature, setup, testing, and limitation details.
 - `CONTEXT.md` documenting thesis framing, domain vocabulary, truth priority, runtime modules, and design constraints.
 - `AGENTS.md` documenting agent workflow, static checks, live sync paths, log workflow, and repo rules.
+- Optional local-only vision context for visual chat questions. It captures the game canvas before chat opens, sends it only to a configured local vision model, and injects a `VISION OBSERVATION` prompt section below live scanner data.
+- Clear AI Log labels for `[CHAT]`, `[COMBAT]`, `[AUTONOMY]`, `[RAG]`, `[VISION]`, and `[ERROR]`.
 
 ### Changed
 

@@ -4,10 +4,11 @@ This document is a current high-level map of the mod internals. It is not a bran
 
 ## Runtime Modules
 
-- `Config`: provider, language, model, persona, autonomy, RAG, and debug settings.
+- `Config`: provider, language, model, persona, autonomy, RAG, vision, and debug settings.
 - `ThesisLogger`: writes structured JSONL sessions to `<game>/ai_companion_logs/session_*.jsonl`.
 - `FearHungerKB`: curated deterministic knowledge for enemies, items, statuses, areas, and mechanics.
 - `HybridRAG`: optional vector retrieval over `data/rag/` chunks for broad lore/NPC/location questions.
+- `VisionContext`: optional local-only game-canvas capture for visual chat questions; returns a secondary `VISION OBSERVATION`.
 - `IntentDetector`: regex-first intent classifier with optional local LLM fallback.
 - `EnvironmentScanner`: scans current map events and produces player-facing nearby objects, hazards, NPCs, enemies, doors, and containers.
 - `WorldStateEngine`: summarizes party, resources, threats, situation, and current map context.
@@ -26,14 +27,15 @@ When multiple systems disagree, prompts and validators should treat sources in t
 
 1. Live combat state.
 2. Live map/perception state.
-3. Current party, inventory, equipment, and statuses.
-4. Recent NPC dialogue and recent player conversation.
-5. Save-tied story memory.
-6. Curated structured KB.
-7. Hybrid RAG chunks.
-8. Style/personality instructions.
+3. Optional local vision observation from the captured game canvas.
+4. Current party, inventory, equipment, and statuses.
+5. Recent NPC dialogue and recent player conversation.
+6. Save-tied story memory.
+7. Curated structured KB.
+8. Hybrid RAG chunks.
+9. Style/personality instructions.
 
-Hybrid RAG is background knowledge. It must not be treated as proof that an NPC, enemy, item, or event is currently visible.
+Vision is useful for missed visual details, but it can hallucinate UI/art and must stay secondary to live scanner/combat state. Hybrid RAG is background knowledge and must not be treated as proof that an NPC, enemy, item, or event is currently visible.
 
 ## Provider Flow
 
