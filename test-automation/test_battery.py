@@ -576,6 +576,15 @@ def vision_runtime_contract(game, state, vision):
         actorKeys: [1,2,3,4,5,6,7,8,9,11,14,16,19].map(actorId =>
             AI_Companion.CharacterPresets.getVisualKeyForActor({actorId:() => actorId})
         ),
+        map74Keys: AI_Companion.HybridRAG.getVisualKeysForScene({mapId:74,sceneKind:'map'}),
+        destroyedClaim: AI_Companion.ChatSystem._destroyedLimbClaims(
+            'Ataquemos el brazo con el cuchillo; sigue siendo peligroso.',
+            {in_battle:true,battle_state:{enemies:[{name:'Guard',limbs:{'left arm':{alive:false},torso:{alive:true}}}]}}
+        ).length,
+        destroyedAbsence: AI_Companion.ChatSystem._destroyedLimbClaims(
+            'El brazo con el cuchillo está destruido; ataquemos el torso.',
+            {in_battle:true,battle_state:{enemies:[{name:'Guard',limbs:{'left arm':{alive:false},torso:{alive:true}}}]}}
+        ).length,
         legacyParse: (() => {
             const parsed = AI_Companion.VisionContext._parseObservation(JSON.stringify({
                 summary:'bright stone courtyard', identified:[], confidence:'high', risk:'none'
@@ -606,6 +615,9 @@ def vision_runtime_contract(game, state, vision):
     checks.append(_check(api.get("allAppearancesMapped"), "Every selectable appearance has a visual identity key"))
     actor_keys = api.get("actorKeys") or []
     checks.append(_check(all(actor_keys), "All standard party actor IDs map to visual identities"))
+    checks.append(_check("dead_horse" in (api.get("map74Keys") or []), "Starting map supplies dead-horse visual profile"))
+    checks.append(_check(api.get("destroyedClaim") == 1, "Impossible destroyed-limb attack claim detected"))
+    checks.append(_check(api.get("destroyedAbsence") == 0, "Accurate missing-limb description remains allowed"))
     legacy = api.get("legacyParse") or {}
     checks.append(_check(legacy.get("schema") == "legacy_v1", "Legacy vision response schema recognized"))
     checks.append(_check(legacy.get("environment") == 1, "Legacy vision summary retained as environment"))

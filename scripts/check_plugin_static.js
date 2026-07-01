@@ -95,6 +95,9 @@ expectContains(plugin, "schema: 'partial_json'", 'interrupted vision JSON recove
 expectContains(plugin, '_partyVisualCandidates()', 'party-aware visual identity candidates');
 expectContains(plugin, '_isVisionFollowup(message, context)', 'visual follow-up grounding');
 expectContains(plugin, "visualKey: 'marcoh'", 'Marcoh visual identity mapping');
+expectContains(plugin, 'visionFollowup && !context.in_battle', 'fresh battle vision follow-up');
+expectContains(plugin, 'confirmed destroyed/missing limbs:', 'authoritative limb state in visual evidence');
+expectContains(plugin, 'destroyed_limb_claim', 'destroyed-limb chat validation');
 expectContains(plugin, 'vision_unsupported_environment', 'unsupported visual environment rejection');
 expectContains(plugin, '[Combat] Battle state changed.', 'change-only battle state telemetry');
 expectNotContains(plugin, '[Combat] Battle state extracted.', 'noisy per-extraction battle telemetry');

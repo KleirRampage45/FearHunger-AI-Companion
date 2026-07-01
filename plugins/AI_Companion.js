@@ -1323,6 +1323,7 @@
             const liveKeys = {};
             const liveNames = {};
             const livePartyKeys = {};
+            const liveBattleLimbs = {};
             VisionContext._partyVisualCandidates().forEach(member => {
                 liveKeys[member.key] = true;
                 livePartyKeys[member.key] = true;
@@ -1334,6 +1335,11 @@
                     const key = resolved && resolved.key ? resolved.key : String(enemy.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
                     liveKeys[key] = true;
                     liveNames[key] = Config.language === 'es' && resolved ? (resolved.displayNameEs || resolved.displayName) : (resolved ? resolved.displayName : enemy.name);
+                    const limbEntries = Object.entries(enemy.limbs || {});
+                    liveBattleLimbs[key] = {
+                        alive: limbEntries.filter(([, limb]) => limb && limb.alive).map(([name]) => name),
+                        destroyed: limbEntries.filter(([, limb]) => !limb || !limb.alive).map(([name]) => name)
+                    };
                 });
             }
             const activeBattle = !!(context && context.battle_state);
@@ -1351,7 +1357,7 @@
             (observation.entities || []).forEach(entity => {
                 const key = String(entity.candidate_key || '').trim();
                 const profile = profileByKey[key] || null;
-                const confidence = String(entity.confidence || 'low');
+                const confidence = String(entity.confidence || (key && liveKeys[key] ? 'medium' : 'low'));
                 const liveConfirmed = !!(key && liveKeys[key]);
                 if (liveConfirmed && confidence !== 'low') {
                     const policy = profile && profile.recognition ? profile.recognition : 'encounter';
@@ -1361,6 +1367,8 @@
                         name: livePartyKeys[key] || EntityKnowledgeLedger.canName(key, policy) ? (liveNames[key] || (profile && profile.title) || key) : '',
                         descriptor: String(entity.descriptor || '').substring(0, 180),
                         traits: Array.isArray(entity.visible_traits) ? entity.visible_traits.slice(0, 6) : [],
+                        alive_limbs: liveBattleLimbs[key] ? liveBattleLimbs[key].alive : [],
+                        destroyed_limbs: liveBattleLimbs[key] ? liveBattleLimbs[key].destroyed : [],
                         confidence,
                         profile_id: profile ? profile.id : null
                     });
@@ -1400,7 +1408,14 @@
             (evidence.confirmed_entities || []).forEach(entity => {
                 const label = this._safe(entity.name || entity.descriptor);
                 const traits = (entity.traits || []).map(trait => this._safe(trait)).filter(Boolean);
-                if (label) lines.push(`- Visible presence: ${label}${traits.length ? `; visible traits: ${traits.join(', ')}` : ''}`);
+                const destroyed = (entity.destroyed_limbs || []).map(limb => this._safe(limb)).filter(Boolean);
+                const alive = (entity.alive_limbs || []).map(limb => this._safe(limb)).filter(Boolean);
+                if (label) {
+                    let line = `- Visible presence: ${label}${traits.length ? `; visible traits: ${traits.join(', ')}` : ''}`;
+                    if (destroyed.length) line += `; confirmed destroyed/missing limbs: ${destroyed.join(', ')}`;
+                    if (alive.length) line += `; remaining targetable limbs: ${alive.join(', ')}`;
+                    lines.push(line);
+                }
             });
             (evidence.uncertain_entities || []).forEach(entity => {
                 const descriptor = this._safe(entity.descriptor);
@@ -1633,6 +1648,12 @@
             const add = value => { if (value && keys.indexOf(value) < 0) keys.push(value); };
             const activeBattle = !!(context && context.battle_state && context.battle_state.enemies);
             this._partyVisualCandidates().forEach(member => add(member.key));
+            if (typeof HybridRAG !== 'undefined' && HybridRAG.getVisualKeysForScene) {
+                HybridRAG.getVisualKeysForScene({
+                    mapId: $gameMap && $gameMap.mapId ? $gameMap.mapId() : null,
+                    sceneKind: activeBattle ? 'battle' : 'map'
+                }).forEach(add);
+            }
             if (activeBattle) {
                 context.battle_state.enemies.forEach(enemy => {
                     const resolved = typeof KBLookupCache !== 'undefined' && KBLookupCache.enemy ? KBLookupCache.enemy(enemy.name) : null;
@@ -1716,6 +1737,8 @@
                 'Describe only what is visible in the game canvas image.',
                 'Do not infer hidden enemies, lore, motives, or off-screen objects.',
                 'Use candidate profiles only to select candidate_key values.',
+                'In battle, LIVE BATTLE CANDIDATES are authoritative. Explicitly note missing limbs and never describe a destroyed limb or its weapon as present.',
+                'Use presented_items only for inventory/equipment/menu scenes. Visible world objects belong in entities; otherwise presented_items must be empty.',
                 'UI text may be transcribed internally, but never describe menus, cursors, screens, pixels, or interfaces.',
                 'Keep the response compact: at most 2 environment observations, 4 entities, and 3 short visible traits per entity.',
                 'Do not use Markdown fences. Each description must be 18 words or fewer.',
@@ -3594,6 +3617,15 @@ Reply with ONLY the category name, nothing else.`;
                 byKey[profile.entity_key] = profile;
             });
             return (candidateIds || []).map(key => byKey[key] || this._fallbackVisualProfile(key)).filter(Boolean);
+        },
+
+        getVisualKeysForScene(options) {
+            const mapId = options && options.mapId != null ? Number(options.mapId) : null;
+            const sceneKind = options && options.sceneKind ? options.sceneKind : null;
+            return this._loadVisualProfiles().filter(profile => {
+                if (!Array.isArray(profile.map_ids) || mapId == null || profile.map_ids.indexOf(mapId) < 0) return false;
+                return !sceneKind || !profile.contexts || profile.contexts.indexOf(sceneKind) >= 0;
+            }).map(profile => profile.entity_key);
         },
 
         async retrieveVisual(description, options) {
@@ -13709,12 +13741,12 @@ Respond ONLY with this JSON:
 
         _isVisionQuery(message, intent) {
             if (intent && intent.types && (intent.types.includes('visual_scene') || intent.types.includes('presented_inventory'))) return true;
-            return /(?:que ves|qué ves|ves algo|que hay alrededor|qué hay alrededor|que tienes delante|qué tienes delante|what do you see|what's around|what is around|what can you see|look around|mira (?:eso|esto)|look at (?:that|this))/i.test(message || '');
+            return /(?:que ves|qué ves|ves algo|c[oó]mo lo ves|qu[eé] notas (?:en|de)|descr[ií]be(?:lo|la|los|las)? visualmente|que hay alrededor|qué hay alrededor|que tienes delante|qué tienes delante|what do you see|how does (?:it|he|she|they) look|what do you notice|describe (?:it|him|her|them) visually|what's around|what is around|what can you see|look around|mira (?:eso|esto)|look at (?:that|this))/i.test(message || '');
         },
 
         _isVisionFollowup(message, context) {
             if (!VisionContext.getRecentEvidence(context)) return false;
-            return /(?:qui[eé]nes? (?:son|es)|descr[ií]be(?:lo|la|los|las)?|c[oó]mo (?:se ve|se ven|luce|lucen)|cu[aá]l (?:es|de ellos)|who (?:is|are) (?:it|they|those|them)|describe (?:it|him|her|them|those)|what do (?:they|those) look like|which one)/i.test(String(message || ''));
+            return /(?:qui[eé]nes? (?:son|es)|descr[ií]be(?:lo|la|los|las)?|c[oó]mo (?:lo ves|se ve|se ven|luce|lucen)|qu[eé] notas (?:en|de)|cu[aá]l (?:es|de ellos)|who (?:is|are) (?:it|they|those|them)|describe (?:it|him|her|them|those)|how does (?:it|he|she|they) look|what do you notice|what do (?:they|those) look like|which one)/i.test(String(message || ''));
         },
 
         _isNpcRecallQuery(message) {
@@ -13901,6 +13933,34 @@ Respond ONLY with this JSON:
             return matches;
         },
 
+        _destroyedLimbClaims(text, context) {
+            if (!context || !context.in_battle || !context.battle_state || !context.battle_state.enemies) return [];
+            const value = String(text || '').toLowerCase();
+            const claimsPresence = /(?:atac|attack|golpe|strike|pelig|danger|amenaza|threat|tiene|has|holding|sostiene|list[oa]|ready|usa|uses|cuchill|cleaver|weapon)/i.test(value);
+            if (!claimsPresence) return [];
+            const absence = /(?:destruid|destroyed|cortad|cut off|amputad|amputated|perdid|missing|gone|sin (?:el |la |los |las )?|no tiene|does not have|without)/i;
+            const aliases = {
+                'left arm': /(?:left arm|cleaver arm|weapon arm|brazo izquierdo|brazo (?:con|de) (?:el )?(?:cuchillo|cuchilla|arma))/i,
+                'right arm': /(?:right arm|brazo derecho)/i,
+                'stinger': /(?:stinger|aguij[oó]n)/i,
+                'left leg': /(?:left leg|pierna izquierda)/i,
+                'right leg': /(?:right leg|pierna derecha)/i,
+                'head': /(?:head|cabeza)/i
+            };
+            const found = [];
+            context.battle_state.enemies.forEach(enemy => {
+                Object.entries(enemy.limbs || {}).forEach(([name, limb]) => {
+                    if (limb && limb.alive) return;
+                    const pattern = aliases[name] || new RegExp(String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+                    const match = pattern.exec(value);
+                    if (!match) return;
+                    const nearby = value.slice(Math.max(0, match.index - 28), Math.min(value.length, match.index + match[0].length + 28));
+                    if (!absence.test(nearby)) found.push({ enemy: enemy.name, limb: name });
+                });
+            });
+            return found;
+        },
+
         _validateChatResponse(response, playerMessage, context, intent) {
             const text = String(response || '').trim();
             if (!text) return { text: text, changed: false, reason: null };
@@ -13932,6 +13992,10 @@ Respond ONLY with this JSON:
                 if (!vision && /(?:oscuro|oscuridad|sombras?|dark(?:ness)?|shadows?|brillante|iluminad|bright|lighting|luz|nos observa|watching us|acecha|lurking)/i.test(text)) {
                     return { text: '', changed: true, reason: 'vision_unsupported_environment' };
                 }
+            }
+
+            if (this._destroyedLimbClaims(text, context).length > 0) {
+                return { text: '', changed: true, reason: 'destroyed_limb_claim' };
             }
 
             if (intent && intent.primary === 'tactical' && !context.in_battle) {
@@ -14436,7 +14500,8 @@ Respond ONLY with this JSON:
             this._normalizeIntentForRecruitmentQuery(playerMessage, intent);
             this._normalizeIntentForContainerQuery(playerMessage, context, intent);
             const visionFollowup = this._isVisionFollowup(playerMessage, context);
-            if (visionFollowup) {
+            const explicitVisionQuery = this._isVisionQuery(playerMessage, intent);
+            if (explicitVisionQuery || visionFollowup) {
                 intent.types = ['visual_scene'].concat((intent.types || []).filter(type => type !== 'visual_scene'));
                 intent.primary = 'visual_scene';
                 intent.confidence = Math.max(intent.confidence || 0, 0.95);
@@ -14447,7 +14512,7 @@ Respond ONLY with this JSON:
             }
 
             if (this._isVisionQuery(playerMessage, intent)) {
-                context.multimodal_evidence = visionFollowup
+                context.multimodal_evidence = visionFollowup && !context.in_battle
                     ? VisionContext.getRecentEvidence(context)
                     : await VisionContext.observe(playerMessage, context);
                 if (!context.multimodal_evidence && context.presented_inventory) {
@@ -14576,6 +14641,16 @@ Respond ONLY with this JSON:
                         if (repairedValidation.text) {
                             response = repaired;
                             validation = { text: repairedValidation.text, changed: true, reason: 'vision_unsupported_environment_repaired' };
+                        }
+                    }
+                }
+                if (!validation.text && validation.reason === 'destroyed_limb_claim') {
+                    const repaired = await this._repairDestroyedLimbClaim(response, context);
+                    if (repaired) {
+                        const repairedValidation = this._validateChatResponse(repaired, playerMessage, context, intent);
+                        if (repairedValidation.text) {
+                            response = repaired;
+                            validation = { text: repairedValidation.text, changed: true, reason: 'destroyed_limb_claim_repaired' };
                         }
                     }
                 }
@@ -14784,7 +14859,13 @@ CRITICAL GAME RULES (NEVER violate these):
                     if (context.in_battle && context.battle_state) {
                         const b = context.battle_state;
                         block += `\nCURRENT BATTLE (Turn ${b.turn_number}):\n`;
-                        block += `- Enemies: ${b.enemies.map(e => `${e.name} (HP ${e.hp}/${e.max_hp})`).join(', ')}\n`;
+                        block += `- Enemies: ${b.enemies.map(e => {
+                            const limbs = Object.entries(e.limbs || {});
+                            const alive = limbs.filter(([, limb]) => limb && limb.alive).map(([name]) => name);
+                            const destroyed = limbs.filter(([, limb]) => !limb || !limb.alive).map(([name]) => name);
+                            return `${e.name} (HP ${e.hp}/${e.max_hp}; alive limbs: ${alive.join(', ') || 'none'}; destroyed limbs: ${destroyed.join(', ') || 'none'})`;
+                        }).join(', ')}\n`;
+                        block += '- LIVE LIMB STATE OVERRIDES STATIC TACTICS. Never describe, target, or warn about a destroyed limb or weapon.\n';
                         block += `- Allies: ${b.allies.map(a => `${a.name} HP ${a.hp}/${a.max_hp}${a.can_act ? ' (ready)' : ''}`).join(', ')}\n`;
                     }
                     // Enemy KB data with structured limbDetails
@@ -14815,8 +14896,11 @@ CRITICAL GAME RULES (NEVER violate these):
 	                                const displayName = Config.language === 'es' ? (data.displayNameEs || data.displayName || enemy.name) : (data.displayName || data.displayNameEs || enemy.name);
 	                                block += `\n=== ${displayName.toUpperCase()} ===\n`;
                                 if (data.danger !== undefined) block += `Danger: ${data.danger}/5\n`;
-                                if (data.tactics) block += `Tactics: ${data.tactics}\n`;
-                                if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
+	                                if (data.tactics) block += `Tactics: ${data.tactics}\n`;
+	                                if (data.limbPriority) block += `Target priority: ${data.limbPriority.join(' > ')}\n`;
+	                                const liveLimbs = Object.entries(enemy.limbs || {});
+	                                const destroyedLimbs = liveLimbs.filter(([, limb]) => !limb || !limb.alive).map(([name]) => name);
+	                                if (destroyedLimbs.length) block += `LIVE UPDATE: ${destroyedLimbs.join(', ')} already destroyed. Ignore static instructions involving them.\n`;
                                 if (data.hints && data.hints.length) block += `Tips: ${data.hints.join('; ')}\n`;
 	                                if (data.coinFlipTurn) {
 	                                    const liveCoinFlip = ActionExecutor._isCoinFlipStillLive(enemy, data);
@@ -15048,6 +15132,26 @@ CRITICAL GAME RULES (NEVER violate these):
                 'Say only that you could not make out visual details.',
                 'Do not infer darkness, shadows, lighting, weather, architecture, creatures, danger, or unseen observers.',
                 'Return only the rewritten dialogue, without quotes or explanation.',
+                '',
+                String(response || '').substring(0, 500)
+            ].join('\n');
+            return this._sendChatRequest(prompt);
+        },
+
+        async _repairDestroyedLimbClaim(response, context) {
+            const enemies = context && context.battle_state && context.battle_state.enemies ? context.battle_state.enemies : [];
+            const liveState = enemies.map(enemy => {
+                const limbs = Object.entries(enemy.limbs || {});
+                const alive = limbs.filter(([, limb]) => limb && limb.alive).map(([name]) => name);
+                const destroyed = limbs.filter(([, limb]) => !limb || !limb.alive).map(([name]) => name);
+                return `${enemy.name}: alive ${alive.join(', ') || 'none'}; destroyed ${destroyed.join(', ') || 'none'}`;
+            }).join('\n');
+            const prompt = [
+                `Rewrite the line below in ${Config.language === 'es' ? 'Spanish' : 'English'} as brief in-world companion dialogue.`,
+                'The previous line incorrectly described or targeted a destroyed limb.',
+                'Use only this authoritative live battle state:',
+                liveState,
+                'Never describe a destroyed limb or its weapon as present. Return only the corrected dialogue.',
                 '',
                 String(response || '').substring(0, 500)
             ].join('\n');
