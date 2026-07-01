@@ -576,6 +576,17 @@ def vision_runtime_contract(game, state, vision):
                 summary:'bright stone courtyard', identified:[], confidence:'high', risk:'none'
             }));
             return {schema:parsed.schema, environment:(parsed.environment || []).length};
+        })(),
+        partialParse: (() => {
+            const parsed = AI_Companion.VisionContext._parseObservation(
+                '{"environment":[{"description":"stone corridor","confidence":"high"}],"entities":[{"descriptor":"skinless guard with cleaver","candidate_key":"guard","visible_traits":["cleaver"],"confidence":"high"},{"descriptor":"unfinished'
+            );
+            return {
+                schema:parsed.schema,
+                environment:(parsed.environment || []).length,
+                entities:(parsed.entities || []).length,
+                key:parsed.entities && parsed.entities[0] ? parsed.entities[0].candidate_key : null
+            };
         })()
     })""") or {}
     checks.append(_check(api.get("capture"), "Rendered-frame capture API exported"))
@@ -587,6 +598,11 @@ def vision_runtime_contract(game, state, vision):
     legacy = api.get("legacyParse") or {}
     checks.append(_check(legacy.get("schema") == "legacy_v1", "Legacy vision response schema recognized"))
     checks.append(_check(legacy.get("environment") == 1, "Legacy vision summary retained as environment"))
+    partial = api.get("partialParse") or {}
+    checks.append(_check(partial.get("schema") == "partial_json", "Interrupted vision JSON recovered"))
+    checks.append(_check(partial.get("environment") == 1, "Complete environment retained from interrupted JSON"))
+    checks.append(_check(partial.get("entities") == 1 and partial.get("key") == "guard",
+                         "Complete entity retained from interrupted JSON"))
     return scenario_result(all(c["passed"] for c in checks), "Vision Runtime Contract", checks)
 
 

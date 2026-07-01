@@ -1531,6 +1531,7 @@
                     width: frame.width,
                     height: frame.height,
                     darkness: frame.darkness,
+                    encoded_bytes: Math.round((frame.dataUrl.length - frame.dataUrl.indexOf(',') - 1) * 0.75),
                     capture_method: frame.method,
                     latency_ms: Math.round(performance.now() - startedAt)
                 });
@@ -1667,6 +1668,8 @@
                 'Do not infer hidden enemies, lore, motives, or off-screen objects.',
                 'Use candidate profiles only to select candidate_key values.',
                 'UI text may be transcribed internally, but never describe menus, cursors, screens, pixels, or interfaces.',
+                'Keep the response compact: at most 2 environment observations, 4 entities, and 3 short visible traits per entity.',
+                'Do not use Markdown fences. Each description must be 18 words or fewer.',
                 'Return compact JSON only: {"environment":[{"description":"...","confidence":"low|medium|high"}],"entities":[{"descriptor":"...","candidate_key":"key_or_empty","visible_traits":["..."],"confidence":"low|medium|high"}],"presented_items":[{"descriptor":"...","candidate_key":"key_or_empty","confidence":"low|medium|high"}],"risk":"none|low|medium|high"}.'
             ].join(' ');
             const prompt = [
@@ -1685,7 +1688,7 @@
                         ]
                     }
                 ],
-                max_tokens: 240,
+                max_tokens: 360,
                 enable_thinking: false
             }, Config.getSamplingOptions({ temperature: 0.1, top_p: 0.9 }, { includeTopK: false }));
             const startedAt = performance.now();
@@ -1695,7 +1698,7 @@
                 const resp = await LocalRequestQueue.run('vision_context', () => {
                     inferenceStartedAt = performance.now();
                     const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), 15000);
+                    const timer = setTimeout(() => controller.abort(), 30000);
                     return fetch(endpoint, {
                         method: 'POST',
                         headers: Config.getLocalHeaders(),
@@ -1710,8 +1713,9 @@
                     throw new Error(resp ? `HTTP ${resp.status}${detail}` : 'no response');
                 }
                 const data = await resp.json();
-                const content = data && data.choices && data.choices[0] && data.choices[0].message
-                    ? String(data.choices[0].message.content || '').trim()
+                const choice = data && data.choices ? data.choices[0] : null;
+                const content = choice && choice.message
+                    ? String(choice.message.content || '').trim()
                     : '';
                 const obs = this._parseObservation(content);
                 const unresolvedText = (obs.entities || []).filter(entity => !entity.candidate_key && entity.descriptor).map(entity => entity.descriptor).join('; ');
@@ -1748,6 +1752,9 @@
                     inference_ms: inferenceStartedAt ? Math.round(performance.now() - inferenceStartedAt) : null,
                     latency_ms: totalLatency,
                     frame_age_ms: ageMs,
+                    image_payload_bytes: Math.round((frame.dataUrl.length - frame.dataUrl.indexOf(',') - 1) * 0.75),
+                    response_chars: content.length,
+                    finish_reason: choice ? choice.finish_reason || null : null,
                     raw_content_preview: content.substring(0, 600),
                     response_schema: obs.schema || 'unknown',
                     profile_ids: profiles.map(profile => profile.id)
@@ -1775,19 +1782,32 @@
         },
 
         _parseObservation(content) {
-            const clean = String(content || '').replace(/```json|```/g, '').trim();
+            const clean = String(content || '').replace(/```(?:json)?/gi, '').trim();
             let parsed = null;
             try { parsed = JSON.parse(clean); } catch (e) { parsed = null; }
             if (!parsed && clean.indexOf('{') >= 0 && clean.lastIndexOf('}') > clean.indexOf('{')) {
                 try { parsed = JSON.parse(clean.slice(clean.indexOf('{'), clean.lastIndexOf('}') + 1)); } catch (e) { parsed = null; }
             }
             if (!parsed || typeof parsed !== 'object') {
+                const partialEnvironment = this._extractPartialArray(clean, 'environment');
+                const partialEntities = this._extractPartialArray(clean, 'entities');
+                const partialItems = this._extractPartialArray(clean, 'presented_items');
+                if (partialEnvironment.length || partialEntities.length || partialItems.length) {
+                    return {
+                        environment: partialEnvironment.slice(0, 4),
+                        entities: partialEntities.slice(0, 10),
+                        presented_items: partialItems.slice(0, 20),
+                        risk: this._extractPartialScalar(clean, 'risk') || 'unknown',
+                        schema: 'partial_json'
+                    };
+                }
+                const looksLikeJson = /^\s*\{|"(?:environment|entities|presented_items)"\s*:/.test(clean);
                 return {
-                    environment: clean && !MetaLeakGuard.containsLeak(clean) ? [{ description: clean.substring(0, 240), confidence: 'low' }] : [],
+                    environment: clean && !looksLikeJson && !MetaLeakGuard.containsLeak(clean) ? [{ description: clean.substring(0, 240), confidence: 'low' }] : [],
                     entities: [],
                     presented_items: [],
                     risk: 'unknown',
-                    schema: clean ? 'prose_fallback' : 'empty'
+                    schema: clean ? (looksLikeJson ? 'malformed_json' : 'prose_fallback') : 'empty'
                 };
             }
             const legacySummary = String(parsed.summary || '').replace(/\s+/g, ' ').trim();
@@ -1807,6 +1827,48 @@
                 risk: String(parsed.risk || 'unknown'),
                 schema: Array.isArray(parsed.environment) || Array.isArray(parsed.entities) ? 'multimodal_v2' : (legacySummary || legacyIdentified.length ? 'legacy_v1' : 'unknown_json')
             };
+        },
+
+        _extractPartialArray(text, key) {
+            const source = String(text || '');
+            const marker = new RegExp('"' + key + '"\\s*:\\s*\\[').exec(source);
+            if (!marker) return [];
+            const objects = [];
+            let depth = 0;
+            let start = -1;
+            let inString = false;
+            let escaped = false;
+            for (let i = marker.index + marker[0].length; i < source.length; i++) {
+                const char = source[i];
+                if (inString) {
+                    if (escaped) escaped = false;
+                    else if (char === '\\') escaped = true;
+                    else if (char === '"') inString = false;
+                    continue;
+                }
+                if (char === '"') {
+                    inString = true;
+                    continue;
+                }
+                if (char === '{') {
+                    if (depth === 0) start = i;
+                    depth++;
+                } else if (char === '}' && depth > 0) {
+                    depth--;
+                    if (depth === 0 && start >= 0) {
+                        try { objects.push(JSON.parse(source.slice(start, i + 1))); } catch (e) { /* Ignore incomplete object. */ }
+                        start = -1;
+                    }
+                } else if (char === ']' && depth === 0) {
+                    break;
+                }
+            }
+            return objects;
+        },
+
+        _extractPartialScalar(text, key) {
+            const match = new RegExp('"' + key + '"\\s*:\\s*"([^"]+)"').exec(String(text || ''));
+            return match ? match[1] : null;
         },
 
         _logSkip(playerMessage, reason) {
