@@ -19,7 +19,9 @@ The thesis framing matters: when possible, companion speech, goals, risky choice
 - **Risk**: live survival and combat danger summary from `RiskEvaluator`.
 - **Knowledge base**: deterministic curated game data in `FearHungerKB.js`.
 - **Hybrid RAG**: optional vector retrieval over curated chunks under `data/rag/`.
-- **Vision context**: optional local-only canvas vision observation for visual chat questions.
+- **Vision context**: optional local-only rendered-frame observation for explicit visual chat questions across maps, battles, and supported inventory/character menus.
+- **Multimodal evidence**: sanitized fusion of live state, curated visual profiles, optional vector matches, and local vision output.
+- **Entity knowledge ledger**: save-tied record controlling when canonical entity names may be spoken in roleplay.
 - **Save-tied memory**: persistent facts, goals, transcript history, and story progress tied to the active save context.
 - **AI Log**: in-game recent-run log viewer.
 - **JSONL logs**: persisted runtime logs in `<game>/ai_companion_logs/session_*.jsonl`.
@@ -38,7 +40,7 @@ When systems disagree, use this order:
 8. Hybrid RAG chunks.
 9. Persona/style instructions.
 
-Vision can help identify what the canvas appears to show, but it is secondary to live scanner/combat state. RAG and KB are background knowledge. They must not claim that something is visible, alive, nearby, equipped, or owned unless live state or the explicitly marked vision observation confirms it.
+Vision can help identify what a rendered frame appears to show, but it is secondary to live scanner/combat state. Raw vision/OCR is never injected into roleplay. RAG and KB are background knowledge and visual identification hints, not proof that something is present, alive, nearby, equipped, or owned.
 
 ## Runtime Modules
 

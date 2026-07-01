@@ -52,6 +52,29 @@ function hash(text) {
     return String(h);
 }
 
+function chunkMetadata(chunk) {
+    const metadata = {
+        type: chunk.type,
+        language: chunk.language || 'en',
+        title: chunk.title,
+        text: chunk.text,
+        tags: chunk.tags || [],
+        source: chunk.source || 'curated_wiki',
+        source_url: chunk.source_url || '',
+        spoiler_level: chunk.spoiler_level || 0,
+        save_id: chunk.save_id || null,
+        timestamp: chunk.timestamp || null
+    };
+    [
+        'entity_type', 'entity_key', 'variant_of', 'display_name_en',
+        'display_name_es', 'visual_description', 'distinguishing_features',
+        'negative_matches', 'contexts', 'recognition'
+    ].forEach(key => {
+        if (chunk[key] !== undefined) metadata[key] = chunk[key];
+    });
+    return metadata;
+}
+
 // ── Embedding ──────────────────────────────────────────────────────────────
 async function getEmbedding(endpoint, model, text) {
     const url = endpoint.replace(/\/+$/, '');
@@ -130,7 +153,7 @@ async function main() {
     console.log(`[build-rag-index] Total chunks: ${allChunks.length}`);
 
     const index = {
-        version: 1,
+        version: 2,
         embedding_model: model,
         generated_at: new Date().toISOString(),
         chunks: []
@@ -149,18 +172,7 @@ async function main() {
             index.chunks.push({
                 id: chunk.id,
                 vector: existing.vector,
-                metadata: {
-                    type: chunk.type,
-                    language: chunk.language || 'en',
-                    title: chunk.title,
-                    text: chunk.text,
-                    tags: chunk.tags || [],
-                    source: chunk.source || 'curated_wiki',
-                    source_url: chunk.source_url || '',
-                    spoiler_level: chunk.spoiler_level || 0,
-                    save_id: chunk.save_id || null,
-                    timestamp: chunk.timestamp || null
-                }
+                metadata: chunkMetadata(chunk)
             });
             reused++;
             continue;
@@ -172,18 +184,7 @@ async function main() {
             index.chunks.push({
                 id: chunk.id,
                 vector: vector,
-                metadata: {
-                    type: chunk.type,
-                    language: chunk.language || 'en',
-                    title: chunk.title,
-                    text: chunk.text,
-                    tags: chunk.tags || [],
-                    source: chunk.source || 'curated_wiki',
-                    source_url: chunk.source_url || '',
-                    spoiler_level: chunk.spoiler_level || 0,
-                    save_id: chunk.save_id || null,
-                    timestamp: chunk.timestamp || null
-                }
+                metadata: chunkMetadata(chunk)
             });
             embedded++;
             process.stdout.write('.');
@@ -193,18 +194,7 @@ async function main() {
             index.chunks.push({
                 id: chunk.id,
                 vector: null,
-                metadata: {
-                    type: chunk.type,
-                    language: chunk.language || 'en',
-                    title: chunk.title,
-                    text: chunk.text,
-                    tags: chunk.tags || [],
-                    source: chunk.source || 'curated_wiki',
-                    source_url: chunk.source_url || '',
-                    spoiler_level: chunk.spoiler_level || 0,
-                    save_id: chunk.save_id || null,
-                    timestamp: chunk.timestamp || null
-                }
+                metadata: chunkMetadata(chunk)
             });
             errors++;
         }

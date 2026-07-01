@@ -8,6 +8,7 @@ Run:
 
 ```bash
 node scripts/check_plugin_static.js
+node scripts/check_visual_rag.js
 node --check plugins/AI_Companion.js
 node --check plugins/FearHungerKB.js
 git diff --check

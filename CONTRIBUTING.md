@@ -19,6 +19,7 @@ Run these from the repository root before committing plugin changes:
 node --check plugins/AI_Companion.js
 node --check plugins/FearHungerKB.js
 node scripts/check_plugin_static.js
+node scripts/check_visual_rag.js
 git diff --check
 ```
 

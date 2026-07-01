@@ -2,6 +2,8 @@
 
 Hybrid RAG adds vector-based semantic retrieval to the AI Companion for broad lore, NPC, location, ending, and save-memory questions. It supplements — never replaces — the structured FearHungerKB and live game-state systems.
 
+Visual profile JSONL files are also installed from `data/rag/`. Exact profiles for live candidates work without an embedding request. Rebuild `index.json` after profile changes to enable vector matching for unresolved visual descriptions.
+
 ## Prerequisites
 
 - Node.js 18+
@@ -99,6 +101,14 @@ console.log({
 ```
 
 Settings persist across game restarts.
+
+## Visual Profile Retrieval
+
+- Live enemy, NPC, object, and location IDs retrieve bundled profiles directly.
+- Unknown visual descriptions may use vector retrieval restricted to `visual_profile` chunks.
+- Visual matches never prove that an entity is present; live battle/map state must confirm it.
+- Canonical names follow save-tied recognition policy.
+- Raw OCR and vision output are converted to roleplay-safe evidence before chat.
 
 ## What RAG Retrieves For
 

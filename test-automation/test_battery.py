@@ -561,6 +561,47 @@ def rag_buckman_grounding(game, state, vision):
 
 
 @safe_scenario
+def vision_runtime_contract(game, state, vision):
+    """Vision — Public capture/fusion APIs and bundled visual profiles are available."""
+    checks = []
+    api = game.bridge.js("""({
+        capture: !!(AI_Companion.VisionContext && AI_Companion.VisionContext.requestCapture),
+        frameMeta: !!(AI_Companion.VisionContext && AI_Companion.VisionContext.getLastFrameMeta),
+        fusion: !!(AI_Companion.MultimodalEvidenceFusion && AI_Companion.MultimodalEvidenceFusion.resolve),
+        ledger: !!AI_Companion.EntityKnowledgeLedger,
+        inventory: !!AI_Companion.InventoryContextExtractor,
+        profiles: AI_Companion.HybridRAG._loadVisualProfiles().length
+    })""") or {}
+    checks.append(_check(api.get("capture"), "Rendered-frame capture API exported"))
+    checks.append(_check(api.get("frameMeta"), "Frame metadata API exported"))
+    checks.append(_check(api.get("fusion"), "Evidence fusion API exported"))
+    checks.append(_check(api.get("ledger"), "Knowledge ledger exported"))
+    checks.append(_check(api.get("inventory"), "Inventory extractor exported"))
+    checks.append(_check(api.get("profiles", 0) >= 10, f"Bundled visual profiles: {api.get('profiles', 0)}"))
+    return scenario_result(all(c["passed"] for c in checks), "Vision Runtime Contract", checks)
+
+
+@safe_scenario
+def vision_fusion_grounding(game, state, vision):
+    """Vision — A live Guard candidate confirms a matching visual observation."""
+    result = game.bridge.js("""(() => {
+        const profiles = AI_Companion.HybridRAG.getVisualProfilesForCandidates(['guard'], {sceneKind:'battle'});
+        const evidence = AI_Companion.MultimodalEvidenceFusion.resolve(
+            {environment:[{description:'stone prison corridor',confidence:'high'}],entities:[{descriptor:'large pale humanoid with cleaver',candidate_key:'guard',visible_traits:['cleaver'],confidence:'high'}],risk:'high'},
+            {battle_state:{enemies:[{name:'Guard'}]},nearby_observation:{nearbyEvents:[]}},
+            profiles,
+            {sceneKind:'battle'}
+        );
+        return {count:evidence.confirmed_entities.length,key:evidence.confirmed_entities[0] ? evidence.confirmed_entities[0].key : null};
+    })()""") or {}
+    checks = [
+        _check(result.get("count") == 1, "Exactly one confirmed entity"),
+        _check(result.get("key") == "guard", "Confirmed entity is Guard"),
+    ]
+    return scenario_result(all(c["passed"] for c in checks), "Vision Fusion Grounding", checks)
+
+
+@safe_scenario
 def chat_visible_ui_path(game, state, vision):
     """UI — Actual chat scene accepts input, receives response, and scrolls to bottom."""
     checks = []
@@ -748,6 +789,10 @@ ALL_SCENARIOS = {
         rag_retrieval_lore,
         rag_chat_integration,
         rag_buckman_grounding,
+    ],
+    "vision": [
+        vision_runtime_contract,
+        vision_fusion_grounding,
     ],
     "integration": [
         integration_full_chat_pipeline,

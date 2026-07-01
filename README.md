@@ -40,7 +40,7 @@ Not included:
 - **Background safe loot**: supported safe loot events can run without blocking player control, with gab/toast feedback and item-icon balloons.
 - **Consent guardrails**: risky choices, merchant purchases, equipment changes, healing/support item use, and story-sensitive events can require player approval.
 - **Hybrid RAG**: optional vector retrieval over curated `data/rag/` chunks for lore, characters, endings, locations, and broad game knowledge.
-- **Optional local vision context**: for visual chat questions, the plugin can send the cached game canvas to a local vision model and inject a `VISION OBSERVATION` section below live scanner data. Vision is secondary evidence; live game state wins on conflicts.
+- **Optional multimodal vision**: explicit visual questions can use a safely captured map, battle, inventory, equipment, skill, or status frame. Curated visual profiles and live state resolve entities before roleplay-safe evidence reaches chat; vision never controls combat actions.
 - **Localization**: runtime Spanish/English mode for UI labels, scanner labels, prompt language, and chat context.
 - **AI Log viewer**: in-game recent log viewer with obvious `[CHAT]`, `[COMBAT]`, `[AUTONOMY]`, `[RAG]`, `[VISION]`, and `[ERROR]` labels.
 - **Persistent JSONL logs**: structured runtime logs under `<game>/ai_companion_logs/` for thesis/debug analysis.
@@ -116,7 +116,7 @@ Important sections:
 
 | Key | Action |
 | --- | --- |
-| `C` | Open AI chat |
+| `C` | Open AI chat from maps, battles, inventory, equipment, skills, or status |
 | `Enter` | Confirm UI / send chat |
 | `Esc` | Cancel / close |
 | `F5` | Reload RPG Maker MV page |
@@ -128,6 +128,7 @@ Static tests are available and should run before every commit that touches plugi
 ```bash
 node --check plugins/AI_Companion.js
 node --check plugins/FearHungerKB.js
+node scripts/check_visual_rag.js
 node scripts/check_plugin_static.js
 git diff --check
 ```

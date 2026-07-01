@@ -82,8 +82,15 @@ expectContains(plugin, 'decision_reasoning_raw:', 'raw combat reasoning retained
 expectContains(plugin, 'LIVE UPDATE: already destroyed', 'live destroyed-limb combat prompt update');
 expectContains(plugin, 'Your reasoning MUST describe the exact limb selected', 'combat reasoning limb consistency rule');
 expectContains(plugin, 'AI_Companion_VisionContextEnabled', 'vision context config persistence');
-expectContains(plugin, 'VISION OBSERVATION', 'vision prompt section');
+expectContains(plugin, 'IMMEDIATE PERCEPTION', 'roleplay-safe vision prompt section');
 expectContains(plugin, 'image_url', 'local vision image payload');
+expectContains(plugin, 'renderer.extract.canvas()', 'safe completed-frame vision capture');
+expectContains(plugin, 'const MultimodalEvidenceFusion = {', 'multimodal evidence fusion');
+expectContains(plugin, 'const RoleplayEvidenceFormatter = {', 'roleplay-safe evidence formatter');
+expectContains(plugin, 'const MetaLeakGuard = {', 'vision meta-language guard');
+expectContains(plugin, 'const EntityKnowledgeLedger = {', 'save-tied visual identity knowledge');
+expectNotContains(plugin, "Bitmap.snap(SceneManager._scene)", 'unsafe battle scene re-render capture');
+expectNotContains(plugin, 'battle_vision_disabled', 'obsolete battle vision disable');
 expectContains(plugin, '[CHAT]', 'AI Log chat label');
 expectContains(plugin, '[COMBAT]', 'AI Log combat label');
 expectContains(plugin, '[AUTONOMY]', 'AI Log autonomy label');

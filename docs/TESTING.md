@@ -10,6 +10,7 @@ Run from the repository root:
 node --check plugins/AI_Companion.js
 node --check plugins/FearHungerKB.js
 node scripts/check_plugin_static.js
+node scripts/check_visual_rag.js
 git diff --check
 ```
 
@@ -105,9 +106,19 @@ Is there danger on screen?
 
 Expected:
 
-- The prompt includes `VISION OBSERVATION` only when a local vision response succeeds.
-- `AI Log` shows a `[VISION]` row with summary/risk/confidence or a skip/error reason.
-- The final answer treats vision as secondary and does not contradict live scanner/combat state.
+- `AI Log` shows `[VISION] CAPTURE`, `INFERENCE`, and `FUSION` rows or a throttled skip/error reason.
+- Battle capture produces no PIXI mask/render errors.
+- The prompt includes `IMMEDIATE PERCEPTION`, never raw OCR or vision output.
+- The final answer treats vision as secondary and does not mention screens, menus, cursors, OCR, pixels, models, databases, or RAG.
+- Combat actions remain structured-only; visual context affects chat/advice only.
+
+4. Open inventory, equipment, skills, and status screens. Press `C` and ask which shown option is useful.
+
+Expected:
+
+- Returning from chat preserves the previous menu, selection, and scroll position.
+- Item names and quantities come from party state, not OCR guesses.
+- If the vision model fails, structured inventory context still reaches chat.
 
 ## Automated Harness
 

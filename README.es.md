@@ -41,7 +41,7 @@ No incluye:
 - **Botín seguro en segundo plano**: ciertos eventos seguros pueden ejecutarse sin bloquear al jugador, con mensajes gab/toast y globos de iconos de objetos.
 - **Guardarraíles de consentimiento**: decisiones riesgosas, compras, cambios de equipo, curación/soporte y eventos sensibles pueden pedir aprobación.
 - **Hybrid RAG**: recuperación vectorial opcional sobre chunks curados en `data/rag/` para lore, personajes, finales, ubicaciones y conocimiento general.
-- **Contexto visual local opcional**: en preguntas visuales del chat, el plugin puede enviar el canvas del juego a un modelo local con visión e inyectar `VISION OBSERVATION` bajo el escáner vivo. La visión es evidencia secundaria; el estado vivo del juego tiene prioridad.
+- **Visión multimodal local opcional**: las preguntas visuales explícitas pueden usar una captura segura del mapa, combate, inventario, equipo, habilidades o estado. Los perfiles visuales curados y el estado vivo resuelven entidades antes de pasar evidencia adaptada al rol; la visión nunca controla acciones de combate.
 - **Localización**: modo español/inglés para UI, etiquetas del escáner, prompts y contexto de chat.
 - **Visor Registro IA**: visor dentro del juego con etiquetas claras `[CHAT]`, `[COMBAT]`, `[AUTONOMY]`, `[RAG]`, `[VISION]` y `[ERROR]`.
 - **Logs JSONL persistentes**: logs estructurados en `<juego>/ai_companion_logs/` para depuración y análisis de tesis.
@@ -117,7 +117,7 @@ Secciones importantes:
 
 | Tecla | Acción |
 | --- | --- |
-| `C` | Abrir chat IA |
+| `C` | Abrir chat desde mapa, combate, inventario, equipo, habilidades o estado |
 | `Enter` | Confirmar UI / enviar mensaje |
 | `Esc` | Cancelar / cerrar |
 | `F5` | Recargar página NW.js/RPG Maker MV |

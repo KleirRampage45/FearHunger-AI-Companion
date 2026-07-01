@@ -6,13 +6,20 @@ All notable changes to the Fear & Hunger AI Companion plugin are tracked here.
 
 ### Added
 
+- Safe rendered-frame multimodal vision for map, battle, inventory, equipment, skill, and status questions.
+- Bundled visual profiles, optional vector resolution, save-tied identity knowledge, and roleplay-safe evidence fusion.
+- Vision capture/inference/fusion telemetry and visual RAG schema validation.
+
 - English and Spanish README files with current feature, setup, testing, and limitation details.
 - `CONTEXT.md` documenting thesis framing, domain vocabulary, truth priority, runtime modules, and design constraints.
 - `AGENTS.md` documenting agent workflow, static checks, live sync paths, log workflow, and repo rules.
-- Optional local-only vision context for visual chat questions. It captures the game canvas before chat opens, sends it only to a configured local vision model, and injects a `VISION OBSERVATION` prompt section below live scanner data.
+- Optional local-only vision context for explicit visual chat questions.
 - Clear AI Log labels for `[CHAT]`, `[COMBAT]`, `[AUTONOMY]`, `[RAG]`, `[VISION]`, and `[ERROR]`.
 
 ### Changed
+
+- Vision now reads PIXI's completed framebuffer instead of re-rendering the active scene with `Bitmap.snap`.
+- Raw vision and OCR text no longer enter the final roleplay prompt directly.
 
 - Contribution guide now documents required static checks, runtime smoke testing, branch strategy, and repo hygiene rules.
 - Plugin audit branch removed stale placeholder config paths and the unsafe async combat path.
