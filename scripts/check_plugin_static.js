@@ -89,6 +89,10 @@ expectContains(plugin, 'const MultimodalEvidenceFusion = {', 'multimodal evidenc
 expectContains(plugin, 'const RoleplayEvidenceFormatter = {', 'roleplay-safe evidence formatter');
 expectContains(plugin, 'const MetaLeakGuard = {', 'vision meta-language guard');
 expectContains(plugin, 'const EntityKnowledgeLedger = {', 'save-tied visual identity knowledge');
+expectContains(plugin, 'raw_content_preview:', 'vision raw response diagnostics');
+expectContains(plugin, 'vision_unsupported_environment', 'unsupported visual environment rejection');
+expectContains(plugin, '[Combat] Battle state changed.', 'change-only battle state telemetry');
+expectNotContains(plugin, '[Combat] Battle state extracted.', 'noisy per-extraction battle telemetry');
 expectNotContains(plugin, "Bitmap.snap(SceneManager._scene)", 'unsafe battle scene re-render capture');
 expectNotContains(plugin, 'battle_vision_disabled', 'obsolete battle vision disable');
 expectContains(plugin, '[CHAT]', 'AI Log chat label');

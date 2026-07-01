@@ -1330,7 +1330,8 @@
                     liveNames[key] = Config.language === 'es' && resolved ? (resolved.displayNameEs || resolved.displayName) : (resolved ? resolved.displayName : enemy.name);
                 });
             }
-            if (context && context.nearby_observation && context.nearby_observation.nearbyEvents) {
+            const activeBattle = !!(context && context.battle_state);
+            if (!activeBattle && context && context.nearby_observation && context.nearby_observation.nearbyEvents) {
                 context.nearby_observation.nearbyEvents.forEach(event => {
                     if (event.type !== 'enemy' && event.type !== 'npc') return;
                     const resolved = event.type === 'enemy' && typeof KBLookupCache !== 'undefined' ? KBLookupCache.enemy(event.label) : null;
@@ -1361,12 +1362,15 @@
                     uncertain.push({ descriptor: String(entity.descriptor).substring(0, 180), confidence });
                 }
             });
+            const environment = (observation.environment || []).filter(entry => entry && (typeof entry === 'string' ? entry : entry.description)).slice(0, 4);
+            const presentedInventory = context && context.presented_inventory ? context.presented_inventory : null;
+            if (environment.length === 0 && confirmed.length === 0 && uncertain.length === 0 && !presentedInventory) return null;
             return {
                 scene_kind: frame ? frame.sceneKind : 'unknown',
-                environment: (observation.environment || []).slice(0, 4),
+                environment,
                 confirmed_entities: confirmed,
                 uncertain_entities: uncertain,
-                presented_inventory: context && context.presented_inventory ? context.presented_inventory : null,
+                presented_inventory: presentedInventory,
                 risk: observation.risk || 'unknown',
                 source: 'vision_fusion'
             };
@@ -1409,6 +1413,7 @@
                     lines.push(`- ${member.name}: HP ${member.hp}/${member.max_hp}; states ${states}; equipment ${EquipmentHelper.formatEquipmentForPrompt(member.equipment || {})}`);
                 });
             }
+            if (lines.length === 0) return '';
             lines.push('Treat this as immediate perception. Never mention screens, menus, cursors, OCR, pixels, screenshots, models, databases, or retrieval systems.');
             return lines.join('\n');
         }
@@ -1584,13 +1589,14 @@
         _candidateKeys(context) {
             const keys = [];
             const add = value => { if (value && keys.indexOf(value) < 0) keys.push(value); };
-            if (context && context.battle_state && context.battle_state.enemies) {
+            const activeBattle = !!(context && context.battle_state && context.battle_state.enemies);
+            if (activeBattle) {
                 context.battle_state.enemies.forEach(enemy => {
                     const resolved = typeof KBLookupCache !== 'undefined' && KBLookupCache.enemy ? KBLookupCache.enemy(enemy.name) : null;
                     add(resolved && resolved.key ? resolved.key : String(enemy.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_'));
                 });
             }
-            if (context && context.nearby_observation && context.nearby_observation.nearbyEvents) {
+            if (!activeBattle && context && context.nearby_observation && context.nearby_observation.nearbyEvents) {
                 context.nearby_observation.nearbyEvents.forEach(event => {
                     if (event.type === 'container') { add('container'); return; }
                     if (event.type === 'trap' || event.type === 'hazard') { add('hazard'); return; }
@@ -1742,6 +1748,8 @@
                     inference_ms: inferenceStartedAt ? Math.round(performance.now() - inferenceStartedAt) : null,
                     latency_ms: totalLatency,
                     frame_age_ms: ageMs,
+                    raw_content_preview: content.substring(0, 600),
+                    response_schema: obs.schema || 'unknown',
                     profile_ids: profiles.map(profile => profile.id)
                 });
                 ThesisLogger.log('vision_fusion', {
@@ -1770,12 +1778,34 @@
             const clean = String(content || '').replace(/```json|```/g, '').trim();
             let parsed = null;
             try { parsed = JSON.parse(clean); } catch (e) { parsed = null; }
-            if (!parsed || typeof parsed !== 'object') return { environment: [], entities: [], presented_items: [], risk: 'unknown' };
+            if (!parsed && clean.indexOf('{') >= 0 && clean.lastIndexOf('}') > clean.indexOf('{')) {
+                try { parsed = JSON.parse(clean.slice(clean.indexOf('{'), clean.lastIndexOf('}') + 1)); } catch (e) { parsed = null; }
+            }
+            if (!parsed || typeof parsed !== 'object') {
+                return {
+                    environment: clean && !MetaLeakGuard.containsLeak(clean) ? [{ description: clean.substring(0, 240), confidence: 'low' }] : [],
+                    entities: [],
+                    presented_items: [],
+                    risk: 'unknown',
+                    schema: clean ? 'prose_fallback' : 'empty'
+                };
+            }
+            const legacySummary = String(parsed.summary || '').replace(/\s+/g, ' ').trim();
+            const legacyConfidence = String(parsed.confidence || 'low');
+            const legacyIdentified = Array.isArray(parsed.identified) ? parsed.identified : [];
+            const environment = Array.isArray(parsed.environment) ? parsed.environment.slice(0, 4) : (legacySummary ? [{ description: legacySummary.substring(0, 240), confidence: legacyConfidence }] : []);
+            const entities = Array.isArray(parsed.entities) ? parsed.entities.slice(0, 10) : legacyIdentified.slice(0, 8).map(value => ({
+                descriptor: String(value),
+                candidate_key: String(value).toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+                visible_traits: [],
+                confidence: legacyConfidence
+            }));
             return {
-                environment: Array.isArray(parsed.environment) ? parsed.environment.slice(0, 4) : [],
-                entities: Array.isArray(parsed.entities) ? parsed.entities.slice(0, 10) : [],
+                environment,
+                entities,
                 presented_items: Array.isArray(parsed.presented_items) ? parsed.presented_items.slice(0, 20) : [],
-                risk: String(parsed.risk || 'unknown')
+                risk: String(parsed.risk || 'unknown'),
+                schema: Array.isArray(parsed.environment) || Array.isArray(parsed.entities) ? 'multimodal_v2' : (legacySummary || legacyIdentified.length ? 'legacy_v1' : 'unknown_json')
             };
         },
 
@@ -3537,6 +3567,10 @@ Reply with ONLY the category name, nothing else.`;
 
             if (!intent || !intent.primary) return false;
 
+            const intentTypes = intent.types || [];
+            if (intentTypes.includes('presented_inventory')) return false;
+            if (intentTypes.includes('visual_scene') && !this._hasNamedAnchor(playerMessage)) return false;
+
             // Short messages (under 10 chars) are probably not semantic queries
             if (playerMessage && playerMessage.trim().length < 10) return false;
 
@@ -5123,7 +5157,19 @@ Reply with ONLY the category name, nothing else.`;
 
             Debug.battleState = state;
             if (Config.debugMode) {
-                Debug.log('[Combat] Battle state extracted. Turn:', state.turn_number, 'Allies:', state.allies.length, 'Enemies:', state.enemies.filter(e => e.alive).map(e => e.name));
+                const signature = JSON.stringify({
+                    turn: state.turn_number,
+                    allies: state.allies.map(ally => [ally.name, ally.hp, ally.can_act]),
+                    enemies: state.enemies.filter(enemy => enemy.alive).map(enemy => [
+                        enemy.name,
+                        enemy.hp,
+                        Object.entries(enemy.limbs || {}).filter(([, limb]) => limb && limb.alive).map(([name]) => name)
+                    ])
+                });
+                if (signature !== this._lastDebugSignature) {
+                    this._lastDebugSignature = signature;
+                    Debug.log('[Combat] Battle state changed. Turn:', state.turn_number, 'Allies:', state.allies.length, 'Enemies:', state.enemies.filter(e => e.alive).map(e => e.name));
+                }
             }
             return state;
         }
@@ -13742,6 +13788,9 @@ Respond ONLY with this JSON:
                 if (invalidEnemyMention) {
                     return { text: '', changed: true, reason: 'vision_ungrounded_enemy' };
                 }
+                if (!vision && /(?:oscuro|oscuridad|sombras?|dark(?:ness)?|shadows?|brillante|iluminad|bright|lighting|luz|nos observa|watching us|acecha|lurking)/i.test(text)) {
+                    return { text: '', changed: true, reason: 'vision_unsupported_environment' };
+                }
             }
 
             if (intent && intent.primary === 'tactical' && !context.in_battle) {
@@ -13916,6 +13965,9 @@ Respond ONLY with this JSON:
             let playerSection = `The player says: "${playerMessage}"\n`;
             if (this._isVisionQuery(playerMessage, intent)) {
                 playerSection += `PERCEPTION RULE: Use live game state first and IMMEDIATE PERCEPTION second. Treat the perception section as what is immediately before us, without mentioning screens, menus, cursors, images, OCR, pixels, models, databases, or retrieval. If sources disagree, trust live game state. Do NOT use static lore, rumors, or past chat to claim a current sighting.\n`;
+                if (!context.multimodal_evidence) {
+                    playerSection += 'NO USABLE VISUAL EVIDENCE was produced. Say only that you could not make out visual details. Do NOT infer darkness, shadows, lighting, weather, architecture, creatures, or unseen observers.\n';
+                }
             }
             if (this._isNpcRecallQuery(playerMessage)) {
                 playerSection += `NPC RECALL RULE: Use RECENT NPC DIALOGUE and RECENT NPC CONTACT to name who just spoke to us. Mention the speaker explicitly by name.\n`;
@@ -14365,6 +14417,16 @@ Respond ONLY with this JSON:
                         if (repairedValidation.text) {
                             response = repaired;
                             validation = { text: repairedValidation.text, changed: true, reason: 'visual_meta_leak_repaired' };
+                        }
+                    }
+                }
+                if (!validation.text && validation.reason === 'vision_unsupported_environment') {
+                    const repaired = await this._repairUngroundedVision(response);
+                    if (repaired) {
+                        const repairedValidation = this._validateChatResponse(repaired, playerMessage, context, intent);
+                        if (repairedValidation.text) {
+                            response = repaired;
+                            validation = { text: repairedValidation.text, changed: true, reason: 'vision_unsupported_environment_repaired' };
                         }
                     }
                 }
@@ -14822,6 +14884,20 @@ CRITICAL GAME RULES (NEVER violate these):
                 'Preserve its factual meaning.',
                 'Do not mention screens, menus, inventory interfaces, cursors, OCR, pixels, screenshots, images, models, databases, or retrieval.',
                 'Treat visible inventory as belongings the player is showing you.',
+                'Return only the rewritten dialogue, without quotes or explanation.',
+                '',
+                String(response || '').substring(0, 500)
+            ].join('\n');
+            return this._sendChatRequest(prompt);
+        },
+
+        async _repairUngroundedVision(response) {
+            const language = Config.language === 'es' ? 'Spanish' : 'English';
+            const prompt = [
+                `Rewrite the line below in ${language} as brief in-world companion dialogue.`,
+                'No usable visual evidence was available.',
+                'Say only that you could not make out visual details.',
+                'Do not infer darkness, shadows, lighting, weather, architecture, creatures, danger, or unseen observers.',
                 'Return only the rewritten dialogue, without quotes or explanation.',
                 '',
                 String(response || '').substring(0, 500)

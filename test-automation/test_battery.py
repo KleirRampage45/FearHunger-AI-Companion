@@ -570,7 +570,13 @@ def vision_runtime_contract(game, state, vision):
         fusion: !!(AI_Companion.MultimodalEvidenceFusion && AI_Companion.MultimodalEvidenceFusion.resolve),
         ledger: !!AI_Companion.EntityKnowledgeLedger,
         inventory: !!AI_Companion.InventoryContextExtractor,
-        profiles: AI_Companion.HybridRAG._loadVisualProfiles().length
+        profiles: AI_Companion.HybridRAG._loadVisualProfiles().length,
+        legacyParse: (() => {
+            const parsed = AI_Companion.VisionContext._parseObservation(JSON.stringify({
+                summary:'bright stone courtyard', identified:[], confidence:'high', risk:'none'
+            }));
+            return {schema:parsed.schema, environment:(parsed.environment || []).length};
+        })()
     })""") or {}
     checks.append(_check(api.get("capture"), "Rendered-frame capture API exported"))
     checks.append(_check(api.get("frameMeta"), "Frame metadata API exported"))
@@ -578,12 +584,15 @@ def vision_runtime_contract(game, state, vision):
     checks.append(_check(api.get("ledger"), "Knowledge ledger exported"))
     checks.append(_check(api.get("inventory"), "Inventory extractor exported"))
     checks.append(_check(api.get("profiles", 0) >= 10, f"Bundled visual profiles: {api.get('profiles', 0)}"))
+    legacy = api.get("legacyParse") or {}
+    checks.append(_check(legacy.get("schema") == "legacy_v1", "Legacy vision response schema recognized"))
+    checks.append(_check(legacy.get("environment") == 1, "Legacy vision summary retained as environment"))
     return scenario_result(all(c["passed"] for c in checks), "Vision Runtime Contract", checks)
 
 
 @safe_scenario
 def vision_fusion_grounding(game, state, vision):
-    """Vision — A live Guard candidate confirms a matching visual observation."""
+    """Vision — Battle candidates are grounded without nearby-map contamination."""
     result = game.bridge.js("""(() => {
         const profiles = AI_Companion.HybridRAG.getVisualProfilesForCandidates(['guard'], {sceneKind:'battle'});
         const evidence = AI_Companion.MultimodalEvidenceFusion.resolve(
@@ -592,11 +601,25 @@ def vision_fusion_grounding(game, state, vision):
             profiles,
             {sceneKind:'battle'}
         );
-        return {count:evidence.confirmed_entities.length,key:evidence.confirmed_entities[0] ? evidence.confirmed_entities[0].key : null};
+        const isolated = AI_Companion.MultimodalEvidenceFusion.resolve(
+            {environment:[],entities:[{descriptor:'large shaggy hound',candidate_key:'moonless',visible_traits:['shaggy fur'],confidence:'high'}],risk:'high'},
+            {
+                battle_state:{enemies:[{name:'Mandíbula Dentada A'}]},
+                nearby_observation:{nearbyEvents:[{type:'npc',label:'Moonless'}]}
+            },
+            AI_Companion.HybridRAG.getVisualProfilesForCandidates(['mandibula_dentada'], {sceneKind:'battle'}),
+            {sceneKind:'battle'}
+        );
+        return {
+            count:evidence.confirmed_entities.length,
+            key:evidence.confirmed_entities[0] ? evidence.confirmed_entities[0].key : null,
+            nearbyLeak:!!(isolated && isolated.confirmed_entities.some(entity => entity.key === 'moonless'))
+        };
     })()""") or {}
     checks = [
         _check(result.get("count") == 1, "Exactly one confirmed entity"),
         _check(result.get("key") == "guard", "Confirmed entity is Guard"),
+        _check(not result.get("nearbyLeak"), "Nearby map entity cannot contaminate active battle"),
     ]
     return scenario_result(all(c["passed"] for c in checks), "Vision Fusion Grounding", checks)
 
