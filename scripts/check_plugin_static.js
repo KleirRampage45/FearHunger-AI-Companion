@@ -92,6 +92,9 @@ expectContains(plugin, 'const EntityKnowledgeLedger = {', 'save-tied visual iden
 expectContains(plugin, 'raw_content_preview:', 'vision raw response diagnostics');
 expectContains(plugin, 'image_payload_bytes:', 'vision image payload diagnostics');
 expectContains(plugin, "schema: 'partial_json'", 'interrupted vision JSON recovery');
+expectContains(plugin, '_partyVisualCandidates()', 'party-aware visual identity candidates');
+expectContains(plugin, '_isVisionFollowup(message, context)', 'visual follow-up grounding');
+expectContains(plugin, "visualKey: 'marcoh'", 'Marcoh visual identity mapping');
 expectContains(plugin, 'vision_unsupported_environment', 'unsupported visual environment rejection');
 expectContains(plugin, '[Combat] Battle state changed.', 'change-only battle state telemetry');
 expectNotContains(plugin, '[Combat] Battle state extracted.', 'noisy per-extraction battle telemetry');

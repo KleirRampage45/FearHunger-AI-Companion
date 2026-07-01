@@ -571,6 +571,11 @@ def vision_runtime_contract(game, state, vision):
         ledger: !!AI_Companion.EntityKnowledgeLedger,
         inventory: !!AI_Companion.InventoryContextExtractor,
         profiles: AI_Companion.HybridRAG._loadVisualProfiles().length,
+        profileKeys: AI_Companion.HybridRAG._loadVisualProfiles().map(profile => profile.entity_key),
+        allAppearancesMapped: AI_Companion.CharacterPresets.appearances.every(preset => !!preset.visualKey),
+        actorKeys: [1,2,3,4,5,6,7,8,9,11,14,16,19].map(actorId =>
+            AI_Companion.CharacterPresets.getVisualKeyForActor({actorId:() => actorId})
+        ),
         legacyParse: (() => {
             const parsed = AI_Companion.VisionContext._parseObservation(JSON.stringify({
                 summary:'bright stone courtyard', identified:[], confidence:'high', risk:'none'
@@ -595,6 +600,12 @@ def vision_runtime_contract(game, state, vision):
     checks.append(_check(api.get("ledger"), "Knowledge ledger exported"))
     checks.append(_check(api.get("inventory"), "Inventory extractor exported"))
     checks.append(_check(api.get("profiles", 0) >= 10, f"Bundled visual profiles: {api.get('profiles', 0)}"))
+    profile_keys = api.get("profileKeys") or []
+    checks.append(_check("cahara" in profile_keys and "marcoh" in profile_keys,
+                         "Cahara and Marcoh visual profiles bundled"))
+    checks.append(_check(api.get("allAppearancesMapped"), "Every selectable appearance has a visual identity key"))
+    actor_keys = api.get("actorKeys") or []
+    checks.append(_check(all(actor_keys), "All standard party actor IDs map to visual identities"))
     legacy = api.get("legacyParse") or {}
     checks.append(_check(legacy.get("schema") == "legacy_v1", "Legacy vision response schema recognized"))
     checks.append(_check(legacy.get("environment") == 1, "Legacy vision summary retained as environment"))

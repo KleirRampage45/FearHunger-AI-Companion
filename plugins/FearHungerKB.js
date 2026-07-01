@@ -2249,6 +2249,15 @@ FearHungerKB.locations = {
 // CHARACTERS - Playable and recruitable
 // ============================================================================
 FearHungerKB.characters = {
+    "marcoh": {
+        displayName: "Marcoh",
+        class: "Boxer",
+        personality: ["quiet", "protective", "physically imposing", "kind-hearted"],
+        speechStyle: "Short, humble, reserved",
+        visualDescription: "A very tall, broad muscular man with short dark wavy hair, bare forearms, a light sleeveless shirt, and dark trousers.",
+        uniqueTraits: ["Bare-fisted boxer", "Imported companion appearance from Fear & Hunger 2"],
+        tips: "A custom companion appearance; identify him by his boxer build, not armor."
+    },
     "cahara": {
         displayName: "Cahara",
         class: "Mercenary",

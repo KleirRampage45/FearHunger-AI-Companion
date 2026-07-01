@@ -1322,6 +1322,12 @@
             (profiles || []).forEach(profile => { if (profile.entity_key) profileByKey[profile.entity_key] = profile; });
             const liveKeys = {};
             const liveNames = {};
+            const livePartyKeys = {};
+            VisionContext._partyVisualCandidates().forEach(member => {
+                liveKeys[member.key] = true;
+                livePartyKeys[member.key] = true;
+                liveNames[member.key] = member.name;
+            });
             if (context && context.battle_state && context.battle_state.enemies) {
                 context.battle_state.enemies.forEach(enemy => {
                     const resolved = typeof KBLookupCache !== 'undefined' && KBLookupCache.enemy ? KBLookupCache.enemy(enemy.name) : null;
@@ -1352,7 +1358,7 @@
                     EntityKnowledgeLedger.markSeen(key, policy, 'vision');
                     confirmed.push({
                         key,
-                        name: EntityKnowledgeLedger.canName(key, policy) ? (liveNames[key] || (profile && profile.title) || key) : '',
+                        name: livePartyKeys[key] || EntityKnowledgeLedger.canName(key, policy) ? (liveNames[key] || (profile && profile.title) || key) : '',
                         descriptor: String(entity.descriptor || '').substring(0, 180),
                         traits: Array.isArray(entity.visible_traits) ? entity.visible_traits.slice(0, 6) : [],
                         confidence,
@@ -1428,6 +1434,8 @@
 
     const VisionContext = {
         _lastGameplayFrame: null,
+        _lastEvidence: null,
+        _lastEvidenceMeta: null,
         _lastSkipLogByReason: {},
         _pendingCapture: null,
 
@@ -1467,6 +1475,39 @@
             return this._lastGameplayFrame && this._lastGameplayFrame.inventory
                 ? this._lastGameplayFrame.inventory
                 : null;
+        },
+
+        getRecentEvidence(context) {
+            if (!this._lastEvidence || !this._lastEvidenceMeta) return null;
+            const meta = this._lastEvidenceMeta;
+            if (Date.now() - meta.timestamp > 90000) return null;
+            const mapId = $gameMap && $gameMap.mapId ? $gameMap.mapId() : null;
+            if (meta.mapId !== mapId) return null;
+            const expectedKind = context && context.in_battle ? 'battle' : 'map';
+            if (meta.sceneKind !== expectedKind) return null;
+            return this._lastEvidence;
+        },
+
+        _partyVisualCandidates() {
+            if (!$gameParty || !$gameParty.members) return [];
+            const leader = $gameParty.leader ? $gameParty.leader() : null;
+            const followers = $gamePlayer && $gamePlayer.followers ? $gamePlayer.followers()._data || [] : [];
+            return $gameParty.members().map(actor => {
+                const key = CharacterPresets.getVisualKeyForActor(actor);
+                if (!key) return null;
+                const actorId = actor.actorId ? actor.actorId() : null;
+                let character = actor === leader ? $gamePlayer : followers.find(follower => {
+                    const followerActor = follower && follower.actor ? follower.actor() : null;
+                    return followerActor && followerActor.actorId && followerActor.actorId() === actorId;
+                });
+                return {
+                    key,
+                    name: actor.name ? actor.name() : key,
+                    role: actor === leader ? 'player' : (actorId === Config.companionActorId ? 'companion' : 'party member'),
+                    screenX: character && character.screenX ? Math.round(character.screenX()) : null,
+                    screenY: character && character.screenY ? Math.round(character.screenY()) : null
+                };
+            }).filter(Boolean);
         },
 
         requestCapture(reason, callback) {
@@ -1591,6 +1632,7 @@
             const keys = [];
             const add = value => { if (value && keys.indexOf(value) < 0) keys.push(value); };
             const activeBattle = !!(context && context.battle_state && context.battle_state.enemies);
+            this._partyVisualCandidates().forEach(member => add(member.key));
             if (activeBattle) {
                 context.battle_state.enemies.forEach(enemy => {
                     const resolved = typeof KBLookupCache !== 'undefined' && KBLookupCache.enemy ? KBLookupCache.enemy(enemy.name) : null;
@@ -1623,10 +1665,17 @@
                 ? context.battle_state.enemies.map(e => `${e.name} limbs:${Object.entries(e.limbs || {}).map(([name, limb]) => `${name}:${limb && limb.alive ? 'up' : 'down'}`).join(',')}`).join('; ')
                 : '';
             const references = (profiles || []).slice(0, 12).map(profile => `- ${profile.entity_key}: ${profile.visual_description || profile.text}`);
+            const party = this._partyVisualCandidates().map(member => {
+                const position = frame && frame.sceneKind === 'map' && member.screenX != null && member.screenY != null
+                    ? ` near image position ${member.screenX},${member.screenY}`
+                    : '';
+                return `${member.role} ${member.name} => candidate_key ${member.key}${position}`;
+            }).join('; ');
             return [
                 `SOURCE SCENE: ${frame ? frame.sceneKind : 'unknown'}`,
                 'CANDIDATE VISUAL PROFILES (identification hints only; not proof of presence):',
                 references.length ? references.join('\n') : '- none',
+                party ? `KNOWN VISIBLE PARTY IDENTITIES: ${party}` : 'KNOWN VISIBLE PARTY IDENTITIES: none supplied.',
                 live ? `LIVE SCANNER CANDIDATES: ${live}` : 'LIVE SCANNER CANDIDATES: none supplied.',
                 battle ? `LIVE BATTLE CANDIDATES: ${battle}` : 'LIVE BATTLE CANDIDATES: none supplied.',
                 frame && frame.inventory && frame.inventory.selected ? `SELECTED PARTY ITEM: ${frame.inventory.selected.name} x${frame.inventory.selected.quantity}` : ''
@@ -1739,6 +1788,14 @@
                     }
                 }
                 const evidence = MultimodalEvidenceFusion.resolve(obs, context, profiles, frame);
+                if (evidence) {
+                    this._lastEvidence = evidence;
+                    this._lastEvidenceMeta = {
+                        timestamp: Date.now(),
+                        mapId: frame.mapId,
+                        sceneKind: frame.sceneKind
+                    };
+                }
                 const totalLatency = Math.round(performance.now() - startedAt);
                 const queueWait = Math.round((inferenceStartedAt || queuedAt) - queuedAt);
                 ThesisLogger.log('vision_inference', {
@@ -1757,6 +1814,7 @@
                     finish_reason: choice ? choice.finish_reason || null : null,
                     raw_content_preview: content.substring(0, 600),
                     response_schema: obs.schema || 'unknown',
+                    party_candidates: this._partyVisualCandidates().map(member => ({ key: member.key, name: member.name, role: member.role })),
                     profile_ids: profiles.map(profile => profile.id)
                 });
                 ThesisLogger.log('vision_fusion', {
@@ -2299,39 +2357,39 @@
         // Appearance presets (Face, Sprite) - using available bust images
         // face/faceIndex/sprite must match game Actors; battlerName for battle sprite
         appearances: [
-            { id: 'dark_priest', name: 'Sacerdote oscuro', nameEn: 'Dark Priest', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1', previewPicture: 'Actor1_7',
+            { id: 'dark_priest', visualKey: 'enki', name: 'Sacerdote oscuro', nameEn: 'Dark Priest', face: 'Actor1', faceIndex: 6, sprite: 'dark_priest', battlerName: 'darkpriest1_1', previewPicture: 'Actor1_7',
                 persona: 'A withdrawn dark priest. Speaks precisely, with suspicion and occult knowledge. Never sounds cheerful; treats survival as a grim calculation.' },
-            { id: 'mercenary', name: 'Mercenario', nameEn: 'Mercenary', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1', previewPicture: 'Actor1_1',
+            { id: 'mercenary', visualKey: 'cahara', name: 'Mercenario', nameEn: 'Mercenary', face: 'Actor1', faceIndex: 0, sprite: 'mercenary', battlerName: 'Actor1_1', previewPicture: 'Actor1_1',
                 persona: 'A pragmatic mercenary. Speaks like a survivor, values silver, food, escape routes, and practical risk. Dry humor, never heroic speeches.' },
-            { id: 'knight', name: 'Caballero', nameEn: 'Knight', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1', previewPicture: 'Actor1_3',
+            { id: 'knight', visualKey: 'darce', name: 'Caballero', nameEn: 'Knight', face: 'Actor1', faceIndex: 2, sprite: 'knight', battlerName: 'knight1_1', previewPicture: 'Actor1_3',
                 persona: 'A disciplined knight. Protective, dutiful, direct. Carries guilt and faith, but keeps command language short under danger.' },
-            { id: 'outlander', name: 'Forastero', nameEn: 'Outlander', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1', previewPicture: 'Actor1_8',
+            { id: 'outlander', visualKey: 'ragnvaldr', name: 'Forastero', nameEn: 'Outlander', face: 'Actor1', faceIndex: 7, sprite: 'outlander', battlerName: 'outlander1_1', previewPicture: 'Actor1_8',
                 persona: 'A hardened outlander and hunter. Taciturn, blunt, survivalist. Notices tracks, beasts, wounds, and ambushes before social niceties.' },
-            { id: 'girl', name: 'Niña', nameEn: 'Girl', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle', previewPicture: 'Actor1_4',
+            { id: 'girl', visualKey: 'girl', name: 'Niña', nameEn: 'Girl', face: 'Actor1', faceIndex: 3, sprite: 'girl', battlerName: 'girl1_1_battle', previewPicture: 'Actor1_4',
                 persona: 'A frightened child. Speaks rarely and simply. Does not provide confident tactical lectures; reacts with fear, trust, confusion, or small observations.' },
-            { id: 'legarde', name: "Le'garde", nameEn: "Le'garde", face: 'Actor2', faceIndex: 0, sprite: 'captain', battlerName: 'captain1_1', previewPicture: 'Actor2_1',
+            { id: 'legarde', visualKey: 'legarde', name: "Le'garde", nameEn: "Le'garde", face: 'Actor2', faceIndex: 0, sprite: 'captain', battlerName: 'captain1_1', previewPicture: 'Actor2_1',
                 persona: 'A charismatic prisoner-captain. Calm, commanding, messianic undertone. Speaks with restraint and conviction, never as an omniscient guide.' },
-            { id: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'Actor2_2',
+            { id: 'moonless', visualKey: 'moonless', name: 'Moonless', nameEn: 'Moonless', face: 'Actor2', faceIndex: 1, sprite: 'moonless', battlerName: 'moonless1_1', previewPicture: 'Actor2_2',
                 persona: 'Moonless is a wolf-like beast companion. It does not speak human language. It communicates through posture, growls, sniffing, whines, and protective movement.',
                 speechMode: 'beast', noAmbientSpeech: true },
-            { id: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'Actor3_1',
+            { id: 'nashrah', visualKey: 'nashrah', name: "Nas'hrah", nameEn: "Nas'hrah", face: 'Actor3', faceIndex: 0, sprite: '$beheadedwizard2', battlerName: 'nashrah1_1', previewPicture: 'Actor3_1',
                 persona: "A severed ancient wizard-head. Arrogant, mocking, impatient, and knowledgeable about occult matters. Speaks sharply, never humble, never sentimental." },
-            { id: 'demon_child', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle', previewPicture: 'Actor2_4',
+            { id: 'demon_child', visualKey: 'demon_kid', name: 'Niño Demonio', nameEn: 'Demon Kid', face: 'Actor2', faceIndex: 3, sprite: 'demon_child', battlerName: 'demonchild1_1_battle', previewPicture: 'Actor2_4',
                 persona: 'A demon child. Speaks in broken, eerie, childish fragments. Curious and unsettling, not rational or tactical unless guided.',
                 speechMode: 'limited' },
-            { id: 'marriage', name: 'Matrimonio', nameEn: 'Marriage', face: 'Actor2', faceIndex: 4, sprite: 'marriage_of_flesh1', battlerName: 'marriage1_1', previewPicture: 'Actor2_5',
+            { id: 'marriage', visualKey: 'marriage', name: 'Matrimonio', nameEn: 'Marriage', face: 'Actor2', faceIndex: 4, sprite: 'marriage_of_flesh1', battlerName: 'marriage1_1', previewPicture: 'Actor2_5',
                 persona: 'A marriage of flesh. Speech is strained, plural, fragmented, and bodily. It should sound like two damaged instincts sharing one throat.',
                 speechMode: 'limited' },
-            { id: 'fusion', name: 'Fusión', nameEn: 'Fusion', face: 'Actor2', faceIndex: 5, sprite: 'marriage_of_flesh2', battlerName: 'fusion1_1', previewPicture: 'Actor2_6',
+            { id: 'fusion', visualKey: 'marriage_fusion', name: 'Fusión', nameEn: 'Fusion', face: 'Actor2', faceIndex: 5, sprite: 'marriage_of_flesh2', battlerName: 'fusion1_1', previewPicture: 'Actor2_6',
                 persona: 'A warped fusion. Speaks only in pained, fragmented impressions. Avoid fluent explanations; use body horror, confusion, and instinct.',
                 speechMode: 'limited' },
-            { id: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'Actor1_2',
+            { id: 'ghoul', visualKey: 'ghoul', name: 'Ghoul', nameEn: 'Ghoul', face: 'Actor1', faceIndex: 1, sprite: 'ghoul', battlerName: 'ghoulbattle1_1', previewPicture: 'Actor1_2',
                 persona: 'A near-mindless ghoul. It does not hold conversation. It may groan, twitch, stare, or obey simple battle instinct.',
                 speechMode: 'mindless', noAmbientSpeech: true },
-            { id: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'Actor2_8',
+            { id: 'skeleton', visualKey: 'skeleton', name: 'Esqueleto', nameEn: 'Skeleton', face: 'Actor2', faceIndex: 7, sprite: 'skeleton1', battlerName: 'Skeleton1_1', previewPicture: 'Actor2_8',
                 persona: 'An animated skeleton. It does not speak. It can fight, follow, and gesture, but has no normal conversation.',
                 speechMode: 'silent', noAmbientSpeech: true },
-            { id: 'marcoh', name: 'Marcoh', nameEn: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1', previewPicture: 'Marcoh_faces_7',
+            { id: 'marcoh', visualKey: 'marcoh', name: 'Marcoh', nameEn: 'Marcoh', face: 'Marcoh_faces', faceIndex: 6, sprite: '%thug', battlerName: 'Thug1_1', previewPicture: 'Marcoh_faces_7',
                 persona: 'Marcoh is quiet, physically imposing, gentle, and haunted by guilt. He speaks in short, humble lines and protects others through action more than words.' }
         ],
 
@@ -2391,6 +2449,22 @@
         getCurrentAppearance() {
             const available = this.getAvailableAppearances();
             return available.find(a => a.id === this._currentAppearance) || available[0];
+        },
+
+        getVisualKeyForActor(actor) {
+            if (!actor || !actor.actorId) return null;
+            const actorId = actor.actorId();
+            if (actorId === Config.companionActorId) {
+                const appearance = this.getCurrentAppearance();
+                return appearance ? appearance.visualKey || appearance.id : null;
+            }
+            const actorKeys = {
+                1: 'cahara', 2: 'girl', 3: 'darce', 4: 'enki', 5: 'ragnvaldr',
+                6: 'legarde', 7: 'moonless', 8: 'demon_kid', 9: 'marriage',
+                11: 'marriage_fusion', 14: 'nashrah', 16: 'ghoul', 17: 'ghoul',
+                18: 'ghoul', 19: 'skeleton', 20: 'skeleton', 21: 'skeleton'
+            };
+            return actorKeys[actorId] || null;
         },
 
         getCurrentPersonality() {
@@ -13638,6 +13712,11 @@ Respond ONLY with this JSON:
             return /(?:que ves|qué ves|ves algo|que hay alrededor|qué hay alrededor|que tienes delante|qué tienes delante|what do you see|what's around|what is around|what can you see|look around|mira (?:eso|esto)|look at (?:that|this))/i.test(message || '');
         },
 
+        _isVisionFollowup(message, context) {
+            if (!VisionContext.getRecentEvidence(context)) return false;
+            return /(?:qui[eé]nes? (?:son|es)|descr[ií]be(?:lo|la|los|las)?|c[oó]mo (?:se ve|se ven|luce|lucen)|cu[aá]l (?:es|de ellos)|who (?:is|are) (?:it|they|those|them)|describe (?:it|him|her|them|those)|what do (?:they|those) look like|which one)/i.test(String(message || ''));
+        },
+
         _isNpcRecallQuery(message) {
             return /(?:con quien acabamos de hablar|con quién acabamos de hablar|con quien hablamos|con quién hablamos|con quien hable|con quién hablé|quien era ese npc|quién era ese npc|quien nos hablo|quién nos habló|que dijo ese npc|qué dijo ese npc|who did we just talk to|who was that npc|what did that npc say)/i.test(message || '');
         },
@@ -14356,13 +14435,21 @@ Respond ONLY with this JSON:
             const intent = await IntentDetector.classifyWithFallback(playerMessage);
             this._normalizeIntentForRecruitmentQuery(playerMessage, intent);
             this._normalizeIntentForContainerQuery(playerMessage, context, intent);
+            const visionFollowup = this._isVisionFollowup(playerMessage, context);
+            if (visionFollowup) {
+                intent.types = ['visual_scene'].concat((intent.types || []).filter(type => type !== 'visual_scene'));
+                intent.primary = 'visual_scene';
+                intent.confidence = Math.max(intent.confidence || 0, 0.95);
+            }
 
             if (intent.types && intent.types.includes('presented_inventory')) {
                 context.presented_inventory = VisionContext.getPresentedInventory();
             }
 
             if (this._isVisionQuery(playerMessage, intent)) {
-                context.multimodal_evidence = await VisionContext.observe(playerMessage, context);
+                context.multimodal_evidence = visionFollowup
+                    ? VisionContext.getRecentEvidence(context)
+                    : await VisionContext.observe(playerMessage, context);
                 if (!context.multimodal_evidence && context.presented_inventory) {
                     context.multimodal_evidence = {
                         scene_kind: 'inventory',
