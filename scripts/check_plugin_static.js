@@ -102,6 +102,10 @@ expectContains(plugin, 'vision_unsupported_environment', 'unsupported visual env
 expectContains(plugin, 'vision_no_evidence', 'empty visual evidence response rejection');
 expectContains(plugin, "reasoning_effort: 'none'", 'local reasoning suppression');
 expectContains(plugin, 'reasoning_tokens:', 'reasoning-token diagnostics');
+expectContains(plugin, 'AI_Companion_ChatStreamingEnabled', 'persistent chat streaming toggle');
+expectContains(plugin, 'stream_options: { include_usage: true }', 'local SSE usage telemetry');
+expectContains(plugin, '_completedStreamText(response)', 'sentence-buffered streaming preview');
+expectContains(plugin, "LocalRequestQueue.run('chat_stream'", 'streaming request queue integration');
 expectContains(plugin, '[Combat] Battle state changed.', 'change-only battle state telemetry');
 expectNotContains(plugin, '[Combat] Battle state extracted.', 'noisy per-extraction battle telemetry');
 expectNotContains(plugin, "Bitmap.snap(SceneManager._scene)", 'unsafe battle scene re-render capture');

@@ -160,6 +160,7 @@
         chatTemperature: Number(localStorage.getItem('AI_Companion_ChatTemperature') || '0.85'),
         chatTopP: Number(localStorage.getItem('AI_Companion_ChatTopP') || '0.95'),
         chatTopK: Number(localStorage.getItem('AI_Companion_ChatTopK') || '64'),
+        chatStreamingEnabled: localStorage.getItem('AI_Companion_ChatStreamingEnabled') !== 'false',
         visionContextEnabled: localStorage.getItem('AI_Companion_VisionContextEnabled') === 'true',
         visionModel: localStorage.getItem('AI_Companion_VisionModel') || '',
         // Cached free models from OpenRouter
@@ -380,6 +381,14 @@
             localStorage.setItem('AI_Companion_VisionContextEnabled', this.visionContextEnabled ? 'true' : 'false');
             if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
                 ThesisLogger.log('config_change', { key: 'vision_context', value: this.visionContextEnabled ? 'on' : 'off' });
+            }
+        },
+
+        setChatStreamingEnabled(on) {
+            this.chatStreamingEnabled = !!on;
+            localStorage.setItem('AI_Companion_ChatStreamingEnabled', this.chatStreamingEnabled ? 'true' : 'false');
+            if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
+                ThesisLogger.log('config_change', { key: 'chat_streaming', value: this.chatStreamingEnabled ? 'on' : 'off' });
             }
         },
 
@@ -8297,7 +8306,7 @@ Respond ONLY with this JSON:
         if (section === 'chat') {
             drawLine(`Chat: ${(PROVIDERS[Config.apiProvider] ? PROVIDERS[Config.apiProvider].name : Config.apiProvider)} / ${chatModel}`, 0);
             drawLine(`${apiStatus} | local: ${short(Config.localModel, 36)}`, 1);
-            drawLine(`temp ${Config.chatTemperature} | top_p ${Config.chatTopP} | top_k ${Config.chatTopK || 'off'} | vision ${Config.visionContextEnabled ? 'ON' : 'OFF'}`, 2);
+            drawLine(`temp ${Config.chatTemperature} | top_p ${Config.chatTopP} | stream ${Config.chatStreamingEnabled ? 'ON' : 'OFF'} | vision ${Config.visionContextEnabled ? 'ON' : 'OFF'}`, 2);
             drawLine(`${es ? 'Vision' : 'Vision'}: ${short(Config.getVisionModel() || 'local model', 26)} | ${es ? 'Endpoint local' : 'Local endpoint'}: ${short(Config.localEndpoint, 42)}`, 3);
         } else if (section === 'autonomy') {
             drawLine(`${es ? 'Autonomía' : 'Autonomy'}: ${Config.autonomyEnabled ? 'ON' : 'OFF'} | ${es ? 'modelo' : 'model'}: ${autonomyModel}`, 0);
@@ -8372,6 +8381,7 @@ Respond ONLY with this JSON:
         this._commandWindow.setHandler('setModel', this.commandSetModel.bind(this));
         this._commandWindow.setHandler('editLocalEndpoint', this.commandEditLocalEndpoint.bind(this));
         this._commandWindow.setHandler('editLocalModel', this.commandEditLocalModel.bind(this));
+        this._commandWindow.setHandler('toggleChatStreaming', this.commandToggleChatStreaming.bind(this));
         this._commandWindow.setHandler('toggleVisionContext', this.commandToggleVisionContext.bind(this));
         this._commandWindow.setHandler('editVisionModel', this.commandEditVisionModel.bind(this));
         this._commandWindow.setHandler('setTemperature', this.commandSetTemperature.bind(this));
@@ -8748,6 +8758,13 @@ Respond ONLY with this JSON:
         this._refreshConfigScene(`Vision context: ${Config.visionContextEnabled ? 'ON' : 'OFF'}`);
     };
 
+    Scene_AIConfig.prototype.commandToggleChatStreaming = function () {
+        Config.setChatStreamingEnabled(!Config.chatStreamingEnabled);
+        SoundManager.playOk();
+        const label = Config.language === 'es' ? 'Streaming de chat' : 'Chat streaming';
+        this._refreshConfigScene(`${label}: ${Config.chatStreamingEnabled ? 'ON' : 'OFF'}`);
+    };
+
     Scene_AIConfig.prototype.commandEditVisionModel = function () {
         const es = Config.language === 'es';
         this._openTextInput('visionModel', es ? 'Modelo vision' : 'Vision model', Config.visionModel,
@@ -9033,6 +9050,7 @@ Respond ONLY with this JSON:
             this.addCommand(`${es ? 'Modelo de chat' : 'Chat model'}: ${modelLabel}`, 'setModel');
             this.addCommand(es ? 'Editar endpoint local' : 'Edit local endpoint', 'editLocalEndpoint');
             this.addCommand(es ? 'Editar modelo local' : 'Edit local model', 'editLocalModel');
+            this.addCommand(`${es ? 'Streaming de chat' : 'Chat streaming'}: ${Config.chatStreamingEnabled ? 'ON' : 'OFF'}`, 'toggleChatStreaming');
             this.addCommand(`${es ? 'Contexto visual' : 'Vision context'}: ${Config.visionContextEnabled ? 'ON' : 'OFF'}`, 'toggleVisionContext');
             this.addCommand(`${es ? 'Modelo vision' : 'Vision model'}: ${short(Config.getVisionModel() || 'local model', 30)}`, 'editVisionModel');
             this.addCommand(`temperature: ${Config.chatTemperature}`, 'setTemperature');
@@ -9135,6 +9153,7 @@ Respond ONLY with this JSON:
             setModel: es ? 'Cambia el modelo usado para chat y rol.' : 'Cycle the model used for chat and roleplay.',
             editLocalEndpoint: es ? 'Configura un endpoint local compatible OpenAI.' : 'Configure an OpenAI-compatible local endpoint.',
             editLocalModel: es ? 'Configura el ID del modelo local cargado.' : 'Configure the loaded local model ID.',
+            toggleChatStreaming: es ? 'Muestra frases validadas mientras llega la respuesta local. No guarda texto parcial.' : 'Show validated sentences as the local response arrives. Partial text is never saved.',
             toggleVisionContext: es ? 'Activa captura del canvas y consulta a un modelo local de vision para preguntas visuales.' : 'Enable canvas capture and local vision model calls for visual questions.',
             editVisionModel: es ? 'Modelo local con vision. Si queda vacío usa el modelo local principal.' : 'Local vision-capable model. Empty uses the main local model.',
             setTemperature: es ? 'Controla creatividad del modelo.' : 'Control model creativity.',
@@ -14076,6 +14095,16 @@ Respond ONLY with this JSON:
             return /(?:(?:can(?:not|'t)|could\s+not|couldn't|do\s+not|don't)\s+(?:see|make out|distinguish)|nothing\s+(?:is|looks)\s+clear)/i.test(text);
         },
 
+        _completedStreamText(response) {
+            const text = String(response || '').replace(/^\s+/, '');
+            if (!text) return '';
+            const boundary = /(?:[.!?…]+(?:["')\]]+)?|[\r\n]+)(?=\s|$)/g;
+            let match;
+            let end = 0;
+            while ((match = boundary.exec(text)) !== null) end = match.index + match[0].length;
+            return end > 0 ? text.substring(0, end).trim() : '';
+        },
+
         _buildNearbyFactEntries(context) {
             const observation = context && context.nearby_observation;
             const points = observation && observation.pointsOfInterest ? observation.pointsOfInterest : [];
@@ -14481,7 +14510,7 @@ Respond ONLY with this JSON:
             return ctx;
         },
 
-        async sendMessage(playerMessage) {
+        async sendMessage(playerMessage, streamOptions) {
             // Clear stale RAG state from previous message
             this._lastRagChunkIds = null;
 
@@ -14615,7 +14644,18 @@ Respond ONLY with this JSON:
 
             const chatStartTime = performance.now();
             try {
-                let response = await this._sendChatRequest(prompt);
+                const streamCallbacks = Config.chatStreamingEnabled && streamOptions && typeof streamOptions.onUpdate === 'function'
+                    ? {
+                        onText: rawText => {
+                            const preview = this._completedStreamText(Config.cleanGeneratedText(rawText));
+                            if (!preview) return;
+                            const previewValidation = this._validateChatResponse(preview, playerMessage, context, intent);
+                            if (previewValidation.text) streamOptions.onUpdate(previewValidation.text);
+                        },
+                        onReset: typeof streamOptions.onReset === 'function' ? streamOptions.onReset : null
+                    }
+                    : null;
+                let response = await this._sendChatRequest(prompt, streamCallbacks);
                 const chatLatency = Math.round(performance.now() - chatStartTime);
                 if (!response || response.trim().length === 0) {
                     const fallback = Config.language === 'es'
@@ -15187,7 +15227,7 @@ CRITICAL GAME RULES (NEVER violate these):
             return this._sendChatRequest(prompt);
         },
 
-        async _sendChatRequest(prompt) {
+        async _sendChatRequest(prompt, streamOptions) {
             this._lastTransportMeta = null;
             if (Config.useMockAI) {
                 return "Mm. Let's keep moving.";
@@ -15263,15 +15303,109 @@ CRITICAL GAME RULES (NEVER violate these):
 	                }
             };
 
+            const _tryStreamingRequest = async (endpoint, headers, model, maxTokens, timeoutMs, extraBody) => {
+                const controller = new AbortController();
+                let timer = null;
+                const requestStart = performance.now();
+                let firstTokenAt = 0;
+                let chunkCount = 0;
+                let fullText = '';
+                let finishReason = null;
+                let usageData = null;
+                const armTimeout = () => {
+                    if (timer) clearTimeout(timer);
+                    timer = setTimeout(() => controller.abort(), timeoutMs);
+                };
+                const consumeLine = line => {
+                    const trimmed = String(line || '').trim();
+                    if (!trimmed || trimmed.indexOf('data:') !== 0) return;
+                    const payloadText = trimmed.substring(5).trim();
+                    if (!payloadText || payloadText === '[DONE]') return;
+                    let event;
+                    try { event = JSON.parse(payloadText); } catch (e) { return; }
+                    if (event.usage) usageData = event;
+                    const choice = event.choices && event.choices[0];
+                    if (!choice) return;
+                    finishReason = choice.finish_reason || finishReason;
+                    const delta = choice.delta || {};
+                    const piece = typeof delta.content === 'string'
+                        ? delta.content
+                        : (choice.message && typeof choice.message.content === 'string' ? choice.message.content : '');
+                    if (!piece) return;
+                    if (!firstTokenAt) firstTokenAt = performance.now();
+                    fullText += piece;
+                    chunkCount++;
+                    if (streamOptions && typeof streamOptions.onText === 'function') streamOptions.onText(fullText);
+                };
+                try {
+                    armTimeout();
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: headers,
+                        signal: controller.signal,
+                        body: JSON.stringify(Object.assign({
+                            model: model,
+                            messages: extraBody.messages || [{ role: 'user', content: prompt }],
+                            max_tokens: maxTokens,
+                            stream: true,
+                            stream_options: { include_usage: true }
+                        }, Config.getSamplingOptions(), extraBody.extra || {}))
+                    });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    if (!response.body || typeof response.body.getReader !== 'function' || typeof TextDecoder === 'undefined') {
+                        throw new Error('stream reader unavailable');
+                    }
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let buffer = '';
+                    while (true) {
+                        armTimeout();
+                        const result = await reader.read();
+                        if (result.done) break;
+                        buffer += decoder.decode(result.value, { stream: true });
+                        const lines = buffer.split(/\r?\n/);
+                        buffer = lines.pop() || '';
+                        lines.forEach(consumeLine);
+                    }
+                    buffer += decoder.decode();
+                    if (buffer) consumeLine(buffer);
+                    if (timer) clearTimeout(timer);
+                    const latency = Math.round(performance.now() - requestStart);
+                    this._lastUsage = usageData ? LLMStats.extract(usageData, latency) : null;
+                    this._lastTransportMeta = {
+                        streamed: true,
+                        finish_reason: finishReason || 'stop',
+                        content_chars: fullText.length,
+                        reasoning_chars: 0,
+                        reasoning_tokens: this._lastUsage ? this._lastUsage.reasoning_tokens : 0,
+                        chunk_count: chunkCount,
+                        first_token_ms: firstTokenAt ? Math.round(firstTokenAt - requestStart) : null
+                    };
+                    return fullText.trim();
+                } catch (error) {
+                    if (timer) clearTimeout(timer);
+                    Debug.warn('[Chat] Streaming unavailable, retrying without streaming:', error.message);
+                    if (streamOptions && typeof streamOptions.onReset === 'function') streamOptions.onReset();
+                    return '';
+                }
+            };
+
             if (Config.apiProvider === 'local') {
                 const messages = [
                     { role: 'system', content: 'Answer as the companion character. Do not use chain-of-thought. Do not output markdown.' },
                     { role: 'user', content: prompt }
                 ];
-                const text = await LocalRequestQueue.run('chat_local', () => _tryRequest(
+                const requestArgs = [
                     Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 320, 15000,
                     { messages, extra: { enable_thinking: false, reasoning_effort: 'none', stop: ['<turn|>'] }, providerLabel: 'local' }
-                ), { skipIfBusy: false, drainMs: 2500 });
+                ];
+                let text = '';
+                if (Config.chatStreamingEnabled && streamOptions && typeof streamOptions.onText === 'function') {
+                    text = await LocalRequestQueue.run('chat_stream', () => _tryStreamingRequest.apply(null, requestArgs), { skipIfBusy: false, drainMs: 2500 });
+                }
+                if (!text) {
+                    text = await LocalRequestQueue.run('chat_local', () => _tryRequest.apply(null, requestArgs), { skipIfBusy: false, drainMs: 2500 });
+                }
                 if (text.length > 0) {
                     Debug.log('[Chat] Local responded:', Config.localModel, text.length, 'chars');
                     this._lastModelUsed = Config.localModel;
@@ -17374,6 +17508,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
 
     Scene_AIChat.prototype._updatePendingReplyAnimation = function () {
         if (!this._pendingReply) return;
+        if (this._streamingReply) return;
         const now = Date.now();
         if (now - (this._lastPendingAnimAt || 0) < 420) return;
         this._lastPendingAnimAt = now;
@@ -17677,12 +17812,29 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
         this._pendingReply = this._thinkingLabel();
         this._pendingReplyTimestamp = ChatSystem.formatMessageTime();
 
-        const responsePromise = ChatSystem.sendMessage(message);
+        this._streamingReply = false;
+        const responsePromise = ChatSystem.sendMessage(message, {
+            onUpdate: text => {
+                if (!text || SceneManager._scene !== this || !this._chatWindow) return;
+                this._streamingReply = true;
+                this._pendingReply = text;
+                this._rebuildTranscriptView(true);
+            },
+            onReset: () => {
+                if (SceneManager._scene !== this || !this._chatWindow) return;
+                this._streamingReply = false;
+                this._pendingReply = this._thinkingLabel();
+                this._rebuildTranscriptView(true);
+            }
+        });
         this._rebuildTranscriptView(true);
         const response = await responsePromise;
         Debug.log('Chat: Received response:', response);
 
+        if (SceneManager._scene !== this || !this._chatWindow) return;
+
         this._pendingReply = null;
+        this._streamingReply = false;
         this._pendingReplyTimestamp = null;
         this._rebuildTranscriptView(true);
 

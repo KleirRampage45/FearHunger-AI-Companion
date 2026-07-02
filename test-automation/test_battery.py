@@ -681,6 +681,31 @@ def chat_visible_ui_path(game, state, vision):
                            extra={"response": result.get("response_text", "")[:120]})
 
 
+@safe_scenario
+def chat_streaming_contract(game, state, vision):
+    """Chat — Streaming remains provisional and reveals only complete sentences."""
+    result = game.bridge.js("""(() => {
+        const prior = AI_Companion.Config.chatStreamingEnabled;
+        AI_Companion.Config.setChatStreamingEnabled(true);
+        const first = AI_Companion.ChatSystem._completedStreamText('Primera frase. Segunda incompleta');
+        const none = AI_Companion.ChatSystem._completedStreamText('Todavia incompleta');
+        AI_Companion.Config.setChatStreamingEnabled(prior);
+        return {
+            available: typeof AI_Companion.ChatSystem._completedStreamText === 'function',
+            enabledType: typeof AI_Companion.Config.chatStreamingEnabled,
+            first:first,
+            none:none
+        };
+    })()""") or {}
+    checks = [
+        _check(result.get("available"), "Streaming preview helper exported"),
+        _check(result.get("enabledType") == "boolean", "Streaming toggle is boolean"),
+        _check(result.get("first") == "Primera frase.", "Only completed sentence is revealed"),
+        _check(result.get("none") == "", "Incomplete sentence remains hidden"),
+    ]
+    return scenario_result(all(c["passed"] for c in checks), "Chat Streaming Contract", checks)
+
+
 # ════════════════════════════════════════════════════════════════
 # CROSS-SYSTEM INTEGRATION
 # ════════════════════════════════════════════════════════════════
@@ -863,6 +888,7 @@ ALL_SCENARIOS = {
     "integration": [
         integration_full_chat_pipeline,
         integration_rapid_map_transitions,
+        chat_streaming_contract,
         chat_visible_ui_path,
     ],
     "regression": [

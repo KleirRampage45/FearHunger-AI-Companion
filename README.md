@@ -29,7 +29,7 @@ Not included:
 ## Feature Overview
 
 - **Configurable companion**: name, appearance, starting class, custom persona, backstory, voice/style, goals, and behavior rules.
-- **In-game chat**: press `C` to open a companion chat scene that uses live context instead of only generic LLM memory.
+- **In-game chat**: press `C` to open a companion chat scene that uses live context instead of only generic LLM memory. Local chat can stream completed, validator-approved sentences while generation continues; partial text is never saved.
 - **Grounded context**: prompts can include combat state, party status, equipment, inventory, nearby events, NPC dialogue, story memory, KB data, and optional RAG chunks.
 - **Synchronous combat AI**: the companion selects actions, targets, and limbs through the verified RPG Maker command flow. Async combat was removed because it could expose manual companion turns while the LLM was still pending.
 - **Combat validation**: decisions are normalized against live enemy limbs and current party state before execution.
@@ -106,7 +106,7 @@ Open `AI Companion` from the title menu.
 Important sections:
 
 - `Character`: companion name, appearance, class, persona, custom backstory, voice/style, goals, and behavior rules.
-- `Chat / Provider`: Groq/OpenRouter/local provider, model, endpoint, sampling settings, optional vision context, and optional local vision model id.
+- `Chat / Provider`: Groq/OpenRouter/local provider, model, endpoint, sampling settings, safe local chat streaming, optional vision context, and optional local vision model id.
 - `Autonomy`: beta companion heartbeat, looting radius, door/NPC permissions, return-on-danger behavior, and local model selection.
 - `RAG`: semantic retrieval endpoint, embeddings model, chunk limit, threshold, spoiler level, and language behavior.
 - `Debug`: debug console and FPS/RAM/CPU telemetry.

@@ -30,7 +30,7 @@ No incluye:
 ## Funciones Principales
 
 - **Compañero configurable**: nombre, apariencia, clase inicial, personalidad, trasfondo, voz/estilo, metas y reglas de comportamiento.
-- **Chat dentro del juego**: pulsa `C` para abrir una escena de chat que usa contexto vivo del juego.
+- **Chat dentro del juego**: pulsa `C` para abrir una escena de chat que usa contexto vivo del juego. El chat local puede mostrar frases completas aprobadas por el validador mientras continúa la generación; el texto parcial nunca se guarda.
 - **Contexto fundamentado**: los prompts pueden incluir combate, estados del grupo, equipo, inventario, eventos cercanos, diálogo de NPCs, memoria de historia, KB y chunks de RAG.
 - **Combate síncrono con IA**: el compañero elige acción, objetivo y extremidad usando el flujo verificado de comandos de RPG Maker. El combate async fue eliminado porque podía exponer turnos manuales del compañero mientras el LLM seguía pensando.
 - **Validación de combate**: las decisiones se normalizan contra las extremidades vivas y el estado real del grupo antes de ejecutarse.
@@ -107,7 +107,7 @@ Abre `Compañero IA` desde el menú de título.
 Secciones importantes:
 
 - `Personaje`: nombre, apariencia, clase, personalidad, trasfondo, voz/estilo, metas y reglas.
-- `Chat / Proveedor`: Groq/OpenRouter/local, modelo, endpoint, sampling, contexto visual opcional y modelo local de visión.
+- `Chat / Proveedor`: Groq/OpenRouter/local, modelo, endpoint, sampling, streaming local seguro, contexto visual opcional y modelo local de visión.
 - `Autonomía`: heartbeat beta, radio de botín, permisos de puertas/NPCs, regreso por peligro y modelo local.
 - `RAG`: endpoint de recuperación, modelo de embeddings, cantidad de chunks, threshold, spoilers e idioma.
 - `Debug`: consola debug y telemetría FPS/RAM/CPU.
