@@ -11149,6 +11149,23 @@ Respond ONLY with this JSON:
             return !entry.cooldownUntil || entry.cooldownUntil > Date.now();
         },
 
+        _clearEventSearched(eventId) {
+            const key = this._searchedEventKey(eventId);
+            if (key && this._state.searchedEvents) delete this._state.searchedEvents[key];
+        },
+
+        _isEventSearchedForItem(item) {
+            if (!item || item.eventId == null) return false;
+            const key = this._searchedEventKey(item.eventId);
+            const entry = key && this._state.searchedEvents ? this._state.searchedEvents[key] : null;
+            if (item.subtype === 'light_source' && entry && entry.lastOutcome !== 'background_light') {
+                delete this._state.searchedEvents[key];
+                if (this._state.eventCooldowns) delete this._state.eventCooldowns[item.eventId];
+                return false;
+            }
+            return this._isEventSearched(item.eventId);
+        },
+
         _markEventSearched(eventId, type, outcome) {
             const key = this._searchedEventKey(eventId);
             if (!key) return;
@@ -11925,8 +11942,8 @@ Respond ONLY with this JSON:
                     if (!item || item.eventId == null) return false;
                     const type = String(item.type || '').toLowerCase();
                     const isReusableWorldObject = type === 'container' || type === 'door' || type === 'npc' || type === 'shop';
+                    if (isReusableWorldObject && this._isEventSearchedForItem(item)) return false;
                     if (isReusableWorldObject && this._isEventOnCooldown(item.eventId)) return false;
-                    if (isReusableWorldObject && this._isEventSearched(item.eventId)) return false;
                     return true;
                 }).slice(0, 10).map(item => ({
                     eventId: item.eventId,
@@ -12085,6 +12102,7 @@ Respond ONLY with this JSON:
                         threatNearby: snapshot.threatNearby,
                         interestingNearby: snapshot.interestingNearby,
                         hpPct: snapshot.hpPct,
+                        tinderboxesAvailable: snapshot.tinderboxesAvailable,
                         fear: snapshot.fear ? {
                             level: snapshot.fear.level,
                             score: snapshot.fear.score,
@@ -12687,7 +12705,9 @@ Respond ONLY with this JSON:
             const ownsMessageUi = channel !== 'background-loot' && channel !== 'background-loot-unsupported';
             this._state.interactionUiOwned = ownsMessageUi;
             this._setEventCooldown(eventId, interactionType === 'door' ? 90000 : 15000);
-            if (interactionSnap && (interactionType === 'container' || interactionType === 'loot' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
+            const backgroundAlreadyRecorded = channel === 'background-loot';
+            const unsupportedBackground = channel === 'background-loot-unsupported';
+            if (!backgroundAlreadyRecorded && !unsupportedBackground && interactionSnap && (interactionType === 'container' || interactionType === 'loot' || interactionType === 'door' || interactionType === 'npc' || interactionType === 'shop')) {
                 this._markEventSearched(interactionSnap.id || eventId, interactionType, 'interaction_started');
             }
             this._state.allowPlayerMoveWhileUi = ownsMessageUi &&
@@ -13202,6 +13222,7 @@ Respond ONLY with this JSON:
                     }
                     const skippedEventId = snap.eventId != null ? snap.eventId : (event.eventId ? event.eventId() : event._eventId);
                     this._setEventCooldown(skippedEventId, 30000);
+                    this._clearEventSearched(skippedEventId);
                     if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
                         ThesisLogger.log('game_event', {
                             event: 'background_loot_unsupported',

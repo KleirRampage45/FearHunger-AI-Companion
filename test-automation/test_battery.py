@@ -732,12 +732,19 @@ def autonomy_light_interaction_contract(game, state, vision):
         const unsafeCommands = commands.map(command => ({code:command.code,indent:command.indent,parameters:command.parameters.slice()}));
         unsafeCommands.find(command => command.code === 356).parameters[0] = 'Run arbitrary command';
         const unsafe = system._analyzeBackgroundLightEvent({eventId:() => 35}, snap, unsafeCommands);
+        const key = String($gameMap.mapId()) + ':35';
+        const previousEntry = system._state.searchedEvents[key];
+        system._state.searchedEvents[key] = {lastOutcome:'interaction_started',cooldownUntil:Date.now() + 1800000};
+        const staleFailedMarkCleared = !system._isEventSearchedForItem(snap) && !system._state.searchedEvents[key];
+        if (previousEntry) system._state.searchedEvents[key] = previousEntry;
+        else delete system._state.searchedEvents[key];
         system._tinderboxCount = originalCount;
-        return {safeKind:safe && safe.kind, unsafeRejected:unsafe === null};
+        return {safeKind:safe && safe.kind, unsafeRejected:unsafe === null, staleFailedMarkCleared:staleFailedMarkCleared};
     })()""") or {}
     checks = [
         _check(result.get("safeKind") == "light_source", "Known candle command sequence accepted"),
         _check(result.get("unsafeRejected"), "Unknown plugin command remains blocked"),
+        _check(result.get("staleFailedMarkCleared"), "Failed candle interaction does not remain searched"),
     ]
     return scenario_result(all(c["passed"] for c in checks), "Autonomy Light Interaction Contract", checks)
 

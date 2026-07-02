@@ -111,6 +111,8 @@ expectContains(plugin, "event: plan.kind === 'light_source' ? 'background_light_
 expectContains(plugin, 'A light_source is an INTERACT action, never LOOT.', 'LLM light-resource decision contract');
 expectContains(plugin, "!/^Light on \\d+$/i", 'strict light plugin command allowlist');
 expectContains(plugin, '|sí|si)(?:\\b|[\\s,.:;!?]|$)', 'accent-safe Spanish choice validation');
+expectContains(plugin, '_isEventSearchedForItem(item)', 'stale failed light interaction cleanup');
+expectContains(plugin, "channel === 'background-loot-unsupported'", 'unsupported background interaction is not marked complete');
 expectContains(plugin, '[Combat] Battle state changed.', 'change-only battle state telemetry');
 expectNotContains(plugin, '[Combat] Battle state extracted.', 'noisy per-extraction battle telemetry');
 expectNotContains(plugin, "Bitmap.snap(SceneManager._scene)", 'unsafe battle scene re-render capture');
