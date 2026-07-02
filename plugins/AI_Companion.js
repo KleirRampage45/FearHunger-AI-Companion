@@ -1741,6 +1741,7 @@
                 'Use presented_items only for inventory/equipment/menu scenes. Visible world objects belong in entities; otherwise presented_items must be empty.',
                 'UI text may be transcribed internally, but never describe menus, cursors, screens, pixels, or interfaces.',
                 'Keep the response compact: at most 2 environment observations, 4 entities, and 3 short visible traits per entity.',
+                'Do not reason aloud. Begin the response immediately with { and emit the JSON object before any explanation.',
                 'Do not use Markdown fences. Each description must be 18 words or fewer.',
                 'Return compact JSON only: {"environment":[{"description":"...","confidence":"low|medium|high"}],"entities":[{"descriptor":"...","candidate_key":"key_or_empty","visible_traits":["..."],"confidence":"low|medium|high"}],"presented_items":[{"descriptor":"...","candidate_key":"key_or_empty","confidence":"low|medium|high"}],"risk":"none|low|medium|high"}.'
             ].join(' ');
@@ -1760,8 +1761,9 @@
                         ]
                     }
                 ],
-                max_tokens: 360,
-                enable_thinking: false
+                max_tokens: 480,
+                enable_thinking: false,
+                reasoning_effort: 'none'
             }, Config.getSamplingOptions({ temperature: 0.1, top_p: 0.9 }, { includeTopK: false }));
             const startedAt = performance.now();
             const queuedAt = performance.now();
@@ -1786,9 +1788,15 @@
                 }
                 const data = await resp.json();
                 const choice = data && data.choices ? data.choices[0] : null;
-                const content = choice && choice.message
+                const message = choice && choice.message ? choice.message : null;
+                const visibleContent = message
                     ? String(choice.message.content || '').trim()
                     : '';
+                const reasoningContent = message ? String(message.reasoning_content || '').trim() : '';
+                const reasoningJson = !visibleContent && /"(?:environment|entities|presented_items|risk)"\s*:/.test(reasoningContent)
+                    ? reasoningContent
+                    : '';
+                const content = visibleContent || reasoningJson;
                 const obs = this._parseObservation(content);
                 const unresolvedText = (obs.entities || []).filter(entity => !entity.candidate_key && entity.descriptor).map(entity => entity.descriptor).join('; ');
                 if (unresolvedText && typeof HybridRAG !== 'undefined' && HybridRAG.retrieveVisual) {
@@ -1834,8 +1842,14 @@
                     frame_age_ms: ageMs,
                     image_payload_bytes: Math.round((frame.dataUrl.length - frame.dataUrl.indexOf(',') - 1) * 0.75),
                     response_chars: content.length,
+                    visible_response_chars: visibleContent.length,
+                    reasoning_chars: reasoningContent.length,
+                    reasoning_tokens: data && data.usage && data.usage.completion_tokens_details
+                        ? Number(data.usage.completion_tokens_details.reasoning_tokens || 0)
+                        : 0,
                     finish_reason: choice ? choice.finish_reason || null : null,
-                    raw_content_preview: content.substring(0, 600),
+                    raw_content_preview: visibleContent.substring(0, 600),
+                    response_source: visibleContent ? 'content' : (reasoningJson ? 'reasoning_json' : 'empty'),
                     response_schema: obs.schema || 'unknown',
                     party_candidates: this._partyVisualCandidates().map(member => ({ key: member.key, name: member.name, role: member.role })),
                     profile_ids: profiles.map(profile => profile.id)
@@ -7215,7 +7229,7 @@ Respond ONLY with this JSON:
                     }, Config.getSamplingOptions(
                         { temperature: Math.min(Config.chatTemperature, 0.8) },
                         { includeTopK: isLocal }
-                    ), isLocal ? { enable_thinking: false, stop: ['<turn|>'] } : {})));
+                    ), isLocal ? { enable_thinking: false, reasoning_effort: 'none', stop: ['<turn|>'] } : {})));
                     if (xhr.status !== 200) {
                         Debug.warn(`[Combat] ${model} returned HTTP ${xhr.status}: ${xhr.responseText.substring(0, 200)}`);
                         return { _requestFailed: true, _failure: { model: model, type: 'http', status: xhr.status, body: String(xhr.responseText || '').substring(0, 400) } };
@@ -12175,6 +12189,7 @@ Respond ONLY with this JSON:
                             top_k: 64,
                             max_tokens: 80,
                             enable_thinking: false,
+                            reasoning_effort: 'none',
                             stop: ['<turn|>']
                         })
                     }).finally(() => clearTimeout(timer));
@@ -13976,6 +13991,9 @@ Respond ONLY with this JSON:
 
             if (this._isVisionQuery(playerMessage, intent)) {
                 const vision = context && context.multimodal_evidence;
+                if (!vision && !this._isSafeNoVisionDisclosure(text)) {
+                    return { text: '', changed: true, reason: 'vision_no_evidence' };
+                }
                 const visionAllowed = {};
                 if (vision && Array.isArray(vision.confirmed_entities)) {
                     vision.confirmed_entities.forEach(entity => {
@@ -14047,6 +14065,15 @@ Respond ONLY with this JSON:
             }
 
             return { text: text, changed: false, reason: null };
+        },
+
+        _isSafeNoVisionDisclosure(response) {
+            const text = String(response || '').trim();
+            if (!text || text.length > 240 || MetaLeakGuard.containsLeak(text)) return false;
+            if (Config.language === 'es') {
+                return /(?:no\s+(?:logro|puedo|alcanzo)\s+(?:ver|distinguir|reconocer|apreciar)|no\s+(?:veo|distingo|reconozco)\s+(?:nada|mucho|bien|detalles?|con claridad))/i.test(text);
+            }
+            return /(?:(?:can(?:not|'t)|could\s+not|couldn't|do\s+not|don't)\s+(?:see|make out|distinguish)|nothing\s+(?:is|looks)\s+clear)/i.test(text);
         },
 
         _buildNearbyFactEntries(context) {
@@ -14634,13 +14661,13 @@ Respond ONLY with this JSON:
                         }
                     }
                 }
-                if (!validation.text && validation.reason === 'vision_unsupported_environment') {
+                if (!validation.text && (validation.reason === 'vision_unsupported_environment' || validation.reason === 'vision_no_evidence')) {
                     const repaired = await this._repairUngroundedVision(response);
                     if (repaired) {
                         const repairedValidation = this._validateChatResponse(repaired, playerMessage, context, intent);
                         if (repairedValidation.text) {
                             response = repaired;
-                            validation = { text: repairedValidation.text, changed: true, reason: 'vision_unsupported_environment_repaired' };
+                            validation = { text: repairedValidation.text, changed: true, reason: validation.reason + '_repaired' };
                         }
                     }
                 }
@@ -14695,6 +14722,7 @@ Respond ONLY with this JSON:
                     latency_ms: chatLatency,
                     model_used: this._lastModelUsed || null,
                     llm_usage: this._lastUsage || null,
+                    transport_meta: this._lastTransportMeta || null,
                     tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null,
                     rag_chunk_ids: this._lastRagChunkIds || null,
                     grounding_mode: HybridRAG.classifyGrounding(ragResults, context, intent).mode
@@ -14713,6 +14741,7 @@ Respond ONLY with this JSON:
                     latency_ms: chatLatency,
                     model_used: this._lastModelUsed || null,
                     llm_usage: this._lastUsage || null,
+                    transport_meta: this._lastTransportMeta || null,
                     tokens_per_second: this._lastUsage ? this._lastUsage.tokens_per_second : null,
                     context_map: context.current_map,
                     nearby_objects: context.nearby_objects,
@@ -15159,6 +15188,7 @@ CRITICAL GAME RULES (NEVER violate these):
         },
 
         async _sendChatRequest(prompt) {
+            this._lastTransportMeta = null;
             if (Config.useMockAI) {
                 return "Mm. Let's keep moving.";
             }
@@ -15200,6 +15230,13 @@ CRITICAL GAME RULES (NEVER violate these):
                     let text = '';
                     if (data.choices && data.choices[0]) {
                         const c = data.choices[0];
+                        const message = c.message || {};
+                        this._lastTransportMeta = {
+                            finish_reason: c.finish_reason || null,
+                            content_chars: String(message.content || c.text || '').length,
+                            reasoning_chars: String(message.reasoning_content || '').length,
+                            reasoning_tokens: this._lastUsage ? this._lastUsage.reasoning_tokens : 0
+                        };
                         text = (c.message && c.message.content && c.message.content.trim()) ||
                                (c.text && c.text.trim()) || '';
                         // Qwen thinking model: try extracting from reasoning_content
@@ -15232,8 +15269,8 @@ CRITICAL GAME RULES (NEVER violate these):
                     { role: 'user', content: prompt }
                 ];
                 const text = await LocalRequestQueue.run('chat_local', () => _tryRequest(
-                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 220, 15000,
-                    { messages, extra: { enable_thinking: false, stop: ['<turn|>'] }, providerLabel: 'local' }
+                    Config.getLocalEndpoint(), Config.getLocalHeaders(), Config.localModel, 320, 15000,
+                    { messages, extra: { enable_thinking: false, reasoning_effort: 'none', stop: ['<turn|>'] }, providerLabel: 'local' }
                 ), { skipIfBusy: false, drainMs: 2500 });
                 if (text.length > 0) {
                     Debug.log('[Chat] Local responded:', Config.localModel, text.length, 'chars');
@@ -19039,6 +19076,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         top_k: 64,
                         max_tokens: 100,
                         enable_thinking: false,
+                        reasoning_effort: 'none',
                         stop: ['<turn|>']
                     })
                 }).finally(() => clearTimeout(timer));
@@ -19425,6 +19463,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         top_k: 64,
                         max_tokens: 80,
                         enable_thinking: false,
+                        reasoning_effort: 'none',
                         stop: ['<turn|>']
                     })
                 }).finally(() => clearTimeout(timer));
@@ -19728,6 +19767,7 @@ Context: ${JSON.stringify(context || {}).slice(0, 500)}`;
                         top_k: 64,
                         max_tokens: 180,
                         enable_thinking: false,
+                        reasoning_effort: 'none',
                         stop: ['<turn|>']
                     }));
                 } finally {

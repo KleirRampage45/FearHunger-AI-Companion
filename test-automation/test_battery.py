@@ -585,6 +585,8 @@ def vision_runtime_contract(game, state, vision):
             'El brazo con el cuchillo está destruido; ataquemos el torso.',
             {in_battle:true,battle_state:{enemies:[{name:'Guard',limbs:{'left arm':{alive:false},torso:{alive:true}}}]}}
         ).length,
+        safeNoVisionEs: AI_Companion.ChatSystem._isSafeNoVisionDisclosure('No logro distinguir detalles con claridad.'),
+        rejectsBrokenNoVisionEs: AI_Companion.ChatSystem._isSafeNoVisionDisclosure('t see much yet, but remains alert. He shouldn'),
         legacyParse: (() => {
             const parsed = AI_Companion.VisionContext._parseObservation(JSON.stringify({
                 summary:'bright stone courtyard', identified:[], confidence:'high', risk:'none'
@@ -618,6 +620,8 @@ def vision_runtime_contract(game, state, vision):
     checks.append(_check("dead_horse" in (api.get("map74Keys") or []), "Starting map supplies dead-horse visual profile"))
     checks.append(_check(api.get("destroyedClaim") == 1, "Impossible destroyed-limb attack claim detected"))
     checks.append(_check(api.get("destroyedAbsence") == 0, "Accurate missing-limb description remains allowed"))
+    checks.append(_check(api.get("safeNoVisionEs"), "Spanish no-evidence disclosure remains valid"))
+    checks.append(_check(not api.get("rejectsBrokenNoVisionEs"), "Broken wrong-language vision output is rejected"))
     legacy = api.get("legacyParse") or {}
     checks.append(_check(legacy.get("schema") == "legacy_v1", "Legacy vision response schema recognized"))
     checks.append(_check(legacy.get("environment") == 1, "Legacy vision summary retained as environment"))

@@ -99,6 +99,9 @@ expectContains(plugin, 'visionFollowup && !context.in_battle', 'fresh battle vis
 expectContains(plugin, 'confirmed destroyed/missing limbs:', 'authoritative limb state in visual evidence');
 expectContains(plugin, 'destroyed_limb_claim', 'destroyed-limb chat validation');
 expectContains(plugin, 'vision_unsupported_environment', 'unsupported visual environment rejection');
+expectContains(plugin, 'vision_no_evidence', 'empty visual evidence response rejection');
+expectContains(plugin, "reasoning_effort: 'none'", 'local reasoning suppression');
+expectContains(plugin, 'reasoning_tokens:', 'reasoning-token diagnostics');
 expectContains(plugin, '[Combat] Battle state changed.', 'change-only battle state telemetry');
 expectNotContains(plugin, '[Combat] Battle state extracted.', 'noisy per-extraction battle telemetry');
 expectNotContains(plugin, "Bitmap.snap(SceneManager._scene)", 'unsafe battle scene re-render capture');
