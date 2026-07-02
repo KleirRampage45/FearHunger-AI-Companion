@@ -12734,8 +12734,8 @@ Respond ONLY with this JSON:
             if (!params || !Array.isArray(params[0])) return false;
             const choices = params[0].map(choice => String(choice || '').toLowerCase().trim());
             if (choices.length < 2 || choices.length > 3) return false;
-            const positive = /^(abrir|buscar|agarrar|tomar|revisar|usar|llenar|open|search|take|grab|check|inspect|use|fill|yes|sí|si)\b/i;
-            const negative = /^(dejar|irse|ignorar|cancelar|no|leave|ignore|cancel|go away)\b/i;
+            const positive = /^(?:abrir|buscar|agarrar|tomar|revisar|usar|llenar|open|search|take|grab|check|inspect|use|fill|yes|sí|si)(?:\b|[\s,.:;!?]|$)/i;
+            const negative = /^(?:dejar|irse|ignorar|cancelar|no|leave|ignore|cancel|go away)(?:\b|[\s,.:;!?]|$)/i;
             if (!positive.test(choices[0])) return false;
             for (let i = 1; i < choices.length; i++) {
                 if (!negative.test(choices[i])) return false;
