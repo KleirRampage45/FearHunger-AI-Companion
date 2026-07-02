@@ -11848,6 +11848,7 @@ Respond ONLY with this JSON:
                     distance: point.distance
                 })),
                 hpPct: world.party.avg_hp_pct,
+                tinderboxesAvailable: this._tinderboxCount(),
                 lootRadius: Config.autonomyLootRadius,
                 scoutLimit: effectiveScoutLimit,
                 detourLimit: effectiveDetourLimit,
@@ -11860,6 +11861,11 @@ Respond ONLY with this JSON:
 	            this._state.lastSnapshot = snapshot;
 	            return snapshot;
 	        },
+
+        _tinderboxCount() {
+            if (!$gameParty || !$gameParty.numItems || !$dataItems || !$dataItems[7]) return 0;
+            return Math.max(0, Number($gameParty.numItems($dataItems[7]) || 0));
+        },
 
 	        _autonomyRiskForPrompt(snapshot) {
 	            if (!snapshot) return { level: 'low', score: 0, note: 'No live snapshot.' };
@@ -11904,6 +11910,7 @@ Respond ONLY with this JSON:
                 threatNearby: snapshot.threatNearby,
                 interestingNearby: snapshot.interestingNearby,
                 hpPct: snapshot.hpPct,
+                tinderboxesAvailable: snapshot.tinderboxesAvailable,
                 fearLevel: snapshot.fear ? snapshot.fear.level : 'calm',
                 fearScore: snapshot.fear ? snapshot.fear.score : 0,
                 fearReasons: snapshot.fear && snapshot.fear.reasons ? snapshot.fear.reasons : [],
@@ -11944,7 +11951,11 @@ Respond ONLY with this JSON:
                 return { action: 'RETURN', reason: 'too far from player' };
             }
 
-            const safeLoot = snapshot.nearby.find(item => this._isActionableNearbyItem(snapshot, item) && (item.type === 'container' || item.type === 'loot'));
+            const safeLoot = snapshot.nearby.find(item =>
+                this._isActionableNearbyItem(snapshot, item) &&
+                (item.type === 'container' || item.type === 'loot') &&
+                item.subtype !== 'light_source'
+            );
             if (safeLoot) {
                 return { action: 'LOOT', eventId: safeLoot.eventId, reason: 'safe nearby supplies' };
             }
@@ -12019,6 +12030,11 @@ Respond ONLY with this JSON:
                 }
                 const target = nearby.find(item => item.eventId === Number(finalDecision.eventId));
                 if (!target) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                if (target.subtype === 'light_source') {
+                    if (!snapshot.tinderboxesAvailable) return Object.assign({ _autonomySource: 'fallback' }, fallback);
+                    finalDecision.action = 'INTERACT';
+                    finalDecision.reason = finalDecision.reason || 'deliberately use a tinderbox on the light source';
+                }
                 if (this._targetNeedsConsent(target) && !this._isConsentApproved(target.eventId)) {
                     return {
                         action: 'CONSENT',
@@ -12170,6 +12186,7 @@ Respond ONLY with this JSON:
                 'Move with purpose. Do not wander or scout empty frontiers.',
                 'Never choose enemies as targets. Never start fights.',
                 'Only choose LOOT or INTERACT for nearby containers, bookshelves, doors, NPCs, or shops that are actually listed.',
+                'A light_source is an INTERACT action, never LOOT. It spends one tinderbox/Yesquero. Choose it only deliberately and only when tinderboxesAvailable is above 0.',
                 'FOLLOW means stay near the player and must use "eventId":null. If you choose a listed eventId, use LOOT or INTERACT, not FOLLOW.',
                 'You are not glued to the player. If safe useful targets are listed within detourLimit, prefer LOOT or INTERACT even if the player keeps walking.',
                 'Do not reject a safe listed target only because it is outside the current leash distance; use detourLimit and live threat instead.',
@@ -12783,6 +12800,9 @@ Respond ONLY with this JSON:
             const page = event.page ? event.page() : null;
             const list = page && Array.isArray(page.list) ? page.list : null;
             if (!list || list.length === 0) return null;
+            if (snap.subtype === 'light_source') {
+                return this._analyzeBackgroundLightEvent(event, snap, list);
+            }
             const expandedList = this._expandBackgroundLootCommands(list, 0, {});
             if (!expandedList || expandedList.length === 0) return null;
 
@@ -12840,6 +12860,55 @@ Respond ONLY with this JSON:
                 subtype: snap.subtype || '',
                 hasChoice: hasChoice,
                 expandedCommandCount: expandedList.length
+            };
+        },
+
+        _analyzeBackgroundLightEvent(event, snap, list) {
+            if (!Array.isArray(list) || this._tinderboxCount() <= 0) return null;
+            const allowedCodes = { 0: true, 101: true, 102: true, 111: true, 121: true, 126: true, 356: true, 401: true, 402: true, 404: true, 412: true };
+            let hasItemGuard = false;
+            let hasChoice = false;
+            let consumesTinderbox = false;
+            let hasLightCommand = false;
+            let enablesSwitch = false;
+            let switchId = null;
+
+            for (let i = 0; i < list.length; i++) {
+                const command = list[i];
+                if (!command) continue;
+                const code = Number(command.code) || 0;
+                const params = command.parameters || [];
+                if (!allowedCodes[code]) return null;
+                if (code === 111) {
+                    if (Number(params[0]) !== 8 || Number(params[1]) !== 7) return null;
+                    hasItemGuard = true;
+                } else if (code === 102) {
+                    if (!this._isSafeBackgroundChoice(params)) return null;
+                    hasChoice = true;
+                } else if (code === 126) {
+                    if (Number(params[0]) !== 7 || Number(params[1]) !== 1 || Number(params[2]) !== 0 || Number(params[3]) !== 1) return null;
+                    consumesTinderbox = true;
+                } else if (code === 356) {
+                    if (!/^Light on \d+$/i.test(String(params[0] || '').trim())) return null;
+                    hasLightCommand = true;
+                } else if (code === 121) {
+                    if (Number(params[0]) !== Number(params[1]) || Number(params[2]) !== 0) return null;
+                    enablesSwitch = true;
+                    switchId = Number(params[0]);
+                }
+            }
+
+            if (!hasItemGuard || !hasChoice || !consumesTinderbox || !hasLightCommand || !enablesSwitch) return null;
+            return {
+                list: list,
+                eventId: snap.eventId != null ? snap.eventId : (event.eventId ? event.eventId() : event._eventId),
+                label: snap.label || (Config.language === 'es' ? 'Luz apagada' : 'Unlit light'),
+                type: snap.type || 'container',
+                subtype: 'light_source',
+                kind: 'light_source',
+                switchId: switchId,
+                hasChoice: true,
+                expandedCommandCount: list.length
             };
         },
 
@@ -12912,6 +12981,10 @@ Respond ONLY with this JSON:
             if (!plan || typeof ShortTermMemory === 'undefined') return;
             const actorName = Config.companionName || 'Companion';
             const label = plan.label || (Config.language === 'es' ? 'objeto' : 'object');
+            if (plan.kind === 'light_source') {
+                ShortTermMemory.addEvent(`${actorName} lit ${label} using one tinderbox.`);
+                return;
+            }
             const summary = this._describeBackgroundLootRewards(rewards);
             if (summary) {
                 ShortTermMemory.addEvent(`${actorName} searched ${label} and found ${summary}.`);
@@ -12921,7 +12994,7 @@ Respond ONLY with this JSON:
         },
 
         _showBackgroundLootFeedback(plan, rewards, follower, event) {
-            if (typeof AINotificationOverlay !== 'undefined') {
+            if (plan && plan.kind !== 'light_source' && typeof AINotificationOverlay !== 'undefined') {
                 const summary = this._describeBackgroundLootRewards(rewards);
                 if (summary) {
                     AINotificationOverlay.pushLootAt(Config.companionName, summary, follower);
@@ -12932,13 +13005,13 @@ Respond ONLY with this JSON:
             }
             try {
                 if (follower && follower.requestBalloon) {
-                    const balloonId = rewards && rewards.length > 0 ? 1 : 2;
+                    const balloonId = plan && plan.kind === 'light_source' ? 1 : (rewards && rewards.length > 0 ? 1 : 2);
                     follower.requestBalloon(balloonId);
                     if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
                         ThesisLogger.log('game_event', {
                             event: 'ai_balloon_requested',
                             balloon_id: balloonId,
-                            result: rewards && rewards.length > 0 ? 'loot' : 'empty',
+                            result: plan && plan.kind === 'light_source' ? 'light_source' : (rewards && rewards.length > 0 ? 'loot' : 'empty'),
                             label: plan && plan.label ? plan.label : null
                         });
                     }
@@ -12953,6 +13026,7 @@ Respond ONLY with this JSON:
             if (!plan || typeof Game_Interpreter === 'undefined') return false;
 
             const rewards = [];
+            const tinderboxesBefore = plan.kind === 'light_source' ? this._tinderboxCount() : null;
             const originalGainGold = $gameParty.gainGold.bind($gameParty);
             const originalGainItem = $gameParty.gainItem.bind($gameParty);
             const interpreterPrototype = Game_Interpreter.prototype;
@@ -13056,18 +13130,27 @@ Respond ONLY with this JSON:
                     }
                 }
 
+                if (plan.kind === 'light_source') {
+                    const consumedExactlyOne = this._tinderboxCount() === tinderboxesBefore - 1;
+                    const switchEnabled = $gameSwitches && $gameSwitches.value && $gameSwitches.value(plan.switchId);
+                    if (!consumedExactlyOne || !switchEnabled) {
+                        throw new Error('background light interaction did not complete atomically');
+                    }
+                }
+
                 this._rememberInteractionTarget(event, follower);
 	                this._setEventCooldown(plan.eventId, 90000);
-	                this._markEventSearched(plan.eventId, plan.type, rewards.length > 0 ? 'background_loot' : 'background_loot_empty');
+	                this._markEventSearched(plan.eventId, plan.type, plan.kind === 'light_source' ? 'background_light' : (rewards.length > 0 ? 'background_loot' : 'background_loot_empty'));
 	                this._rememberBackgroundLootResult(plan, rewards);
                     this._showBackgroundLootFeedback(plan, rewards, follower, event);
 	                if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
 	                    ThesisLogger.log('game_event', {
-	                        event: 'background_loot',
+	                        event: plan.kind === 'light_source' ? 'background_light_interaction' : 'background_loot',
 	                        event_id: plan.eventId,
 	                        label: plan.label,
-	                        result: rewards.length > 0 ? 'rewards' : 'empty',
+	                        result: plan.kind === 'light_source' ? 'lit' : (rewards.length > 0 ? 'rewards' : 'empty'),
 	                        rewards: rewards,
+	                        tinderboxes_remaining: plan.kind === 'light_source' ? this._tinderboxCount() : null,
 	                        expanded_command_count: plan.expandedCommandCount || 0
 	                    });
 	                }
@@ -13080,7 +13163,7 @@ Respond ONLY with this JSON:
             } catch (error) {
                 if (typeof ThesisLogger !== 'undefined' && ThesisLogger.log) {
                     ThesisLogger.log('game_event', {
-                        event: 'background_loot_failed',
+                        event: plan.kind === 'light_source' ? 'background_light_failed' : 'background_loot_failed',
                         event_id: plan.eventId,
                         label: plan.label,
                         error: error && error.message ? error.message : String(error)

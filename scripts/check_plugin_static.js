@@ -106,6 +106,10 @@ expectContains(plugin, 'AI_Companion_ChatStreamingEnabled', 'persistent chat str
 expectContains(plugin, 'stream_options: { include_usage: true }', 'local SSE usage telemetry');
 expectContains(plugin, '_completedStreamText(response)', 'sentence-buffered streaming preview');
 expectContains(plugin, "LocalRequestQueue.run('chat_stream'", 'streaming request queue integration');
+expectContains(plugin, '_analyzeBackgroundLightEvent(event, snap, list)', 'strict background light event analyzer');
+expectContains(plugin, "event: plan.kind === 'light_source' ? 'background_light_interaction'", 'separate light interaction telemetry');
+expectContains(plugin, 'A light_source is an INTERACT action, never LOOT.', 'LLM light-resource decision contract');
+expectContains(plugin, "!/^Light on \\d+$/i", 'strict light plugin command allowlist');
 expectContains(plugin, '[Combat] Battle state changed.', 'change-only battle state telemetry');
 expectNotContains(plugin, '[Combat] Battle state extracted.', 'noisy per-extraction battle telemetry');
 expectNotContains(plugin, "Bitmap.snap(SceneManager._scene)", 'unsafe battle scene re-render capture');

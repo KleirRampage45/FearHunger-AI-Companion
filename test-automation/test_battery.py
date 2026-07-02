@@ -706,6 +706,42 @@ def chat_streaming_contract(game, state, vision):
     return scenario_result(all(c["passed"] for c in checks), "Chat Streaming Contract", checks)
 
 
+@safe_scenario
+def autonomy_light_interaction_contract(game, state, vision):
+    """Autonomy — Only the known tinderbox candle sequence is background-safe."""
+    result = game.bridge.js("""(() => {
+        const system = AI_Companion.AutonomySystem;
+        const originalCount = system._tinderboxCount;
+        const commands = [
+            {code:111,indent:0,parameters:[8,7]},
+            {code:101,indent:1,parameters:['',0,0,2]},
+            {code:401,indent:1,parameters:['Use tinderbox?']},
+            {code:102,indent:1,parameters:[['Sí','No'],1,0,2,0]},
+            {code:402,indent:1,parameters:[0,'Sí']},
+            {code:126,indent:2,parameters:[7,1,0,1]},
+            {code:356,indent:2,parameters:['Light on 2']},
+            {code:121,indent:2,parameters:[10,10,0]},
+            {code:402,indent:1,parameters:[1,'No']},
+            {code:404,indent:1,parameters:[]},
+            {code:412,indent:0,parameters:[]},
+            {code:0,indent:0,parameters:[]}
+        ];
+        const snap = {eventId:35,label:'Luz apagada',type:'container',subtype:'light_source'};
+        system._tinderboxCount = () => 1;
+        const safe = system._analyzeBackgroundLightEvent({eventId:() => 35}, snap, commands);
+        const unsafeCommands = commands.map(command => ({code:command.code,indent:command.indent,parameters:command.parameters.slice()}));
+        unsafeCommands.find(command => command.code === 356).parameters[0] = 'Run arbitrary command';
+        const unsafe = system._analyzeBackgroundLightEvent({eventId:() => 35}, snap, unsafeCommands);
+        system._tinderboxCount = originalCount;
+        return {safeKind:safe && safe.kind, unsafeRejected:unsafe === null};
+    })()""") or {}
+    checks = [
+        _check(result.get("safeKind") == "light_source", "Known candle command sequence accepted"),
+        _check(result.get("unsafeRejected"), "Unknown plugin command remains blocked"),
+    ]
+    return scenario_result(all(c["passed"] for c in checks), "Autonomy Light Interaction Contract", checks)
+
+
 # ════════════════════════════════════════════════════════════════
 # CROSS-SYSTEM INTEGRATION
 # ════════════════════════════════════════════════════════════════
@@ -894,6 +930,7 @@ ALL_SCENARIOS = {
     "regression": [
         regression_basic_chat,
         regression_ai_config,
+        autonomy_light_interaction_contract,
     ],
     "story_progress": [
         story_check_map_position,
